@@ -1,0 +1,21 @@
+#!/bin/bash
+# Wird beim Systemstart als Benutzer "root" ausgefuehrt.
+# LoxBerry benennt diese Datei bei der Installation in NAME um.
+
+pluginname=REPLACELBPPLUGINDIR
+pluginbindir=REPLACELBPBINDIR
+logdir=REPLACELBPLOGDIR
+log=$logdir/$pluginname.log
+
+if [ -x /usr/bin/logger ]; then
+    /usr/bin/logger "loxberry-plugin-$pluginname - Starte Chromecast-4-Lox-Dienst"
+fi
+
+mkdir -p "$logdir" 2>/dev/null
+
+# Der Dienst braucht keine Rootrechte - er spricht nur mDNS, MQTT und UDP.
+# Deshalb als loxberry starten. Das war im Quelltext der Originalfassung
+# als offener Punkt vermerkt ("TODO do not run as root").
+su loxberry -c "nohup $pluginbindir/chromecast4lox-server.py >> $log 2>&1 &" >/dev/null 2>&1
+
+exit 0
