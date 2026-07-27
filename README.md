@@ -4,11 +4,18 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Herkunft und Pflege
+
 Grundlage ist das Plugin von **Aleš Berka (Aleq)**, Version 0.2.31, Apache-Lizenz 2.0
 ([aleq.eu/chromecast4lox](http://aleq.eu/chromecast4lox/) ·
 [LoxBerry-Wiki](https://wiki.loxberry.de/plugins/chromecast_4_lox/start)).
-Die Autorenangabe in `plugin.cfg` bleibt unverändert — LoxBerry identifiziert das
-Plugin darüber.
+
+Das Original wurde zuletzt 2022 angefasst und ist nicht mehr betreut. Diese
+Fortführung wird hier gepflegt. **Die Urheberschaft bleibt bei Aleš Berka** —
+Autorenangabe in `plugin.cfg` und die Apache-Lizenz sind unverändert. Das ist
+nicht nur eine Höflichkeit: die Lizenz verlangt es, und LoxBerry identifiziert
+ein Plugin über genau diese beiden Felder. Wer sie ändert, macht daraus für
+LoxBerry ein anderes Plugin, und jedes Update schlägt fehl.
 
 ## Version 1.0.0 — LoxBerry 4 und Hausstandard
 
@@ -104,6 +111,18 @@ Aus `Küche Lautsprecher` wird `Kueche_Lautsprecher`.
 - Der LoxBerry muss im **selben Netzsegment** wie die Chromecasts liegen —
   die Suche läuft über mDNS und geht nicht über VLAN-Grenzen.
 
+## Installation
+
+Über die LoxBerry-Plugin-Verwaltung, entweder als Datei-Upload des ZIP-Archivs
+oder direkt über die Adresse des Releases:
+
+    https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox/archive/refs/tags/v1.0.0.zip
+
+Auto-Update ist eingeschaltet und zeigt auf dieses Repository. In der
+Plugin-Verwaltung lässt sich danach zwischen *Aus*, *Nur benachrichtigen*,
+*Releases* und *Pre- und Releases* wählen.
+
 ## Lizenz
 
-Apache-Lizenz 2.0, wie das Ausgangsprojekt.
+Apache-Lizenz 2.0, wie das Ausgangsprojekt. Der Lizenztext in `LICENSE` und die
+Autorenangabe sind unverändert übernommen.
