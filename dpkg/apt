@@ -1,0 +1,9 @@
+# These packages will be installed by apt-get -y install PACKAGENAME
+# One line per package, use exact packagename as you would do for apt-get.
+#
+# pychromecast loest die frueher mitgelieferte Go-Binaerdatei "cast" ab.
+# Von der gab es keine arm64-Fassung; auf einem 64-Bit-Raspberry-Pi-OS -
+# und damit auf LoxBerry 4 - lief sie nicht.
+python3-pychromecast
+python3-zeroconf
+python3-paho-mqtt
