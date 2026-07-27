@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Chromecast 4 Lox - Plugin-Symbol nach Hausstandard.
+  Runde Scheibe in LoxBerry-Gruen #6dac20, Motiv weiss:
+  Bildschirm mit den drei Uebertragungsbogen (Cast-Sinnbild).
+  Keine fremde Wortmarke, kein Herstellerlogo.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+
+  <circle cx="256" cy="256" r="256" fill="#6dac20"/>
+  <circle cx="256" cy="256" r="232" fill="none" stroke="#ffffff" stroke-opacity="0.28" stroke-width="6"/>
+
+  <!-- Bildschirm -->
+  <rect x="118" y="140" width="276" height="196" rx="22" ry="22"
+        fill="none" stroke="#ffffff" stroke-width="26"/>
+  <!-- Standfuss -->
+  <rect x="216" y="352" width="80" height="16" rx="8" fill="#ffffff"/>
+
+  <!-- Uebertragungsbogen in der unteren linken Ecke -->
+  <g fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round">
+    <path d="M 158 296 a 40 40 0 0 1 40 40"/>
+    <path d="M 158 240 a 96 96 0 0 1 96 96"/>
+  </g>
+  <circle cx="160" cy="334" r="15" fill="#ffffff"/>
+</svg>
