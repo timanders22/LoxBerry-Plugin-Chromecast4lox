@@ -255,19 +255,38 @@ Aus dem Namen wird das MQTT-Thema gebildet &mdash; Umlaute und Leerzeichen werde
 <!-- ================= Reiter: Einbindung in Loxone ================= -->
 <div class="cc-pane" id="tab-loxone">
 
-<h2>In vier Schritten eingerichtet</h2>
+<h2>Einbindung in Loxone &mdash; Schritt f&uuml;r Schritt</h2>
+<div class="cc-small">Zwei Richtungen: das Plugin meldet den Zustand jedes Lautsprechers per MQTT an
+den Miniserver (Schritt&nbsp;1 bis&nbsp;4), und der Miniserver schickt umgekehrt Befehle &uuml;ber
+einen virtuellen Ausgang zur&uuml;ck (Schritt&nbsp;5).</div>
 
-<div class="cc-step"><b>1. Ger&auml;te eintragen</b> im Reiter Einstellungen. Die genauen Namen liefert
-im Reiter Test <i>Chromecasts im Netz suchen</i>.</div>
+<div class="cc-step"><b>Schritt 1: Ger&auml;te eintragen</b><br><br>
+Im Reiter <i>Einstellungen</i>. Die genauen Namen liefert im Reiter <i>Test</i> die Schaltfl&auml;che
+<i>Chromecasts im Netz suchen</i>. <b>Der Name muss zeichengenau stimmen</b> &mdash; das Plugin
+findet das Ger&auml;t nur &uuml;ber seinen Anzeigenamen aus der Google-Home-App.</div>
 
-<div class="cc-step"><b>2. Vorlagen herunterladen</b> (unten) &mdash; einmal die Eing&auml;nge, einmal die Ausg&auml;nge.</div>
+<div class="cc-step"><b>Schritt 2: Abo im MQTT-Gateway eintragen</b><br><br>
+<b>Ohne diesen Eintrag kommt am Miniserver nichts an</b> &mdash; einzutragen unter
+<i>System-Einstellungen &rarr; MQTT Gateway &rarr; Abonnements</i>:
+<div class="cc-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= cc_e($cc_praefix) ?>/#</div></div>
 
-<div class="cc-step"><b>3. In Loxone Config einlesen:</b> Rechtsklick auf den Miniserver &rarr;
-<i>Vorlage einf&uuml;gen</i> &rarr; heruntergeladene Datei w&auml;hlen. Das f&uuml;r beide Dateien.</div>
+<div class="cc-step"><b>Schritt 3: Vorlagen herunterladen</b><br><br>
+Unten stehen zwei Dateien bereit &mdash; einmal die Eing&auml;nge, einmal die Ausg&auml;nge.</div>
 
-<div class="cc-step"><b>4. Eing&auml;nge mit dem MQTT-Plugin verbinden.</b> Die Eingangsvorlage legt die
-Namen an; die Werte selbst liefert das MQTT-Gateway. Im Gateway unter <i>Incoming overview</i>
-erscheinen die Themen, sobald der Dienst l&auml;uft.</div>
+<div class="cc-step"><b>Schritt 4: In Loxone Config einlesen</b><br><br>
+Rechtsklick auf den Miniserver &rarr; <i>Vorlage einf&uuml;gen</i> &rarr; heruntergeladene Datei
+w&auml;hlen. Das f&uuml;r beide Dateien. Die Eingangsvorlage legt nur die Namen an; die Werte liefert
+das Gateway. Unter <i>Incoming overview</i> erscheinen die Themen, sobald der Dienst l&auml;uft.
+<b>Von Hand angelegt</b> hei&szlig;t ein Eingang
+<span class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;Ger&auml;t&gt;_playing</span> &mdash; das Gateway
+ersetzt jeden Schr&auml;gstrich durch einen Unterstrich.</div>
+
+<div class="cc-step"><b>Schritt 5: Kachel und Bedienung in der App</b><br><br>
+Einen <i>Status</i>-Baustein anlegen, <span class="cc-mono">v1</span> mit
+<span class="cc-mono">title</span> und <span class="cc-mono">v2</span> mit
+<span class="cc-mono">volume</span> verbinden. Zum Bedienen gen&uuml;gen zwei Taster f&uuml;r lauter
+und leiser sowie einer f&uuml;r Pause &mdash; sie h&auml;ngen an den virtuellen Ausgangsbefehlen aus
+der Ausgangsvorlage. Aufbau in Schritt&nbsp;6.</div>
 
 <h2>Wie die Befehle laufen</h2>
 <div class="cc-small" style="margin-bottom:8px;">
@@ -333,6 +352,41 @@ dazu <span class="cc-mono"><?= cc_e($cc_praefix) ?>/server/online</span> f&uuml;
 <tr><td><span class="cc-mono"><?= cc_e($b) ?></span></td><td><?= $erklaerung ?></td></tr>
 <?php } ?>
 </table>
+<h2>Schritt 6: Komplette Baustein-Liste zum 1:1-Nachbauen</h2>
+<div class="cc-small">So sieht die vollst&auml;ndige Logik auf der Programmierseite aus (jede Zeile =
+ein Baustein), am Beispiel <b>eines</b> Lautsprechers. <span class="cc-mono">&lt;G&gt;</span> steht
+f&uuml;r seinen Namen. Alle Bausteine findet man in Loxone Config &uuml;ber die Baustein-Suche (F5):</div>
+<table class="cc-tbl">
+<tr><th>#</th><th>Baustein (Typ)</th><th>Name (Vorschlag)</th><th>Parameter</th><th>Eing&auml;nge verbinden mit</th></tr>
+<tr><td>1</td><td>Virtueller Eingang</td><td class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_online</td><td>digital</td><td>&mdash; (kommt &uuml;ber das Gateway)</td></tr>
+<tr><td>2</td><td>Virtueller Eingang</td><td class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_playing</td><td>digital</td><td>&mdash;</td></tr>
+<tr><td>3</td><td>Virtueller Eingang</td><td class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_volume</td><td>analog, 0 bis 100</td><td>&mdash;</td></tr>
+<tr><td>4</td><td>Virtueller Eingang</td><td class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_muted</td><td>digital</td><td>&mdash;</td></tr>
+<tr><td>5</td><td>Virtueller Eingang (Text)</td><td class="cc-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_title</td><td>Text</td><td>&mdash;</td></tr>
+<tr><td>6</td><td>Virtueller Ausgang + Befehle</td><td>Chromecast</td><td>Adresse <span class="cc-mono">/dev/udp/<?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span>, Befehle aus der Ausgangsvorlage</td><td>&mdash; (wird von #8 bis #11 angesto&szlig;en)</td></tr>
+<tr><td>7</td><td>Merker (remanent, Visu)</td><td>Musik &lt;G&gt;</td><td>Visualisierung EIN</td><td>&mdash; (Bedienung in der App)</td></tr>
+<tr><td>8</td><td>Flankenerkennung (steigend)</td><td>Musik an</td><td>&mdash;</td><td>Eingang = #7 &rarr; Ausgangsbefehl <span class="cc-mono">play</span></td></tr>
+<tr><td>9</td><td>Flankenerkennung (fallend)</td><td>Musik aus</td><td>&mdash;</td><td>Eingang = #7 &rarr; Ausgangsbefehl <span class="cc-mono">stop</span></td></tr>
+<tr><td>10</td><td>Taster</td><td>Lauter</td><td>Visualisierung EIN</td><td>&rarr; Ausgangsbefehl <span class="cc-mono">volume_up</span></td></tr>
+<tr><td>11</td><td>Taster</td><td>Leiser</td><td>Visualisierung EIN</td><td>&rarr; Ausgangsbefehl <span class="cc-mono">volume_down</span></td></tr>
+<tr><td>12</td><td>NICHT</td><td>Lautsprecher nicht erreichbar</td><td>&mdash;</td><td>Eingang = #1</td></tr>
+<tr><td>13</td><td>Einschaltverz&ouml;gerung</td><td>Ausfall best&auml;tigt</td><td>1800&nbsp;s</td><td>Eingang = #12 &rarr; Benachrichtigung</td></tr>
+<tr><td>14</td><td>Status</td><td>Musik &lt;G&gt;</td><td>Statustext siehe Schritt&nbsp;5, Visualisierung EIN</td><td>v1 = #5, v2 = #3</td></tr>
+</table>
+<div class="cc-alert cc-info">
+<b>Zu #6:</b> der virtuelle Ausgang geht <b>nicht</b> an den LoxBerry, sondern an den UDP-Eingang des
+MQTT-Gateways. Das Gateway macht daraus eine MQTT-Nachricht, auf die dieses Plugin h&ouml;rt. Das ist
+der im LoxBerry-Wiki vorgesehene Weg und braucht keinen zus&auml;tzlichen Port.<br>
+<b>Zu #8 und #9:</b> ein virtueller Ausgangsbefehl feuert bei der Flanke 0&rarr;1, nicht dauerhaft.
+Ein Merker allein w&uuml;rde beim Ausschalten nichts ausl&ouml;sen &mdash; deshalb die zwei
+Flankenbausteine.<br>
+<b>Zu #13:</b> Chromecasts gehen von selbst in den Ruhezustand und melden sich dann als nicht
+erreichbar. Eine halbe Stunde Verz&ouml;gerung verhindert Meldungen &uuml;ber einen Normalzustand.<br>
+<b>Zu #1 bis #5:</b> die Namen enthalten den Ger&auml;tenamen. <b>Wird das Ger&auml;t in der
+Google-Home-App umbenannt, &auml;ndern sich alle Themen</b> &mdash; dann hier den Namen nachziehen
+und die Vorlagen neu erzeugen.
+</div>
+
 <div class="cc-small">
 Als MQTT-Thema: <span class="cc-mono"><?= cc_e($cc_praefix) ?>/&lt;Ger&auml;t&gt;/cmd/&lt;Befehl&gt;</span>.
 &Uuml;ber den UDP-Weg als Text: <span class="cc-mono">&lt;Ger&auml;t&gt;/&lt;BEFEHL&gt; &lt;Wert&gt;;</span> &mdash;
