@@ -1,6 +1,49 @@
-#!/bin/bash
-# Wird als Benutzer "root" ausgefuehrt.
+#!/bin/sh
+# Chromecast 4 Lox NG - Deinstallation
+#
+# Beendet wird ueber die PID-Datei, die daemon/daemon beim Start anlegt -
+# NICHT mehr ueber pkill -f.
+#
+# pkill -f "chromecast4lox_ng-server" traf jeden Prozess, in dessen
+# Kommandozeile die Zeichenkette irgendwo vorkam: einen Editor mit der
+# geoeffneten Datei, ein tail auf einen Pfad mit diesem Namen. Beim Beenden
+# ist das kein theoretisches Risiko - pkill schickt das Signal an ALLE
+# Treffer. Die PID-Datei gab es die ganze Zeit, sie wurde hier nur nie
+# benutzt.
 
-pkill -f chromecast4lox-server >/dev/null 2>&1
+BASE="${LBHOMEDIR:-/opt/loxberry}"
+PDIR="${3:-chromecast-4lox-ng}"
+PIDDATEI="$BASE/data/plugins/$PDIR/dienst.pid"
 
+beendet=0
+if [ -f "$PIDDATEI" ]; then
+    PID=$(cat "$PIDDATEI" 2>/dev/null)
+    case "$PID" in
+        ''|*[!0-9]*) PID="" ;;
+    esac
+    # Gegenprobe argumentweise, nicht als Teilzeichenkette: die
+    # Kommandozeile eines fremden Prozesses kann den Namen zufaellig
+    # enthalten, und ein kill an den Falschen ist nicht rueckgaengig zu
+    # machen.
+    if [ -n "$PID" ] && tr '\0' '\n' < "/proc/$PID/cmdline" 2>/dev/null \
+         | sed 's#.*/##' | grep -qx "chromecast4lox_ng-server.py"; then
+        kill "$PID" 2>/dev/null
+        # Zeit zum Aufraeumen lassen: der Dienst meldet beim Beenden noch
+        # seinen Zustand per MQTT, damit Loxone den Ausfall mitbekommt.
+        i=0
+        while [ $i -lt 20 ] && kill -0 "$PID" 2>/dev/null; do
+            sleep 0.25
+            i=$((i + 1))
+        done
+        kill -9 "$PID" 2>/dev/null
+        beendet=1
+    fi
+    rm -f "$PIDDATEI"
+fi
+
+if [ "$beendet" = "1" ]; then
+    echo "<OK> Dienst beendet."
+else
+    echo "<INFO> Kein laufender Dienst gefunden."
+fi
 exit 0

@@ -8,14 +8,26 @@ logdir=REPLACELBPLOGDIR
 log=$logdir/$pluginname.log
 
 if [ -x /usr/bin/logger ]; then
-    /usr/bin/logger "loxberry-plugin-$pluginname - Starte Chromecast-4-Lox-Dienst"
+    /usr/bin/logger "loxberry-plugin-$pluginname - Starte Chromecast-4-Lox-NG-Dienst"
 fi
 
-mkdir -p "$logdir" 2>/dev/null
+datadir=REPLACELBPDATADIR
+piddatei=$datadir/dienst.pid
+
+mkdir -p "$logdir" "$datadir" 2>/dev/null
 
 # Der Dienst braucht keine Rootrechte - er spricht nur mDNS, MQTT und UDP.
 # Deshalb als loxberry starten. Das war im Quelltext der Originalfassung
 # als offener Punkt vermerkt ("TODO do not run as root").
-su loxberry -c "nohup $pluginbindir/chromecast4lox-server.py >> $log 2>&1 &" >/dev/null 2>&1
+#
+# Die Prozessnummer wird in dieselbe Datei geschrieben, die auch die
+# Oberflaeche benutzt. Ohne sie bleibt nur die Suche nach dem Namen, und
+# 'pgrep -f chromecast4lox_ng-server' trifft jede Befehlszeile, in der die
+# Zeichenkette vorkommt - auch einen Editor, der die Datei geoeffnet hat.
+#
+# echo $! muss INNERHALB der su-Zeichenkette stehen: draussen waere es die
+# Nummer des su-Prozesses, und der beendet sich sofort.
+su loxberry -c "nohup '$pluginbindir/chromecast4lox_ng-server.py' >> '$log' 2>&1 & echo \$! > '$piddatei'" >/dev/null 2>&1
+chown loxberry:loxberry "$piddatei" 2>/dev/null
 
 exit 0

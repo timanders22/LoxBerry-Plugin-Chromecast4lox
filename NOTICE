@@ -1,0 +1,80 @@
+Chromecast 4 Lox NG
+===================
+
+Dieses Werk steht unter der Apache License 2.0 (siehe LICENSE).
+
+
+Urspruengliches Werk
+--------------------
+Chromecast 4 Lox
+Copyright Ales Berka (Aleq)
+http://aleq.eu/chromecast4lox/
+https://wiki.loxberry.de/plugins/chromecast_4_lox/start
+Stand 0.2.31, Apache License 2.0
+
+
+Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
+-----------------------------------------------------------------------
+
+1.0.0  Neufassung fuer LoxBerry 4: Dienst in Python mit pychromecast statt der
+       mitgelieferten Go-Binaerdateien, dadurch ohne Architekturbindung.
+       Oberflaeche nach LoxBerry-Hausstandard. MQTT retained als Weg zum
+       Miniserver, UDP bleibt als Rueckfallweg erhalten. Dienst laeuft als
+       Benutzer "loxberry" statt als root - im Quelltext der Originalfassung
+       stand dazu ein offener Punkt ("TODO do not run as root").
+
+1.1.0  Reiter "Einbindung in Loxone" mit vollstaendiger Bausteinliste.
+
+1.2.0  Versionsnummer an allen Stellen vereinheitlicht. Beenden des Dienstes
+       ueber eine PID-Datei statt ueber "pkill -f".
+
+1.2.1  Eigene Kennung und eigener Name: "Chromecast 4 Lox NG", Ordner
+       chromecast-4lox-ng.
+
+       WARUM DIE KENNUNG WECHSELT: LoxBerry benutzt [AUTHOR] NAME und EMAIL
+       zusammen mit [PLUGIN] NAME als Kennung des Plugins, nicht als
+       Urhebervermerk. Bis 1.1.0 trug diese Fortfuehrung die Kennung des
+       fremden Plugins - samt privater Mailadresse des Originalautors -,
+       zeigte mit AUTOMATIC_UPDATES aber auf ein anderes Repository. Diese
+       Mischform loest LoxBerry nicht auf, und Fehlerberichte waeren beim
+       Originalautor gelandet, der mit dieser Fassung nichts zu tun hat.
+
+       WARUM ZUSAETZLICH DER ORDNER: Blieben Ordner und Skriptname gleich,
+       teilten sich Original und Fortfuehrung bei paralleler Installation
+       Konfiguration, Protokoll und Datenverzeichnis. Umbenannt wurden
+
+           config/chromecast-4lox.cfg   -> config/chromecast-4lox-ng.cfg
+           bin/chromecast4lox-server.py -> bin/chromecast4lox_ng-server.py
+
+       Der Skriptname musste mitwandern, weil postroot.sh, uninstall/uninstall
+       und die Oberflaeche als Rueckfallebene nach dem Prozessnamen suchen
+       ("pgrep -o -f [c]hromecast4lox-server"). Waere der Name geblieben,
+       haette diese Suche den Prozess der ORIGINALFASSUNG gefunden - und
+       postroot.sh haette ihn bei jeder Installation beendet.
+
+       In der Oberflaeche stand zusaetzlich ein Rueckfall auf das
+       Konfigurationsverzeichnis "chromecast-4lox", falls das eigene fehlt.
+       Der zeigt jetzt auf "chromecast-4lox-ng"; sonst haette die
+       Fortfuehrung in die Konfiguration des Originals geschrieben.
+
+       DIE PID-DATEI liegt nicht auf der Ramdisk, sondern unter
+       <datadir>/dienst.pid - also ohnehin im plugin-eigenen Verzeichnis, das
+       mit dem Ordnernamen mitwandert.
+
+       ABSICHTLICH NICHT UMBENANNT: das MQTT-Themenpraefix "chromecast4lox",
+       der UDP-Port 7090 und die Titel in den erzeugten Loxone-Vorlagen. Das
+       sind Namen auf der LOXONE-Seite: wer sie aendert, muss saemtliche
+       Bausteine im Miniserver nachziehen. Beide Werte sind ohnehin in der
+       Oberflaeche einstellbar - wer Original und Fortfuehrung wirklich
+       gleichzeitig betreibt, aendert sie dort. Ein Zwang dazu bestuende
+       sonst fuer jeden, der nur die Fortfuehrung benutzt.
+
+Die urheberrechtliche Nennung des Originalautors steht weiterhin in dieser
+Datei, im README, in der Hilfeseite und im Kopf der Quelldateien.
+
+
+Marken
+------
+Chromecast und Google Cast sind Marken von Google LLC. Dieses Plugin steht in
+keiner Verbindung zu Google und wird von Google weder herausgegeben noch
+unterstuetzt.

@@ -46,10 +46,10 @@ PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
 
 echo "<INFO> Command is: $COMMAND"
-echo "<INFO> Temporary folder is: $TEMPDIR"
+echo "<INFO> Temporary folder is: $PTEMPDIR"
 echo "<INFO> (Short) Name is: $PSHNAME"
-echo "<INFO> Installation folder is: $ARGV3"
-echo "<INFO> Plugin version is: $ARGV4"
+echo "<INFO> Installation folder is: $PDIR"
+echo "<INFO> Plugin version is: $PVERSION"
 echo "<INFO> Plugin CGI folder is: $PCGI"
 echo "<INFO> Plugin HTML folder is: $PHTML"
 echo "<INFO> Plugin Template folder is: $PTEMPL"
@@ -64,7 +64,24 @@ echo "<INFO> Plugin BIN folder is: $PBIN"
 #date >> $logfile
 
 echo "<INFO> Killing any old instances..."
-pkill -f chromecast-4lox-server.py
+# Gezielt ueber die PID-Datei, mit Geduld. 'pkill -f' traefe jede
+# Befehlszeile, in der die Zeichenkette vorkommt.
+PIDDATEI="$LBHOMEDIR/data/plugins/$PDIR/dienst.pid"
+P=""
+[ -f "$PIDDATEI" ] && P=$(cat "$PIDDATEI" 2>/dev/null)
+[ -z "$P" ] && P=$(pgrep -o -f "[c]hromecast4lox_ng-server" 2>/dev/null)
+if [ -n "$P" ] && kill -0 "$P" 2>/dev/null; then
+    kill "$P" 2>/dev/null
+    i=0
+    while [ $i -lt 10 ] && kill -0 "$P" 2>/dev/null; do
+        sleep 1
+        i=$((i + 1))
+    done
+    if kill -0 "$P" 2>/dev/null && grep -qa "chromecast4lox_ng-server" "/proc/$P/cmdline" 2>/dev/null; then
+        kill -9 "$P" 2>/dev/null
+    fi
+fi
+rm -f "$PIDDATEI"
 echo "<INFO> Starting server"
 bash REPLACELBHOMEDIR/system/daemons/plugins/$PSHNAME
 

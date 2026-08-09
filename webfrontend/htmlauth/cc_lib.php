@@ -1,6 +1,6 @@
 <?php
 /**
- * Chromecast 4 Lox - gemeinsame Hilfsfunktionen
+ * Chromecast 4 Lox NG - gemeinsame Hilfsfunktionen
  *
  * Die Konfiguration bleibt im INI-Format (Abschnitt [CONFIG]), damit sie mit
  * Config_Lite und mit dem Python-Dienst gleichermassen lesbar ist.
@@ -34,7 +34,7 @@ function cc_paths()
         $dir = basename(dirname(dirname(__DIR__)));
     }
     if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        foreach (array(basename(dirname(__DIR__)), 'chromecast-4lox') as $cand) {
+        foreach (array(basename(dirname(__DIR__)), 'chromecast-4lox-ng') as $cand) {
             if (is_dir($home . '/config/plugins/' . $cand)) {
                 $dir = $cand;
                 break;
@@ -46,17 +46,19 @@ function cc_paths()
             'home'   => $home,
             'plugin' => $dir,
             'config' => $home . '/config/plugins/' . $dir . '/' . $dir . '.cfg',
-            'bindir' => $home . '/bin/plugins/' . $dir,
-            'logdir' => $home . '/log/plugins/' . $dir,
+            'bindir'  => $home . '/bin/plugins/' . $dir,
+            'logdir'  => $home . '/log/plugins/' . $dir,
+            'datadir' => $home . '/data/plugins/' . $dir,
         );
     } else {
         $base = dirname(dirname(__DIR__));
         $p = array(
             'home'   => '',
             'plugin' => $dir,
-            'config' => $base . '/config/chromecast-4lox.cfg',
-            'bindir' => $base . '/bin',
-            'logdir' => sys_get_temp_dir(),
+            'config' => $base . '/config/chromecast-4lox-ng.cfg',
+            'bindir'  => $base . '/bin',
+            'logdir'  => sys_get_temp_dir(),
+            'datadir' => sys_get_temp_dir(),
         );
     }
     return $p;
@@ -74,6 +76,33 @@ function cc_defaults()
         'intervall'           => '10',
         'aktualisierung'      => '60',
         'lautstaerke_schritt' => '5',
+        // --- Ansage (TTS). Feldnamen und Bedeutung wie im
+        // Abfahrtsassistenten 1.5.0 - wer dort eingerichtet hat, traegt
+        // hier dasselbe ein.
+        'tts_modus'           => 'chromecast',
+        'tts_ip'              => '',
+        'tts_port'            => '7091',
+        'tts_zonen'           => '1',
+        'tts_lautstaerke'     => '8',
+        'tts_sprache'         => 'de',
+        'tts_vorlage'         => '',
+        'tts_pegel'           => '',
+        'tts_fortsetzen'      => '1',
+        'gruppen'             => '1',
+    );
+}
+
+/** Die Ausgabewege der Ansage. Dieselben wie im Abfahrtsassistenten,
+ *  plus 'chromecast' - denn ein Chromecast nimmt keine TTS-Adresse
+ *  entgegen, sondern spielt eine Audiodatei ab. */
+function cc_tts_modi()
+{
+    return array(
+        'chromecast'  => 'TTS.M_CHROMECAST',
+        'musicserver' => 'TTS.M_MUSICSERVER',
+        'ms4h'        => 'TTS.M_MS4H',
+        'audioserver' => 'TTS.M_AUDIOSERVER',
+        'custom'      => 'TTS.M_CUSTOM',
     );
 }
 
@@ -117,7 +146,7 @@ function cc_config_write($cfg)
 {
     $file = cc_paths()['config'];
     @mkdir(dirname($file), 0775, true);
-    $txt = "; Chromecast 4 Lox\n; " . date('D M j H:i:s Y') . "\n\n[CONFIG]\n";
+    $txt = "; Chromecast 4 Lox NG\n; " . date('D M j H:i:s Y') . "\n\n[CONFIG]\n";
     foreach (cc_defaults() as $k => $vorgabe) {
         $v = isset($cfg[$k]) ? $cfg[$k] : $vorgabe;
         // Mehrzeilige Geraeteliste auf eine Zeile bringen - INI kennt
@@ -160,15 +189,71 @@ function cc_thema($name)
         array('ae', 'oe', 'ue', 'Ae', 'Oe', 'Ue', 'ss'),
         (string) $name
     );
-    if (function_exists('iconv')) {
-        $um = @iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE', $name);
-        if ($um !== false) {
-            $name = $um;
-        }
-    }
+    // Umschrift OHNE iconv.
+    //
+    // Bis 1.1.0 stand hier iconv('UTF-8', 'ASCII//TRANSLIT//IGNORE'). Das
+    // Ergebnis haengt an der Locale des Webservers: unter LC_ALL=C macht
+    // glibc aus einem unbekannten Zeichen ein '?', mit //IGNORE faellt es
+    // ganz weg - Python dagegen laesst es stehen, und die Regex weiter
+    // unten macht daraus einen Unterstrich. Aus 'Ræv' wuerde dann in PHP
+    // 'Rv' und in Python 'R_v'. Die Loxone-Vorlage lauschte auf ein Thema,
+    // das der Dienst nie sendet, und niemand saehe warum.
+    //
+    // Deshalb eine feste Tabelle: sie kennt genau die vorgezeichneten
+    // lateinischen Buchstaben, deren Zerlegung auch Python vornimmt
+    // (NFKD, dann Wegfall der kombinierenden Zeichen). Alles andere bleibt
+    // stehen und wird - wie in Python - zu einem Unterstrich.
+    $name = strtr($name, cc_umschrift());
     $name = preg_replace('/[^A-Za-z0-9_-]+/', '_', $name);
     $name = trim($name, '_');
     return $name !== '' ? $name : 'geraet';
+}
+
+/**
+ * Vorgezeichnete lateinische Buchstaben auf ihren Grundbuchstaben.
+ *
+ * Das ist genau das, was unicodedata.normalize('NFKD', ...) plus Wegfall
+ * der kombinierenden Zeichen im Python-Dienst tut - nur ohne Abhaengigkeit
+ * von iconv und der Locale. Zeichen, die keine solche Zerlegung haben
+ * (aeaeae, oe, Thorn, Eszett und alles Nichtlateinische), stehen bewusst
+ * NICHT in der Tabelle: Python laesst sie ebenfalls stehen, und beide
+ * Seiten machen daraus denselben Unterstrich.
+ *
+ * Die Selbstpruefung im Reiter Test haelt beide Verfahren gegeneinander -
+ * an den Namen, die wirklich eingetragen sind.
+ */
+function cc_umschrift()
+{
+    static $t = null;
+    if ($t !== null) {
+        return $t;
+    }
+    $t = array(
+        'À'=>'A','Á'=>'A','Â'=>'A','Ã'=>'A','Å'=>'A','Ā'=>'A','Ă'=>'A','Ą'=>'A',
+        'à'=>'a','á'=>'a','â'=>'a','ã'=>'a','å'=>'a','ā'=>'a','ă'=>'a','ą'=>'a',
+        'Ç'=>'C','Ć'=>'C','Ĉ'=>'C','Ċ'=>'C','Č'=>'C',
+        'ç'=>'c','ć'=>'c','ĉ'=>'c','ċ'=>'c','č'=>'c',
+        'Ď'=>'D','ď'=>'d',
+        'È'=>'E','É'=>'E','Ê'=>'E','Ë'=>'E','Ē'=>'E','Ĕ'=>'E','Ė'=>'E','Ę'=>'E','Ě'=>'E',
+        'è'=>'e','é'=>'e','ê'=>'e','ë'=>'e','ē'=>'e','ĕ'=>'e','ė'=>'e','ę'=>'e','ě'=>'e',
+        'Ĝ'=>'G','Ğ'=>'G','Ġ'=>'G','Ģ'=>'G','ĝ'=>'g','ğ'=>'g','ġ'=>'g','ģ'=>'g',
+        'Ĥ'=>'H','ĥ'=>'h',
+        'Ì'=>'I','Í'=>'I','Î'=>'I','Ï'=>'I','Ĩ'=>'I','Ī'=>'I','Ĭ'=>'I','Į'=>'I','İ'=>'I',
+        'ì'=>'i','í'=>'i','î'=>'i','ï'=>'i','ĩ'=>'i','ī'=>'i','ĭ'=>'i','į'=>'i',
+        'Ĵ'=>'J','ĵ'=>'j','Ķ'=>'K','ķ'=>'k',
+        'Ĺ'=>'L','Ļ'=>'L','Ľ'=>'L','ĺ'=>'l','ļ'=>'l','ľ'=>'l',
+        'Ñ'=>'N','Ń'=>'N','Ņ'=>'N','Ň'=>'N','ñ'=>'n','ń'=>'n','ņ'=>'n','ň'=>'n',
+        'Ò'=>'O','Ó'=>'O','Ô'=>'O','Õ'=>'O','Ō'=>'O','Ŏ'=>'O','Ő'=>'O',
+        'ò'=>'o','ó'=>'o','ô'=>'o','õ'=>'o','ō'=>'o','ŏ'=>'o','ő'=>'o',
+        'Ŕ'=>'R','Ŗ'=>'R','Ř'=>'R','ŕ'=>'r','ŗ'=>'r','ř'=>'r',
+        'Ś'=>'S','Ŝ'=>'S','Ş'=>'S','Š'=>'S','ś'=>'s','ŝ'=>'s','ş'=>'s','š'=>'s',
+        'Ţ'=>'T','Ť'=>'T','ţ'=>'t','ť'=>'t',
+        'Ù'=>'U','Ú'=>'U','Û'=>'U','Ũ'=>'U','Ū'=>'U','Ŭ'=>'U','Ů'=>'U','Ű'=>'U','Ų'=>'U',
+        'ù'=>'u','ú'=>'u','û'=>'u','ũ'=>'u','ū'=>'u','ŭ'=>'u','ů'=>'u','ű'=>'u','ų'=>'u',
+        'Ŵ'=>'W','ŵ'=>'w','Ý'=>'Y','Ŷ'=>'Y','Ÿ'=>'Y','ý'=>'y','ŷ'=>'y','ÿ'=>'y',
+        'Ź'=>'Z','Ż'=>'Z','Ž'=>'Z','ź'=>'z','ż'=>'z','ž'=>'z',
+    );
+    return $t;
 }
 
 /** Alle Zustandsthemen eines Geraets, mit Erklaerung. */
@@ -176,6 +261,8 @@ function cc_status_themen()
 {
     return array(
         'online'   => array('Erreichbar (1/0)', 'digital'),
+        'type'     => array('Art: cast, audio oder group', 'text'),
+        'group'    => array('Lautsprechergruppe (1/0)', 'digital'),
         'state'    => array('Zustand: PLAYING, PAUSED, IDLE, BUFFERING, OFFLINE', 'text'),
         'playing'  => array('Spielt gerade (1/0)', 'digital'),
         'volume'   => array('Lautst&auml;rke 0 bis 100', 'analog'),
@@ -193,7 +280,7 @@ function cc_status_themen()
 function cc_befehle()
 {
     return array(
-        'play'        => 'Wiedergabe fortsetzen. Enth&auml;lt die Nutzlast eine Adresse mit <span class="cc-mono">://</span>, wird stattdessen dieses Medium gestartet.',
+        'play'        => 'Wiedergabe fortsetzen. Enth&auml;lt die Nutzlast eine Adresse mit <span class="sm-mono">://</span>, wird stattdessen dieses Medium gestartet.',
         'pause'       => 'Pause.',
         'stop'        => 'Wiedergabe beenden.',
         'quit'        => 'Laufende App auf dem Ger&auml;t schlie&szlig;en.',
@@ -205,6 +292,8 @@ function cc_befehle()
         'next'        => 'N&auml;chster Titel, wenn die App das unterst&uuml;tzt.',
         'prev'        => 'Vorheriger Titel.',
         'seek'        => 'An Position springen, in Sekunden.',
+        'tts'         => 'Ansage sprechen. Die Nutzlast ist der Text. Danach wird '
+                       . 'fortgesetzt, was vorher lief (abschaltbar).',
     );
 }
 
@@ -276,33 +365,96 @@ function cc_localip()
     return '127.0.0.1';
 }
 
-/** Laeuft der Dienst? Rueckgabe: PID oder 0. */
+function cc_pid_datei()
+{
+    return cc_paths()['datadir'] . '/dienst.pid';
+}
+
+/**
+ * Laeuft der Dienst? Rueckgabe: PID oder 0.
+ *
+ * Zuerst die PID-Datei, und die eingetragene Nummer wird gegen
+ * /proc/<pid>/cmdline gehalten. Die Suche nach dem Namen bleibt als
+ * Rueckfallebene fuer einen Dienst, der noch vor 1.2.0 gestartet wurde.
+ *
+ * Warum nicht einfach pgrep: 'pgrep -f chromecast4lox_ng-server' trifft jede
+ * Befehlszeile, in der diese Zeichenkette vorkommt - ein Editor auf der
+ * Datei genuegt -, und '-o' nimmt davon den AELTESTEN Treffer, also
+ * womoeglich genau den fremden. Die Oberflaeche zeigte dann einen
+ * laufenden Dienst, den es nicht gibt, und 'pkill -f' haette den fremden
+ * Prozess erwischt.
+ */
 function cc_dienst_pid()
 {
+    $datei = cc_pid_datei();
+    if (is_file($datei)) {
+        $pid = (int) trim((string) @file_get_contents($datei));
+        if ($pid > 0 && is_dir('/proc/' . $pid)) {
+            $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+            if (strpos($cmd, 'chromecast4lox_ng-server') !== false) {
+                return $pid;
+            }
+        }
+        @unlink($datei);   // zeigt ins Leere - von einem Absturz uebrig
+    }
     $out = array();
-    @exec('pgrep -o -f chromecast4lox-server 2>/dev/null', $out);
-    return $out ? (int) $out[0] : 0;
+    @exec('pgrep -o -f "[c]hromecast4lox_ng-server" 2>/dev/null', $out);
+    $pid = $out ? (int) $out[0] : 0;
+    if ($pid > 0 && is_dir('/proc/' . $pid)) {
+        $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
+        if (strpos($cmd, 'chromecast4lox_ng-server') !== false
+            && strpos($cmd, 'python') !== false) {
+            return $pid;
+        }
+    }
+    return 0;
 }
 
 /** Dienst starten, stoppen, neu starten. */
 function cc_dienst($aktion)
 {
     $p = cc_paths();
-    $skript = $p['bindir'] . '/chromecast4lox-server.py';
+    $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
     $meldungen = array();
 
+    $datei = cc_pid_datei();
     if (in_array($aktion, array('stop', 'restart'), true)) {
-        @exec('pkill -f chromecast4lox-server 2>&1', $meldungen);
-        sleep(1);
+        $pid = cc_dienst_pid();
+        if ($pid > 0) {
+            @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
+            // Zeit lassen: der Dienst meldet server/online=0 und die Geraete
+            // offline. Hart abgeschossen bliebe im Broker ein retained '1'
+            // stehen, und Loxone glaubte weiter an einen laufenden Dienst.
+            for ($i = 0; $i < 20; $i++) {
+                usleep(500000);
+                if (cc_dienst_pid() === 0) {
+                    break;
+                }
+            }
+            if (cc_dienst_pid() === $pid) {
+                @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
+                usleep(500000);
+                $meldungen[] = 'Der Dienst reagierte nicht auf SIGTERM und wurde abgeschossen.';
+            }
+        } else {
+            $meldungen[] = 'Es lief kein Dienst.';
+        }
+        @unlink($datei);
     }
     if (in_array($aktion, array('start', 'restart'), true)) {
         if (!is_file($skript)) {
             return 'Dienst nicht gefunden: ' . $skript;
         }
         $log = $p['logdir'] . '/' . $p['plugin'] . '.log';
+        @mkdir(dirname($datei), 0775, true);
         @exec('nohup ' . escapeshellarg($skript) . ' >> ' . escapeshellarg($log)
-            . ' 2>&1 & echo gestartet', $meldungen);
-        sleep(2);
+            . ' 2>&1 & echo $! > ' . escapeshellarg($datei) . '; echo gestartet', $meldungen);
+        for ($i = 0; $i < 16; $i++) {
+            usleep(500000);
+            if (cc_dienst_pid() > 0) {
+                break;
+            }
+        }
     }
     return implode("\n", $meldungen);
 }
@@ -427,7 +579,7 @@ function cc_vorlage($art, $cfg, $geraete)
 {
     $praefix = cc_cfg($cfg, 'themenpraefix', 'chromecast4lox');
     $ip = cc_localip();
-    $fuss = 'Erzeugt vom LoxBerry-Plugin Chromecast 4 Lox (' . date('d.m.Y') . ')';
+    $fuss = 'Erzeugt vom LoxBerry-Plugin Chromecast 4 Lox NG (' . date('d.m.Y') . ')';
 
     if ($art === 'mqtt_in') {
         $cmds = array(array(
@@ -499,4 +651,69 @@ function cc_vorlage($art, $cfg, $geraete)
     }
 
     return array('', '');
+}
+
+/* ==================================================================
+ * Sprache (Pflicht: Deutsch und Englisch)
+ *
+ * Englisch ist die Rueckfallebene, nicht Deutsch: wer eine dritte Sprache
+ * eingestellt hat, versteht eher Englisch. Deshalb muss language_en.ini
+ * immer vollstaendig sein.
+ * ================================================================== */
+
+function cc_sprache()
+{
+    $sprache = 'de';
+    if (class_exists('LBSystem', false) && method_exists('LBSystem', 'lblanguage')) {
+        $sprache = LBSystem::lblanguage();
+    } elseif (getenv('LBLANG')) {
+        $sprache = getenv('LBLANG');
+    }
+    $sprache = strtolower(substr((string) $sprache, 0, 2));
+    return in_array($sprache, array('de', 'en'), true) ? $sprache : 'en';
+}
+
+/**
+ * Text zu einem Schluessel "ABSCHNITT.SCHLUESSEL".
+ *
+ * Ist der Schluessel unbekannt, wird er selbst zurueckgegeben - so faellt
+ * beim Durchsehen sofort auf, was noch fehlt, statt dass die Seite leer
+ * bleibt.
+ */
+function cc_t($schluessel)
+{
+    static $texte = null;
+    if ($texte === null) {
+        // Installiert liegen die Dateien unter
+        // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
+        // sich aus dem Ablageort dieser Datei.
+        $home = getenv('LBHOMEDIR');
+        if (!$home || !is_dir($home)) {
+            foreach (array('/opt/loxberry', '/home/loxberry/loxberry') as $k) {
+                if (is_dir($k)) { $home = $k; break; }
+            }
+        }
+        $ordner = basename(dirname(__FILE__));
+        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
+        if (!is_dir($pfad)) {
+            // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
+            $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
+        }
+        $texte = @parse_ini_file($pfad . '/language_' . cc_sprache() . '.ini',
+                                 true, INI_SCANNER_RAW);
+        if (!is_array($texte)) { $texte = array(); }
+        $rueck = @parse_ini_file($pfad . '/language_en.ini', true, INI_SCANNER_RAW);
+        if (is_array($rueck)) { $texte = array_replace_recursive($rueck, $texte); }
+        // parse_ini_file mit INI_SCANNER_RAW liefert die Werte samt der
+        // Anfuehrungszeichen zurueck, in die sie in der Datei stehen muessen.
+        // Die gehoeren nicht in die Ausgabe.
+        foreach ($texte as $ab => $paare) {
+            if (!is_array($paare)) { continue; }
+            foreach ($paare as $s => $w) {
+                $texte[$ab][$s] = trim((string) $w, '"');
+            }
+        }
+    }
+    list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
+    return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }

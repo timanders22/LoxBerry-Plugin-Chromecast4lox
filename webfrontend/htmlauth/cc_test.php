@@ -1,6 +1,6 @@
 <?php
 /**
- * Chromecast 4 Lox - Aktionen des Reiters Test
+ * Chromecast 4 Lox NG - Aktionen des Reiters Test
  *
  * Jede Funktion liefert array(Ueberschrift, Text). Der Text wird von der
  * Oberflaeche maskiert ausgegeben, hier also bewusst als Klartext erzeugt.
@@ -38,7 +38,14 @@ function cc_test_ausfuehren($was, $geraet = '')
                 $t .= "Ohne Geraet in den Einstellungen tut der Dienst nichts.\n"
                     . "Mit \"Chromecasts im Netz suchen\" die genauen Namen ermitteln.\n\n";
             }
-            $t .= cc_sh('ps -o pid,etime,rss,args -C python3 2>/dev/null | grep -iE "chromecast|PID"');
+            // pgrep statt 'ps -C python3': der Parameter -C bindet an den
+            // genauen Namen der ausfuehrbaren Datei. Startet LoxBerry den
+            // Dienst unter python3.11 - oder laeuft er ueber das Shebang der
+            // Datei selbst -, bleibt die Ausgabe leer, und im Reiter Test
+            // stuende nichts, obwohl der Dienst laeuft.
+            $t .= cc_sh('pgrep -a -f "[c]hromecast4lox-server" 2>/dev/null');
+            $t .= "\n" . cc_sh('ps -o pid,etime,rss,args -p '
+                . (int) cc_dienst_pid() . ' 2>/dev/null');
             return array('Zustand des Dienstes', trim($t) !== '' ? $t : 'Keine Angaben.');
 
         case 'suchen':

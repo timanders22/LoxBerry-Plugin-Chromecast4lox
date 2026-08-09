@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Chromecast 4 Lox - Geraetesuche
+Chromecast 4 Lox NG - Geraetesuche
 
 Sucht Chromecasts im Netz und gibt sie als Klartexttabelle aus. Wird vom
 Reiter Test aufgerufen. Der ausgegebene Name ist genau der, der in die

@@ -46,10 +46,10 @@ PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
 
 echo "<INFO> Command is: $COMMAND"
-echo "<INFO> Temporary folder is: $TEMPDIR"
+echo "<INFO> Temporary folder is: $PTEMPDIR"
 echo "<INFO> (Short) Name is: $PSHNAME"
-echo "<INFO> Installation folder is: $ARGV3"
-echo "<INFO> Plugin version is: $ARGV4"
+echo "<INFO> Installation folder is: $PDIR"
+echo "<INFO> Plugin version is: $PVERSION"
 echo "<INFO> Plugin CGI folder is: $PCGI"
 echo "<INFO> Plugin HTML folder is: $PHTML"
 echo "<INFO> Plugin Template folder is: $PTEMPL"
@@ -58,19 +58,19 @@ echo "<INFO> Plugin Log folder (on RAMDISK!) is: $PLOG"
 echo "<INFO> Plugin CONFIG folder is: $PCONFIG"
 
 echo "<INFO> Creating temporary folders for upgrading"
-mkdir /tmp/uploads/$PTEMPDIR\_upgrade
-mkdir /tmp/uploads/$PTEMPDIR\_upgrade/config
-mkdir /tmp/uploads/$PTEMPDIR\_upgrade/log
-mkdir /tmp/uploads/$PTEMPDIR\_upgrade/files
+mkdir /tmp/uploads/${PTEMPDIR}_upgrade
+mkdir /tmp/uploads/${PTEMPDIR}_upgrade/config
+mkdir /tmp/uploads/${PTEMPDIR}_upgrade/log
+mkdir /tmp/uploads/${PTEMPDIR}_upgrade/files
 
 echo "<INFO> Backing up existing config files"
-cp -v -r $LBHOMEDIR/config/plugins/$PDIR/ /tmp/uploads/$PTEMPDIR\_upgrade/config
+cp -v -r $LBHOMEDIR/config/plugins/$PDIR/ /tmp/uploads/${PTEMPDIR}_upgrade/config
 
 echo "<INFO> Backing up existing log files"
-cp -v -r $LBHOMEDIR/log/plugins/$PDIR/ /tmp/uploads/$PTEMPDIR\_upgrade/log
+cp -v -r $LBHOMEDIR/log/plugins/$PDIR/ /tmp/uploads/${PTEMPDIR}_upgrade/log
 
 echo "<INFO> Backing up existing backup archives"
-cp -v -r $LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/ /tmp/uploads/$PTEMPDIR\_upgrade/files
+cp -v -r $LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/ /tmp/uploads/${PTEMPDIR}_upgrade/files
 
 # Exit with Status 0
 exit 0

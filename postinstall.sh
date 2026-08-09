@@ -44,10 +44,10 @@ PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
 
 echo "<INFO> Command is: $COMMAND"
-echo "<INFO> Temporary folder is: $TEMPDIR"
+echo "<INFO> Temporary folder is: $PTEMPDIR"
 echo "<INFO> (Short) Name is: $PSHNAME"
-echo "<INFO> Installation folder is: $ARGV3"
-echo "<INFO> Plugin version is: $ARGV4"
+echo "<INFO> Installation folder is: $PDIR"
+echo "<INFO> Plugin version is: $PVERSION"
 echo "<INFO> Plugin CGI folder is: $PCGI"
 echo "<INFO> Plugin HTML folder is: $PHTML"
 echo "<INFO> Plugin Template folder is: $PTEMPL"
@@ -57,9 +57,9 @@ echo "<INFO> Plugin CONFIG folder is: $PCONFIG"
 echo "<INFO> Plugin SBIN folder is: $PSBIN"
 echo "<INFO> Plugin BIN folder is: $PBIN"
 
-# --- Chromecast 4 Lox ---------------------------------------------------
+# --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
-chmod 755 "$PBIN"/chromecast4lox-server.py "$PBIN"/cc_discover.py 2>/dev/null
+chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie
 # eingerichtet haben; schlaegt das fehl, laeuft der Dienst nicht und der

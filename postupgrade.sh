@@ -47,21 +47,50 @@ PBIN=$LBPBIN/$PDIR
 ARGV6=$6 # Full path to temporary installation folder
 
 
-echo "<INFO> Copy back existing config files"
-cp -v -r /tmp/uploads/$PTEMPDIR\_upgrade/config/$PDIR/* $LBHOMEDIR/config/plugins/$PDIR/ 
+# Zurueckspielen - aber nur, wenn im Quellordner ueberhaupt etwas liegt.
+#
+# 'cp -r ordner/*' bei leerem Ordner laesst die Shell das Sternchen woertlich
+# stehen, und cp meldet "cannot stat '.../*': No such file or directory".
+# Das bricht das Skript zwar nicht ab (kein set -e), aber im
+# Installationsprotokoll steht eine Fehlermeldung, die niemand deuten kann -
+# und die den Blick auf echte Fehler verstellt.
+zurueck() {
+    quelle=$1
+    ziel=$2
+    zweck=$3
+    if [ ! -d "$quelle" ]; then
+        echo "<INFO> $zweck: nichts gesichert (Ordner fehlt) - uebersprungen."
+        return 0
+    fi
+    if [ -z "$(ls -A "$quelle" 2>/dev/null)" ]; then
+        echo "<INFO> $zweck: nichts gesichert (Ordner leer) - uebersprungen."
+        return 0
+    fi
+    mkdir -p "$ziel" 2>/dev/null
+    cp -v -r "$quelle"/. "$ziel"/ && echo "<OK> $zweck zurueckgespielt."
+}
 
-echo "<INFO> Copy back existing log files"
-cp -v -r /tmp/uploads/$PTEMPDIR\_upgrade/log/$PDIR/* $LBHOMEDIR/log/plugins/$PDIR/ 
+zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/config/$PDIR" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
+zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/log/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
+zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/files/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
 
-echo "<INFO> Copy back existing backup archives"
-cp -v -r /tmp/uploads/$PTEMPDIR\_upgrade/files/$PDIR/* $LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/ 
+# Eigentuemer richtigstellen. Dieses Skript laeuft als root; die
+# zurueckgespielten Dateien gehoerten sonst root, und die Oberflaeche laeuft
+# als loxberry - sie koennte die Konfiguration danach nicht mehr schreiben.
+if id loxberry >/dev/null 2>&1; then
+    for d in "$LBHOMEDIR/config/plugins/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" \
+             "$LBHOMEDIR/data/plugins/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files"; do
+        [ -d "$d" ] && chown -R loxberry:loxberry "$d" 2>/dev/null
+    done
+    echo "<OK> Eigentuemer auf loxberry gesetzt."
+fi
 
 echo "<INFO> Remove temporary folders"
-rm -r /tmp/uploads/$PTEMPDIR\_upgrade
+rm -rf /tmp/uploads/${PTEMPDIR}_upgrade
 
-# --- Chromecast 4 Lox ---------------------------------------------------
+# --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
-chmod 755 "$PBIN"/chromecast4lox-server.py "$PBIN"/cc_discover.py 2>/dev/null
+chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie
 # eingerichtet haben; schlaegt das fehl, laeuft der Dienst nicht und der
