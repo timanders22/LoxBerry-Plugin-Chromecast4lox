@@ -1,71 +1,38 @@
-<h2>Chromecast 4 Lox NG</h2>
+<h2><TMPL_VAR HILFE.K01></h2>
 
-<p>Steuert Google-Chromecast-Ger&auml;te vom Loxone Miniserver aus und meldet
-ihren Zustand zur&uuml;ck &mdash; Lautst&auml;rke, Wiedergabe, Titel, Interpret
-und mehr. Der Weg zum Miniserver ist MQTT.</p>
+<p><TMPL_VAR HILFE.K02></p>
 
-<h3>In vier Schritten eingerichtet</h3>
+<h3><TMPL_VAR HILFE.K03></h3>
 <ol>
-<li>Reiter <i>Test</i> &rarr; <i>Chromecasts im Netz suchen</i>. Das liefert
-    die Namen, wie sie das Ger&auml;t selbst meldet.</li>
-<li>Reiter <i>Einstellungen</i>: die Namen eintragen, einer je Zeile, und
-    speichern. Der Dienst startet dabei neu.</li>
-<li>Reiter <i>Einbindung in Loxone</i>: beide Vorlagen herunterladen.</li>
-<li>In Loxone Config: Rechtsklick auf den Miniserver &rarr;
-    <i>Vorlage einf&uuml;gen</i> &mdash; einmal je Datei.</li>
+<li><TMPL_VAR HILFE.K04></li>
+<li><TMPL_VAR HILFE.K05></li>
+<li><TMPL_VAR HILFE.K06></li>
+<li><TMPL_VAR HILFE.K07></li>
 </ol>
 
-<h3>Der Name muss stimmen</h3>
-<p>Das Plugin sucht das Ger&auml;t &uuml;ber seinen <b>Anzeigenamen</b>, so wie
-er in der Google-Home-App steht. Ein Tippfehler oder ein sp&auml;ter
-umbenanntes Ger&auml;t f&uuml;hrt dazu, dass gar nichts passiert &mdash; im
-Protokoll steht dann <tt>Chromecast '&hellip;' nicht gefunden</tt>. Nach einer
-Umbenennung muss der Name hier nachgezogen und die Loxone-Vorlage neu erzeugt
-werden, weil sich damit auch das MQTT-Thema &auml;ndert.</p>
+<h3><TMPL_VAR HILFE.K08></h3>
+<p><TMPL_VAR HILFE.K09></p>
 
-<h3>Suche findet nichts</h3>
-<p>Chromecasts melden sich per mDNS im lokalen Netz. Das geht <b>nicht</b>
-&uuml;ber Netz- oder VLAN-Grenzen. Liegt der LoxBerry in einem anderen Segment
-als die Lautsprecher, findet die Suche nichts &mdash; daran &auml;ndert auch
-eine Firewall-Freigabe f&uuml;r einzelne Ports nichts. Weitere Ursachen:
-Ger&auml;t stromlos, gerade neu gestartet, oder UDP 5353 blockiert.</p>
+<h3><TMPL_VAR HILFE.K10></h3>
+<p><TMPL_VAR HILFE.K11></p>
 
-<h3>Wiedergabe starten</h3>
-<p>Der Befehl <tt>play</tt> erwartet als Nutzlast die <b>direkte URL</b> eines
-Mediums, etwa einen MP3-Stream eines Radiosenders. Eine Playlist-Datei
-(<tt>.m3u</tt>, <tt>.pls</tt>) versteht der Chromecast nicht &mdash; dort muss
-die darin enthaltene Stream-Adresse eingetragen werden. Ohne Nutzlast setzt
-<tt>play</tt> eine pausierte Wiedergabe fort.</p>
+<h3><TMPL_VAR HILFE.K12></h3>
+<p><TMPL_VAR HILFE.K13></p>
 
-<h3>MQTT oder UDP</h3>
-<p><b>MQTT ist der empfohlene Weg.</b> Die Zust&auml;nde kommen retained an;
-nach einem Neustart des Miniservers steht der letzte Stand sofort wieder da.
-Befehle schickt der Miniserver an den UDP-Eingang des MQTT-Gateways, das
-Gateway macht daraus MQTT.</p>
+<h3><TMPL_VAR HILFE.K14></h3>
+<p><TMPL_VAR HILFE.K15></p>
 
-<p>Der <b>UDP-Weg</b> ist der Weg der Originalfassung und bleibt erhalten.
-Er nimmt Textbefehle direkt entgegen und braucht kein Gateway.</p>
+<p><TMPL_VAR HILFE.K16></p>
 
-<h3>Was sich gegen&uuml;ber 0.2.31 ge&auml;ndert hat</h3>
+<h3><TMPL_VAR HILFE.K17></h3>
 <ul>
-<li>Der Dienst l&auml;uft unter <b>Python 3</b>. Die alte Fassung war Python 2
-    und startete auf LoxBerry 4 gar nicht mehr.</li>
-<li>Gesteuert wird &uuml;ber <b>pychromecast</b> statt der mitgelieferten
-    Go-Binaerdatei. Von der gab es keine arm64-Fassung.</li>
-<li><b>Mehrere Ger&auml;te</b> statt genau einem.</li>
-<li>Der Dienst l&auml;uft als Benutzer <tt>loxberry</tt>, nicht mehr als
-    <tt>root</tt>.</li>
+<li><TMPL_VAR HILFE.K18></li>
+<li><TMPL_VAR HILFE.K19></li>
+<li><TMPL_VAR HILFE.K20></li>
+<li><TMPL_VAR HILFE.K21></li>
 </ul>
 
-<h3>Herkunft und Lizenz</h3>
-<p>Grundlage ist das Plugin <b>Chromecast 4 Lox</b> von <b>Ale&scaron; Berka
-(Aleq)</b>, Fassung 0.2.31, unter der Apache-Lizenz 2.0
-(<a href="http://aleq.eu/chromecast4lox/" target="_blank">aleq.eu/chromecast4lox</a>).
-Das Original wird seit 2022 nicht mehr betreut.</p>
+<h3><TMPL_VAR HILFE.K22></h3>
+<p><TMPL_VAR HILFE.K23></p>
 
-<p>Diese Fortf&uuml;hrung hei&szlig;t seit 1.2.1 <b>Chromecast 4 Lox NG</b> und
-hat eine eigene Kennung, damit LoxBerry sie von der Originalfassung
-unterscheiden kann und Fehlerberichte nicht beim Originalautor landen. Das
-MQTT-Themenpr&auml;fix und der UDP-Port bleiben unver&auml;ndert &mdash; auf der
-Loxone-Seite ist also nichts nachzuziehen. Die vollst&auml;ndige Liste der
-&Auml;nderungen steht in der Datei <tt>NOTICE</tt>.</p>
+<p><TMPL_VAR HILFE.K24></p>

@@ -480,7 +480,7 @@ if ($cc_frame) {
 <h3 class="sm-h3"><?php echo cc_t('TEXT.T170'); ?></h3>
 <div class="sm-knopfreihe">
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="status"><?php echo cc_t('TEXT.T171'); ?></button></form>
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="suchen">Chromecasts im Netz suchen</button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="suchen"><?php echo cc_t('TEXT.T174'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="test" value="themen"><?php echo cc_t('TEXT.T172'); ?></button></form>
 </div>
 
