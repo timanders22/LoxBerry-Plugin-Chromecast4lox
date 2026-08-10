@@ -70,9 +70,16 @@ zurueck() {
     cp -v -r "$quelle"/. "$ziel"/ && echo "<OK> $zweck zurueckgespielt."
 }
 
-zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/config/$PDIR" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
-zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/log/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
-zurueck "/tmp/uploads/${PTEMPDIR}_upgrade/files/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
+# Die Sicherung liegt seit dem 10.08.2026 unter data/ statt unter /tmp.
+#
+# Nebenbei behoben: die alten Pfade trugen ein zusaetzliches /$PDIR am Ende,
+# weil 'cp -r quelle/ ziel' das Quellverzeichnis MIT anlegt. Jetzt sichert
+# preupgrade mit 'cp -a quelle/. ziel/' den Inhalt - ohne die Zwischenebene.
+SICHER="$LBHOMEDIR/data/plugins/$PDIR/upgrade_sicherung"
+
+zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
+zurueck "$SICHER/log" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
+zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
 
 # Eigentuemer richtigstellen. Dieses Skript laeuft als root; die
 # zurueckgespielten Dateien gehoerten sonst root, und die Oberflaeche laeuft
@@ -85,8 +92,8 @@ if id loxberry >/dev/null 2>&1; then
     echo "<OK> Eigentuemer auf loxberry gesetzt."
 fi
 
-echo "<INFO> Remove temporary folders"
-rm -rf /tmp/uploads/${PTEMPDIR}_upgrade
+echo "<INFO> Remove backup folder"
+rm -rf "$SICHER"
 
 # --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.

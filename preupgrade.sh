@@ -57,20 +57,27 @@ echo "<INFO> Plugin Data folder is: $PDATA"
 echo "<INFO> Plugin Log folder (on RAMDISK!) is: $PLOG"
 echo "<INFO> Plugin CONFIG folder is: $PCONFIG"
 
-echo "<INFO> Creating temporary folders for upgrading"
-mkdir /tmp/uploads/${PTEMPDIR}_upgrade
-mkdir /tmp/uploads/${PTEMPDIR}_upgrade/config
-mkdir /tmp/uploads/${PTEMPDIR}_upgrade/log
-mkdir /tmp/uploads/${PTEMPDIR}_upgrade/files
+# Der Sicherungsordner liegt unter data/, NICHT unter /tmp.
+#
+# /tmp ist auf dem LoxBerry eine Ramdisk: bricht die Installation ab oder
+# startet der Rechner dazwischen neu, ist die Sicherung weg - und mit ihr die
+# Sicherungsarchive, die hier ausdruecklich mitgerettet werden. Ausserdem ist
+# /tmp fuer jeden lesbar. Geaendert am 10.08.2026.
+SICHER="$LBHOMEDIR/data/plugins/$PDIR/upgrade_sicherung"
+
+echo "<INFO> Creating backup folder for upgrading $SICHER"
+rm -rf "$SICHER" 2>/dev/null
+mkdir -p "$SICHER/config" "$SICHER/log" "$SICHER/files"
+chmod 0700 "$SICHER" 2>/dev/null
 
 echo "<INFO> Backing up existing config files"
-cp -v -r $LBHOMEDIR/config/plugins/$PDIR/ /tmp/uploads/${PTEMPDIR}_upgrade/config
+cp -a "$LBHOMEDIR/config/plugins/$PDIR/." "$SICHER/config/" 2>/dev/null
 
 echo "<INFO> Backing up existing log files"
-cp -v -r $LBHOMEDIR/log/plugins/$PDIR/ /tmp/uploads/${PTEMPDIR}_upgrade/log
+cp -a "$LBHOMEDIR/log/plugins/$PDIR/." "$SICHER/log/" 2>/dev/null
 
 echo "<INFO> Backing up existing backup archives"
-cp -v -r $LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/ /tmp/uploads/${PTEMPDIR}_upgrade/files
+cp -a "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/." "$SICHER/files/" 2>/dev/null
 
 # Exit with Status 0
 exit 0
