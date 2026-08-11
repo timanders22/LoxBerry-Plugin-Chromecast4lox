@@ -486,7 +486,7 @@ if ($cc_frame) {
 
 <h3 class="sm-h3"><?php echo cc_t('TEXT.T173'); ?></h3>
 <div class="sm-knopfreihe">
-<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="konfig"><?php echo cc_t('TEXT.T174'); ?></button></form>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="konfig"><?php echo cc_t('TEXT.T184'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="umgebung"><?php echo cc_t('TEXT.T175'); ?></button></form>
 <form method="post" action="index.php"><input data-role="none" type="hidden" name="activetab" value="tab-test"><button data-role="none" class="sm-btn sm-b-technik" type="submit" name="test" value="mqttinfo"><?php echo cc_t('TEXT.T176'); ?></button></form>
 </div>
