@@ -81,6 +81,29 @@ zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
 zurueck "$SICHER/log" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
 zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
 
+# 1.3.0: zwei Schluessel heissen anders - themenpraefix -> mqtt_topic,
+# mqtt -> mqtt_ein. Die zurueckgespielte Konfiguration traegt noch die alten
+# Namen; gelesen werden nur die neuen, und ein fehlender Schluessel faellt
+# still auf die Vorgabe zurueck. Wirkung ohne diese Uebernahme: ein geaendertes
+# Praefix ginge verloren, und ein abgeschaltetes MQTT (mqtt=0) waere nach dem
+# Upgrade wieder EIN, weil mqtt_ein fehlt und '1' vorgegeben ist.
+#
+# Nur setzen, wenn der NEUE Schluessel fehlt - damit ist der Lauf wiederholbar
+# und ueberschreibt nie eine bereits umgestellte Konfiguration. Das Muster ist
+# an ^ verankert: ohne den Anker traefe 'mqtt=' auch 'mqtt_topic='.
+#
+# Diese Uebernahme darf weg, sobald keine Anlage mehr von 1.2.x kommt.
+CCCFG="$LBHOMEDIR/config/plugins/$PDIR/chromecast-4lox-ng.cfg"
+if [ -f "$CCCFG" ]; then
+    for paar in "themenpraefix mqtt_topic" "mqtt mqtt_ein"; do
+        alt=${paar%% *}; neu=${paar##* }
+        if ! grep -q "^${neu}=" "$CCCFG" && grep -q "^${alt}=" "$CCCFG"; then
+            sed -i "s/^${alt}=/${neu}=/" "$CCCFG" \
+                && echo "<OK> Konfiguration: ${alt} heisst jetzt ${neu}."
+        fi
+    done
+fi
+
 # Eigentuemer richtigstellen. Dieses Skript laeuft als root; die
 # zurueckgespielten Dateien gehoerten sonst root, und die Oberflaeche laeuft
 # als loxberry - sie koennte die Konfiguration danach nicht mehr schreiben.

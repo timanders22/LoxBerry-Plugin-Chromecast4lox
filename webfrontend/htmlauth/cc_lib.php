@@ -63,8 +63,26 @@ function cc_paths()
         $dir = basename(dirname(dirname(__DIR__)));
     }
     if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
+        // Der Rueckfall auf den vorgesehenen Ordnernamen wird NUR genommen,
+        // wenn dort noch nichts liegt oder schon die EIGENE
+        // Konfigurationsdatei steht.
+        //
+        // Grund: zwei Plugins duerfen denselben FOLDER beanspruchen. LoxBerry
+        // bildet die Kennung aus Autorenname, E-Mail und Plugin-Name und
+        // haelt sie dann fuer verschiedene Plugins - der zweite bekommt "01"
+        // an den Ordner. Ein harter Rueckfall zeigte dann in das Verzeichnis
+        // des FREMDEN Plugins und legte dort eine Konfiguration an, die
+        // niemand liest.
         foreach (array(basename(dirname(__DIR__)), 'chromecast-4lox-ng') as $cand) {
-            if (is_dir($home . '/config/plugins/' . $cand)) {
+            $ort = $home . '/config/plugins/' . $cand;
+            if (!is_dir($ort)) {
+                continue;
+            }
+            $eigene = $ort . '/' . $cand . '.cfg';
+            $inhalt = @scandir($ort);
+            $leer = !is_array($inhalt)
+                || count(array_diff($inhalt, array('.', '..'))) === 0;
+            if ($leer || is_file($eigene)) {
                 $dir = $cand;
                 break;
             }
@@ -97,14 +115,20 @@ function cc_paths()
 function cc_defaults()
 {
     return array(
+        // Ab Werk an. Der Waechter (cron.05min) startet den Dienst nur
+        // nach, solange dieser Schalter auf 1 steht - sonst arbeitete er
+        // gegen einen Anwender, der bewusst angehalten hat.
+        'enabled'             => '1',
         'geraete'             => '',
-        'themenpraefix'       => 'chromecast4lox',
-        'mqtt'                => '1',
+        'mqtt_topic'          => 'chromecast4lox',
+        'mqtt_ein'            => '1',
         'udp'                 => '1',
         'udp_port'            => '7090',
         'intervall'           => '10',
         'aktualisierung'      => '60',
         'lautstaerke_schritt' => '5',
+        // Favoriten: je Zeile "Name = Adresse". Ab Werk leer.
+        'favoriten'           => '',
         // --- Ansage (TTS). Feldnamen und Bedeutung wie im
         // Abfahrtsassistenten 1.5.0 - wer dort eingerichtet hat, traegt
         // hier dasselbe ein.
@@ -117,7 +141,20 @@ function cc_defaults()
         'tts_vorlage'         => '',
         'tts_pegel'           => '',
         'tts_fortsetzen'      => '1',
+        'tts_gong'            => '',
+        'tts_lokal_basis'     => '',
+        // B9: ab Werk wirkungslos (100 = keine Grenze, leere Zeiten).
+        'lautstaerke_max'     => '100',
+        'ruhe_von'            => '',
+        'ruhe_bis'            => '',
+        'ruhe_max'            => '30',
         'gruppen'             => '1',
+        // Ab Werk AUS: an echter Hardware noch nicht erprobt.
+        'beschleunigung'      => '0',
+        // Merkwort gegen fremde Absender. Es entsteht beim ersten
+        // Aufruf der Oberflaeche; hier steht es, damit
+        // cc_config_write() es nicht bei jedem Speichern verliert.
+        'aktionstoken'        => '',
     );
 }
 
@@ -128,11 +165,39 @@ function cc_tts_modi()
 {
     return array(
         'chromecast'  => 'TTS.M_CHROMECAST',
+        'lokal'       => 'TTS.M_LOKAL',
         'musicserver' => 'TTS.M_MUSICSERVER',
         'ms4h'        => 'TTS.M_MS4H',
         'audioserver' => 'TTS.M_AUDIOSERVER',
         'custom'      => 'TTS.M_CUSTOM',
     );
+}
+
+/**
+ * Zustand der Konfigurationsdatei - jeder Fall bekommt seinen Namen.
+ *
+ * 'fehlt'    Es gibt sie nicht. Das ist der Zustand einer frischen
+ *            Installation, kein Fehler: es gelten die Vorgabewerte.
+ * 'leer'     Sie ist da und hat 0 Byte.
+ * 'unlesbar' Sie ist da und laesst sich nicht lesen (Rechte, Datentraeger).
+ * 'ok'       Sie ist da und lesbar.
+ *
+ * Der Unterschied ist nicht kosmetisch: bis 1.2.12 gab cc_config_read() in
+ * allen vier Faellen dieselbe Werkseinstellung zurueck, und cc_config_write()
+ * haette sie danach ueber die unlesbare Datei geschrieben. Geraeteliste,
+ * Themenpraefix und die ganze Ansageeinrichtung waeren fort gewesen, ohne
+ * dass irgendwo etwas gestanden haette.
+ */
+function cc_config_zustand()
+{
+    $file = cc_paths()['config'];
+    if (!is_file($file)) {
+        return 'fehlt';
+    }
+    if (filesize($file) === 0) {
+        return 'leer';
+    }
+    return @file_get_contents($file) === false ? 'unlesbar' : 'ok';
 }
 
 /** Konfiguration lesen. */
@@ -174,8 +239,24 @@ function cc_cfg($cfg, $key, $default = '')
 function cc_config_write($cfg)
 {
     $file = cc_paths()['config'];
-    @mkdir(dirname($file), 0775, true);
-    $txt = "; Chromecast 4 Lox NG\n; " . date('D M j H:i:s Y') . "\n\n[CONFIG]\n";
+    // Fail closed: ueber eine vorhandene, aber unlesbare Datei wird NICHT
+    // geschrieben. cc_config_read() liefert in diesem Fall die reine
+    // Werkseinstellung - sie hier zurueckzuschreiben hiesse, die
+    // Einstellungen des Anwenders durch Vorgabewerte zu ersetzen.
+    if (cc_config_zustand() === 'unlesbar') {
+        return false;
+    }
+    // is_dir() VOR mkdir(): der Klammeraffe ist stumm, aber nicht
+    // folgenlos - ein gesetzter Fehlerbehandler sieht die Warnung
+    // trotzdem, und dann steht sie in der Seite.
+    if (!is_dir(dirname($file))) {
+        @mkdir(dirname($file), 0775, true);
+    }
+    // KEIN Zeitstempel im Inhalt. Er aenderte sich bei jedem Speichern,
+    // und damit meldete jeder Vorher-Nachher-Vergleich einen Unterschied,
+    // der keiner ist - mqtt_probe.py hat genau das beanstandet. Wann die
+    // Datei geschrieben wurde, sagt ihr Zeitstempel im Dateisystem.
+    $txt = "; Chromecast 4 Lox NG\n; Wird von der Plugin-Oberflaeche geschrieben.\n\n[CONFIG]\n";
     foreach (cc_defaults() as $k => $vorgabe) {
         $v = isset($cfg[$k]) ? $cfg[$k] : $vorgabe;
         // Mehrzeilige Geraeteliste auf eine Zeile bringen - INI kennt
@@ -191,6 +272,54 @@ function cc_config_write($cfg)
     return $ok;
 }
 
+/**
+ * Das Aktionstoken. Entsteht beim ersten Aufruf der Oberflaeche.
+ *
+ * Es wird NICHT angelegt, solange die Konfiguration nicht heil ist: sonst
+ * schriebe die Oberflaeche ein Token in eine Datei, die sie gleich darauf
+ * nicht mehr lesen kann, und der Wachposten wiese jedes Formular ab.
+ */
+function cc_aktionstoken()
+{
+    static $wert = null;
+    if ($wert !== null) {
+        return $wert;
+    }
+    $cfg = cc_config_read();
+    $t = trim((string) cc_cfg($cfg, 'aktionstoken', ''));
+    if ($t !== '') {
+        $wert = $t;
+        return $wert;
+    }
+    // Weder ueber eine unlesbare noch ueber eine LEERE Datei schreiben.
+    // Eine leere Datei ist genau der Zustand, den postinstall.sh aus der
+    // Zweitschrift wiederherstellt; wer die Werkseinstellung darueber
+    // schreibt, macht die Zweitschrift wertlos.
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer'), true)) {
+        $wert = '';
+        return $wert;
+    }
+    $cfg['aktionstoken'] = bin2hex(random_bytes(16));
+    $wert = cc_config_write($cfg) ? $cfg['aktionstoken'] : '';
+    return $wert;
+}
+
+/**
+ * Das Merkmal, das jedes Formular mitfuehrt.
+ *
+ * Abgeleitet, nicht gespeichert: es gibt damit keinen zweiten Wert, der
+ * verlorengehen oder auseinanderlaufen kann.
+ *
+ * Fail closed: ohne Aktionstoken gibt es kein Merkmal. Ein aus dem
+ * Leerstring abgeleiteter Wert waere fuer jeden ausrechenbar und damit kein
+ * Schutz, sondern die Behauptung eines Schutzes.
+ */
+function cc_formtoken()
+{
+    $t = cc_aktionstoken();
+    return $t === '' ? '' : hash_hmac('sha256', 'formular-v1', $t);
+}
+
 /** Geraeteliste aus der Konfiguration. */
 function cc_geraete($cfg)
 {
@@ -204,6 +333,27 @@ function cc_geraete($cfg)
         }
     }
     return $out;
+}
+
+/**
+ * Die Favoritenliste - muss dasselbe liefern wie favoriten() im Dienst.
+ * Rueckgabe: Liste von array(name, adresse).
+ */
+function cc_favoriten($cfg)
+{
+    $aus = array();
+    foreach (preg_split('/[\r\n]+/', (string) cc_cfg($cfg, 'favoriten', '')) as $z) {
+        $z = trim($z);
+        if ($z === '' || $z[0] === '#' || strpos($z, '=') === false) {
+            continue;
+        }
+        list($name, $adresse) = array_map('trim', explode('=', $z, 2));
+        if ($adresse === '') {
+            continue;
+        }
+        $aus[] = array($name !== '' ? $name : $adresse, $adresse);
+    }
+    return $aus;
 }
 
 /**
@@ -285,45 +435,102 @@ function cc_umschrift()
     return $t;
 }
 
-/** Alle Zustandsthemen eines Geraets, mit Erklaerung. */
+function cc_themen()
+{
+    static $j = null;
+    if ($j !== null) {
+        return $j;
+    }
+    // Die Datei liegt bei bin/, weil der Dienst sie ebenfalls liest. Im
+    // entpackten Archiv liegt bin/ zwei Ebenen ueber dieser Datei.
+    foreach (array(cc_paths()['bindir'] . '/cc_themen.json',
+                   dirname(dirname(__DIR__)) . '/bin/cc_themen.json') as $pfad) {
+        if (!is_file($pfad)) {
+            continue;
+        }
+        $d = json_decode((string) @file_get_contents($pfad), true);
+        if (is_array($d) && !empty($d['geraet'])) {
+            $j = $d;
+            return $j;
+        }
+    }
+    // Fail closed: lieber eine leere Liste als eine geratene. Der Reiter Test
+    // meldet das; eine erfundene Liste erzeugte eine Vorlage, die auf Themen
+    // lauscht, die der Dienst nie sendet.
+    $j = array('fassung' => 0, 'geraet' => array(), 'dienst' => array(),
+               'befehle' => array());
+    return $j;
+}
+
+/**
+ * Kurze Beschriftung eines Themas - die wandert als Comment in die
+ * Loxone-Vorlage und wird dort zum ANZEIGENAMEN der Kachel. Deshalb kurz:
+ * was ueber etwa 40 Zeichen liegt, ist ein Satz und kein Name.
+ */
+function cc_thema_kurz($schluessel)
+{
+    $t = cc_t('THEMA.' . strtoupper($schluessel));
+    return $t === 'THEMA.' . strtoupper($schluessel) ? $schluessel : $t;
+}
+
+/** Ausfuehrliche Erklaerung eines Themas - nur fuer die Oberflaeche. */
+function cc_thema_lang($schluessel)
+{
+    $t = cc_t('THEMA_LANG.' . strtoupper($schluessel));
+    return $t === 'THEMA_LANG.' . strtoupper($schluessel)
+        ? cc_thema_kurz($schluessel) : $t;
+}
+
+/** Angaben zu einem Thema (art, einheit, min, max, retain) oder null. */
+function cc_thema_info($bereich, $schluessel)
+{
+    foreach (cc_themen()[$bereich] as $e) {
+        if ($e['schluessel'] === $schluessel) {
+            return $e;
+        }
+    }
+    return null;
+}
+
+/**
+ * Alle Zustandsthemen eines Geraets, mit Erklaerung.
+ * Rueckgabe wie bisher: schluessel => array(Erklaerung, Art).
+ */
 function cc_status_themen()
 {
-    return array(
-        'online'   => array('Erreichbar (1/0)', 'digital'),
-        'type'     => array('Art: cast, audio oder group', 'text'),
-        'group'    => array('Lautsprechergruppe (1/0)', 'digital'),
-        'state'    => array('Zustand: PLAYING, PAUSED, IDLE, BUFFERING, OFFLINE', 'text'),
-        'playing'  => array('Spielt gerade (1/0)', 'digital'),
-        'volume'   => array('Lautst&auml;rke 0 bis 100', 'analog'),
-        'muted'    => array('Stumm (1/0)', 'digital'),
-        'app'      => array('Name der laufenden App', 'text'),
-        'title'    => array('Titel', 'text'),
-        'artist'   => array('Interpret', 'text'),
-        'album'    => array('Album', 'text'),
-        'duration' => array('L&auml;nge in Sekunden', 'analog'),
-        'position' => array('Laufzeit in Sekunden', 'analog'),
-    );
+    $out = array();
+    foreach (cc_themen()['geraet'] as $e) {
+        $out[$e['schluessel']] = array(cc_thema_lang($e['schluessel']), $e['art']);
+    }
+    return $out;
+}
+
+/** Die Themen des Dienstes selbst, unter <praefix>/server/. */
+function cc_dienst_themen()
+{
+    $out = array();
+    foreach (cc_themen()['dienst'] as $e) {
+        $out[$e['schluessel']] = array(cc_thema_lang('server_' . $e['schluessel']),
+                                       $e['art']);
+    }
+    return $out;
 }
 
 /** Alle Befehle, mit Erklaerung. */
 function cc_befehle()
 {
-    return array(
-        'play'        => 'Wiedergabe fortsetzen. Enth&auml;lt die Nutzlast eine Adresse mit <span class="sm-mono">://</span>, wird stattdessen dieses Medium gestartet.',
-        'pause'       => 'Pause.',
-        'stop'        => 'Wiedergabe beenden.',
-        'quit'        => 'Laufende App auf dem Ger&auml;t schlie&szlig;en.',
-        'volume'      => 'Lautst&auml;rke setzen, 0 bis 100.',
-        'volume_step' => 'Lautst&auml;rke &auml;ndern, z.&nbsp;B. 5 oder -5. Leer = eingestellte Schrittweite.',
-        'volume_up'   => 'Lauter um die Schrittweite.',
-        'volume_down' => 'Leiser um die Schrittweite.',
-        'mute'        => 'Stumm: 1 ein, 0 aus.',
-        'next'        => 'N&auml;chster Titel, wenn die App das unterst&uuml;tzt.',
-        'prev'        => 'Vorheriger Titel.',
-        'seek'        => 'An Position springen, in Sekunden.',
-        'tts'         => 'Ansage sprechen. Die Nutzlast ist der Text. Danach wird '
-                       . 'fortgesetzt, was vorher lief (abschaltbar).',
-    );
+    $out = array();
+    foreach (cc_themen()['befehle'] as $e) {
+        $out[$e['schluessel']] = cc_thema_lang('cmd_' . $e['schluessel']);
+    }
+    return $out;
+}
+
+/** Ist dieser Befehl analog (traegt also einen Wert)? */
+function cc_befehl_analog($schluessel)
+{
+    $e = cc_thema_info('befehle', $schluessel);
+    return $e !== null && $e['art'] === 'analog';
 }
 
 /** UDP-Eingangsport des MQTT-Gateways (Relay-Weg). Beide Schreibweisen. */
@@ -345,6 +552,62 @@ function cc_mqtt_udpinport()
         }
     }
     return 0;
+}
+
+/**
+ * Autostart UND Fassung des MQTT-Gateways - aus EINEM Dateizugriff.
+ *
+ * Der Hausstandard verlangt im Reiter "Einbindung in Loxone" den Satz
+ * "Ohne diesen Eintrag kommt am Miniserver nichts an". Er gilt nur fuer
+ * Gateway V1. Gemessen am LoxBerry-Kern
+ * (webfrontend/htmlauth/system/mqtt-gateway.cgi, Zweig master):
+ *
+ *     $gatewayversion = $generaljson->{Mqtt}->{Gatewayversion} // 1;
+ *     $template->param("GATEWAY_V2", $gatewayversion == 2 ? 1 : 0);
+ *     $template->param("FORM_DISABLE_BUTTONS", 1) if $gatewayversion == 2;
+ *
+ * Unter V2 schaltet der Kern auf der Abonnement-Seite die Knoepfe ab - von
+ * Hand eintragen kann man dort nichts mehr.
+ *
+ * Rueckgabe: null, wenn sich nichts lesen laesst. Sonst
+ *   'autostart' => bool
+ *   'fassung'   => int, 0 = nicht lesbar. NICHT auf 1 vorbelegen:
+ *                  "unbekannt" und "Fassung 1" sind verschiedene Aussagen,
+ *                  und die Oberflaeche behandelt sie verschieden.
+ */
+function cc_mqtt_gateway_info()
+{
+    static $wert = null;
+    static $gelesen = false;
+    if ($gelesen) {
+        return $wert;
+    }
+    $gelesen = true;
+    $home = cc_paths()['home'];
+    if ($home === '') {
+        return $wert;
+    }
+    $d = @json_decode((string) @file_get_contents(
+        $home . '/config/system/general.json'), true);
+    if (!is_array($d) || !isset($d['Mqtt']) || !is_array($d['Mqtt'])) {
+        return $wert;
+    }
+    $auto = isset($d['Mqtt']['Gatewayautostart']) ? $d['Mqtt']['Gatewayautostart'] : '';
+    $wert = array(
+        // Wortlaut der Autostart-Warnung: siehe REGELN_2,
+        // "Gateway-Autostart: ein Schluessel, ein Wortlaut".
+        'autostart' => in_array((string) $auto, array('1', 'true'), true),
+        'fassung'   => isset($d['Mqtt']['Gatewayversion'])
+            ? (int) $d['Mqtt']['Gatewayversion'] : 0,
+    );
+    return $wert;
+}
+
+/** Die Fassung allein - 0 heisst "nicht lesbar", nicht "Fassung 1". */
+function cc_gateway_fassung()
+{
+    $g = cc_mqtt_gateway_info();
+    return $g === null ? 0 : (int) $g['fassung'];
 }
 
 /** Adresse des MQTT-Brokers, nur zur Anzeige, ohne Kennwort. */
@@ -439,6 +702,19 @@ function cc_dienst_pid()
     return 0;
 }
 
+/**
+ * Den Schalter setzen, den der Waechter liest.
+ *
+ * Ohne ihn waere "Dienst anhalten" nach spaetestens fuenf Minuten
+ * wirkungslos gewesen: der Waechter haette den Dienst wieder angeworfen.
+ */
+function cc_dienst_schalter($an)
+{
+    $cfg = cc_config_read();
+    $cfg['enabled'] = $an ? '1' : '0';
+    return cc_config_write($cfg);
+}
+
 /** Dienst starten, stoppen, neu starten. */
 function cc_dienst($aktion)
 {
@@ -488,6 +764,37 @@ function cc_dienst($aktion)
     return implode("\n", $meldungen);
 }
 
+/**
+ * Geraete im Netz suchen, maschinenlesbar.
+ *
+ * Rueckgabe: array(liste, fehlertext). Eine leere Liste mit leerem
+ * Fehlertext heisst "nichts gefunden" - das ist etwas anderes als "die
+ * Suche ist gescheitert", und beides bekommt seinen eigenen Satz.
+ */
+function cc_suche($ohne_gruppen = false)
+{
+    $skript = cc_paths()['bindir'] . '/cc_discover.py';
+    if (!is_file($skript)) {
+        return array(array(), 'cc_discover.py: ' . $skript);
+    }
+    $roh = array();
+    $rc = 0;
+    @exec('timeout 30 python3 ' . escapeshellarg($skript) . ' --json'
+          . ($ohne_gruppen ? ' --ohne-gruppen' : '') . ' 2>&1', $roh, $rc);
+    $text = trim(implode("\n", $roh));
+    // Den Rueckgabewert auswerten, nicht nur die Ausgabe: eine leere
+    // Ausgabe bei einem Abbruch ist kein "nichts gefunden", sondern das
+    // Gegenteil.
+    if ($rc !== 0) {
+        return array(array(), $text !== '' ? $text : ('Rueckgabewert ' . $rc));
+    }
+    $d = json_decode($text, true);
+    if (!is_array($d)) {
+        return array(array(), $text);
+    }
+    return array($d, '');
+}
+
 /** Logdatei-Kandidaten. */
 function cc_log_file()
 {
@@ -531,11 +838,16 @@ function cc_xml_virtual_in_http($kopf, $cmds)
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualInHttp ';
+    $o .= 'HintText="' . cc_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . cc_x($kopf['title']) . '" ';
     $o .= 'Comment="' . cc_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . cc_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'PollingTime="' . cc_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
     $o .= '>' . $crlf;
+    // Das <Info>-Element steht als ERSTES Kindelement. templateType
+    // unterscheidet die Bauformen: 1 = UDP-Eingang, 2 = HTTP-Eingang,
+    // 3 = Ausgang.
+    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
         $o .= "\t" . '<VirtualInHttpCmd ';
         $o .= 'Title="' . cc_x($c['title']) . '" ';
@@ -548,8 +860,14 @@ function cc_xml_virtual_in_http($kopf, $cmds)
         $o .= 'SourceValHigh="100" ';
         $o .= 'DestValHigh="100" ';
         $o .= 'DefVal="0" ';
-        $o .= 'MinVal="-2147483647" ';
-        $o .= 'MaxVal="2147483647"';
+        // Echte Grenzen statt +-2147483647: Loxone zieht daraus die
+        // Reglergrenzen und die Plausibilitaetspruefung.
+        $o .= 'MinVal="' . cc_x(isset($c['min']) ? $c['min'] : 0) . '" ';
+        $o .= 'MaxVal="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
+        // Ohne Unit steht am Eingang eine nackte Zahl, und die Einheit findet
+        // nur, wer den Kommentar aufklappt.
+        $o .= 'Unit="' . cc_x(isset($c['unit']) ? $c['unit'] : '') . '" ';
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -562,41 +880,54 @@ function cc_xml_virtual_out($kopf, $cmds)
     $crlf = "\r\n";
     $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
     $o .= '<VirtualOut ';
+    $o .= 'HintText="' . cc_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
     $o .= 'Title="' . cc_x($kopf['title']) . '" ';
     $o .= 'Comment="' . cc_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
     $o .= 'Address="' . cc_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
     $o .= 'CmdInit="" ';
     $o .= 'CloseAfterSend="true" ';
-    $o .= 'CmdSep="" ';
+    $o .= 'CmdSep=""';
     $o .= '>' . $crlf;
-    $id = 0;
+    $o .= "\t" . '<Info templateType="3" minVersion="17010727"/>' . $crlf;
     foreach ($cmds as $c) {
-        $id++;
+        $analog = isset($c['analog']) && $c['analog'];
         $o .= "\t" . '<VirtualOutCmd ';
-        $o .= 'ID="' . $id . '" ';
         $o .= 'Title="' . cc_x($c['title']) . '" ';
         $o .= 'Comment="' . cc_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
         $o .= 'CmdOnMethod="GET" ';
+        $o .= 'CmdOffMethod="GET" ';
         $o .= 'CmdOn="' . cc_x(isset($c['on']) ? $c['on'] : '') . '" ';
         $o .= 'CmdOnHTTP="" ';
         $o .= 'CmdOnPost="" ';
-        $o .= 'CmdOffMethod="GET" ';
-        $o .= 'CmdOff="" ';
+        $o .= 'CmdOff="' . cc_x(isset($c['off']) ? $c['off'] : '') . '" ';
         $o .= 'CmdOffHTTP="" ';
         $o .= 'CmdOffPost="" ';
-        $o .= 'Analog="' . (isset($c['analog']) && $c['analog'] ? 'true' : 'false') . '" ';
+        $o .= 'CmdAnswer="" ';
+        $o .= 'Analog="' . ($analog ? 'true' : 'false') . '" ';
         $o .= 'Repeat="0" ';
-        $o .= 'RepeatRate="0"';
+        $o .= 'RepeatRate="0" ';
+        // Ein ANALOGER Ausgangsbefehl traegt vier Attribute mehr als ein
+        // digitaler - gemessen an einer Ausfuhr aus Loxone Config.
+        if ($analog) {
+            $o .= 'SourceValLow="' . cc_x(isset($c['min']) ? $c['min'] : 0) . '" ';
+            $o .= 'DestValLow="' . cc_x(isset($c['min']) ? $c['min'] : 0) . '" ';
+            $o .= 'SourceValHigh="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
+            $o .= 'DestValHigh="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
+        }
+        $o .= 'HintText=""';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
     return $o;
 }
 
-/** Virtueller UDP-Eingang - nur fuer den UDP-Rueckfallweg. */
-function cc_xml_virtual_out_udp($kopf, $cmds)
+/**
+ * Das Sammelziel im Themenpfad. Muss zeichengleich zu SAMMELZIEL im Dienst
+ * sein - deshalb steht es hier als EINE Zeichenkette und nicht verstreut.
+ */
+function cc_sammelziel()
 {
-    return cc_xml_virtual_out($kopf, $cmds);
+    return 'alle';
 }
 
 /**
@@ -606,27 +937,48 @@ function cc_xml_virtual_out_udp($kopf, $cmds)
  */
 function cc_vorlage($art, $cfg, $geraete)
 {
-    $praefix = cc_cfg($cfg, 'themenpraefix', 'chromecast4lox');
+    $praefix = cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
     $ip = cc_localip();
     $fuss = 'Erzeugt vom LoxBerry-Plugin Chromecast 4 Lox NG (' . date('d.m.Y') . ')';
 
     if ($art === 'mqtt_in') {
-        $cmds = array(array(
-            'title'   => $praefix . '_server_online',
-            'comment' => 'Dienst laeuft',
-            'check'   => ' ',
-        ));
+        $cmds = array();
+        // Zuerst der Dienst selbst - Lebenszeichen und Zaehler. Textthemen
+        // bleiben auch hier draussen.
+        foreach (cc_themen()['dienst'] as $e) {
+            if ($e['art'] === 'text') {
+                continue;
+            }
+            $cmds[] = array(
+                'title'   => $praefix . '_server_' . $e['schluessel'],
+                'comment' => cc_thema_kurz('server_' . $e['schluessel']),
+                'check'   => ' ',
+                'analog'  => $e['art'] === 'analog',
+                'min'     => $e['min'], 'max' => $e['max'],
+                'unit'    => $e['einheit'] === '' ? '' : '<v.1> ' . $e['einheit'],
+            );
+        }
         foreach ($geraete as $g) {
             $t = cc_thema($g);
-            foreach (cc_status_themen() as $schluessel => $info) {
+            foreach (cc_themen()['geraet'] as $e) {
+                // Textthemen bekommen KEINEN virtuellen Eingang: das
+                // nachgebaute Format ist nur fuer Zahlenwerte belegt, und ein
+                // Textthema mit Analog=true zeigt in Loxone dauerhaft 0. Das
+                // MQTT-Gateway legt sie beim ersten Empfang selbst an.
+                if ($e['art'] === 'text') {
+                    continue;
+                }
                 $cmds[] = array(
-                    'title'   => $praefix . '_' . $t . '_' . $schluessel,
-                    'comment' => $g . ' - ' . strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')),
+                    'title'   => $praefix . '_' . $t . '_' . $e['schluessel'],
+                    'comment' => $g . ' - ' . cc_thema_kurz($e['schluessel']),
                     'check'   => ' ',
+                    'analog'  => $e['art'] === 'analog',
+                    'min'     => $e['min'], 'max' => $e['max'],
+                    'unit'    => $e['einheit'] === '' ? '' : '<v.1> ' . $e['einheit'],
                 );
             }
         }
-        return array('chromecast_mqtt_eingaenge.xml', cc_xml_virtual_in_http(array(
+        return array('VI_Chromecast4Lox_MQTT.xml', cc_xml_virtual_in_http(array(
             'title'   => 'Chromecast 4 Lox',
             'address' => 'http://localhost',
             'polling' => '604800',
@@ -637,20 +989,26 @@ function cc_vorlage($art, $cfg, $geraete)
     if ($art === 'mqtt_out') {
         $port = cc_mqtt_udpinport();
         $cmds = array();
-        foreach ($geraete as $g) {
+        // Das Sammelziel zuerst: ein Befehl darauf erreicht ALLE
+        // eingetragenen Geraete. Fuer Ansagen ist das der bequeme Weg; fuer
+        // Musik bleibt die Google-Lautsprechergruppe richtig, denn nur sie
+        // spielt synchron.
+        foreach (array_merge(array(cc_sammelziel()), $geraete) as $g) {
             $t = cc_thema($g);
-            foreach (cc_befehle() as $befehl => $erklaerung) {
-                $thema = $praefix . '/' . $t . '/cmd/' . $befehl;
-                $analog = in_array($befehl, array('volume', 'volume_step', 'seek', 'mute'), true);
+            foreach (cc_themen()['befehle'] as $e) {
+                $b = $e['schluessel'];
+                $analog = $e['art'] === 'analog';
                 $cmds[] = array(
-                    'title'   => $praefix . '_' . $t . '_' . $befehl,
-                    'comment' => $g . ' - ' . strip_tags(html_entity_decode($erklaerung, ENT_QUOTES, 'UTF-8')),
-                    'on'      => $thema . ' ' . ($analog ? '<v>' : '1'),
+                    'title'   => $praefix . '_' . $t . '_' . $b,
+                    'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),
+                    'on'      => $praefix . '/' . $t . '/cmd/' . $b . ' '
+                                 . ($analog ? '<v.0>' : '1'),
                     'analog'  => $analog,
+                    'min'     => $e['min'], 'max' => $e['max'],
                 );
             }
         }
-        return array('chromecast_mqtt_ausgaenge.xml', cc_xml_virtual_out(array(
+        return array('VQ_Chromecast4Lox_MQTT.xml', cc_xml_virtual_out(array(
             'title'   => 'Chromecast 4 Lox',
             'address' => '/dev/udp/' . $ip . '/' . $port,
             'comment' => $fuss,
@@ -660,19 +1018,22 @@ function cc_vorlage($art, $cfg, $geraete)
     if ($art === 'udp_out') {
         $port = (int) cc_cfg($cfg, 'udp_port', '7090');
         $cmds = array();
-        foreach ($geraete as $g) {
+        foreach (array_merge(array(cc_sammelziel()), $geraete) as $g) {
             $t = cc_thema($g);
-            foreach (cc_befehle() as $befehl => $erklaerung) {
-                $analog = in_array($befehl, array('volume', 'volume_step', 'seek', 'mute'), true);
+            foreach (cc_themen()['befehle'] as $e) {
+                $b = $e['schluessel'];
+                $analog = $e['art'] === 'analog';
                 $cmds[] = array(
-                    'title'   => $t . '_' . $befehl,
-                    'comment' => $g . ' - ' . strip_tags(html_entity_decode($erklaerung, ENT_QUOTES, 'UTF-8')),
-                    'on'      => $t . '/' . strtoupper($befehl) . ($analog ? ' <v>' : '') . ';',
+                    'title'   => $t . '_' . $b,
+                    'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),
+                    'on'      => $t . '/' . strtoupper($b)
+                                 . ($analog ? ' <v.0>' : '') . ';',
                     'analog'  => $analog,
+                    'min'     => $e['min'], 'max' => $e['max'],
                 );
             }
         }
-        return array('chromecast_udp_ausgaenge.xml', cc_xml_virtual_out(array(
+        return array('VQ_Chromecast4Lox_UDP.xml', cc_xml_virtual_out(array(
             'title'   => 'Chromecast 4 Lox UDP',
             'address' => '/dev/udp/' . $ip . '/' . $port,
             'comment' => $fuss,

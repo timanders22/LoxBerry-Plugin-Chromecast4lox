@@ -69,6 +69,119 @@ Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
        gleichzeitig betreibt, aendert sie dort. Ein Zwang dazu bestuende
        sonst fuer jeden, der nur die Fortfuehrung benutzt.
 
+1.2.2  Die Sicherung der Konfiguration beim Update liegt nicht mehr unter
+       /tmp (auf dem LoxBerry eine Ramdisk und fuer jeden lesbar), sondern
+       unter data/plugins/<ordner>/upgrade_sicherung mit Rechten 0700.
+
+1.2.3  Die Hilfeseite ist uebersetzbar: help.html traegt nur noch
+       Platzhalter, der Text steht in templates/lang/help_de.ini und
+       help_en.ini. Der Speichern-Knopf trug die Farbe fuers Lesen statt
+       die fuer eine Aktion.
+
+1.2.4  Ein Tag dieser Nummer besteht, eine Freigabenotiz dazu nicht. Was
+       sich geaendert hat, laesst sich hier nicht belegen und wird deshalb
+       auch nicht behauptet.
+
+1.2.5  Im Deinstallationsskript blieb eine Schreibvariante mit fest
+       verdrahtetem Systempfad uebrig. Statt einer festen Zahl von Ebenen
+       wird jetzt aufwaerts gesucht, bis ein Verzeichnis gefunden ist, das
+       config/plugins UND data/plugins traegt.
+
+1.2.6  Die Einstellungen ueberstehen ein Update auch dann, wenn die Kette
+       aus preupgrade.sh und postupgrade.sh reisst: preupgrade.sh legt
+       zusaetzlich eine Zweitschrift NEBEN den Konfigurationsordner,
+       postinstall.sh spielt sie zurueck - aber nur, wenn die Datei des
+       Nutzers wirklich verloren ist.
+
+1.2.7  Ein Sprachschluessel stand zweimal im selben Abschnitt. parse_ini_file
+       nimmt stillschweigend den letzten; der erste Text erschien nirgends.
+
+1.2.8  Geprueft wird jetzt Mqtt.Gatewayautostart statt der Brokeradresse:
+       die ist ab Werk belegt und sagt deshalb nichts darueber, ob das
+       Gateway laeuft.
+
+1.2.9  CSS-Klassen nachgetragen, auf die die Oberflaeche verwies, ohne dass
+       es sie gab. Ohne die Definition sah ein Hinweiskasten aus wie
+       gewoehnlicher Text.
+
+1.2.10 Die Sprachdateien neu erzeugt: jeder Wert in doppelten
+       Anfuehrungszeichen, kein Schluessel doppelt im selben Abschnitt.
+
+1.2.11 Umschreibungen durch Umlaute ersetzt (laeuft, naechste, hoeher,
+       heisst) - nur deutsche Sprachdateien, keine Verhaltensaenderung.
+
+1.2.12 Die tote Hilfsfunktion cc_xml_virtual_out_udp() entfernt; sie reichte
+       ihre Argumente unveraendert weiter und wurde von nichts aufgerufen.
+
+       Dazu die Befunde einer zeilenweisen Durchsicht vom 22.08.2026:
+
+       * Der Dienst nannte in jeder Startzeile die Fassung "1.2.1" - seit
+         mindestens 1.2.10 falsch. Die Nummer steht jetzt nicht mehr im
+         Quelltext, sondern wird aus der Plugindatenbank gelesen.
+       * Die Laufzeitpruefung im Reiter Test suchte nach dem Prozessnamen
+         "chromecast4lox-server" statt "chromecast4lox_ng-server" und fand
+         deshalb nie etwas.
+       * Die Geraetesuche las cast_info, das es erst ab pychromecast 10
+         gibt. Debian Bookworm und Trixie liefern 9.4.0 - in der
+         Adressspalte stand dort immer ein Fragezeichen.
+       * Der Haken "Google-Lautsprechergruppen mitsuchen" wurde vom Dienst
+         nie gelesen und wirkte nirgends. Er wirkt jetzt.
+       * Eine vorhandene, aber unlesbare Konfigurationsdatei fuehrte stumm
+         zu den Vorgabewerten, die anschliessend darueber geschrieben
+         worden waeren. Es wird jetzt gemeldet und nicht geschrieben.
+       * Die mitgelieferte Konfigurationsdatei war um zehn Schluessel
+         zurueck (Ansage und Gruppen); die Pruefsumme in postinstall.sh ist
+         mitgezogen.
+       * Die Knoepfe, die eine Loxone-Vorlage erzeugen, waren orange. Sie
+         erzeugen eine Datei und stoeren den Betrieb nicht - also grau.
+       * Eine CSS-Eigenschaft und das schliessende Zeichen eines
+         HTML-Elements standen in Sprachwerten. Beides ist zurueck in die
+         Oberflaeche geholt.
+       * Ein Kommentar behauptete, set_volume liege ab pychromecast 13 nur
+         noch am receiver_controller. An beiden Quelltexten nachgemessen:
+         der Alias steht in 9.4.0 wie in 14.0.10 am Cast-Objekt.
+
+1.3.0  Groesste Ueberarbeitung seit 1.0.0.
+
+       NEU: Waechter (cron/cron.05min) mit Schalter "enabled"; Herzschlag
+       ueber MQTT und eine Zustandsdatei unter data/; Selbstpruefung mit
+       zwoelf Zeilen im Reiter Test; eigener Reiter MQTT mit eigenem
+       Formular und eigenem Speicher-Handler; Favoritenliste mit dem
+       analogen Befehl play_favorit; Sammelziel "alle"; Ansage ohne Google
+       ueber espeak-ng; Klang vor der Ansage; Lautstaerke-Obergrenze und
+       Ruhezeit; tts_stop; Rueckmeldung nach Loxone ueber last_error,
+       tts_active und favorit; Geraetesuche mit Uebernahme per Klick;
+       ereignisgesteuerte Meldung und dauerhafte Netzsuche (ab Werk aus).
+
+       AUFBAU: alle MQTT-Themen kommen aus bin/cc_themen.json, die der
+       Dienst UND die Oberflaeche lesen. Jedes Formular traegt ein Merkmal
+       gegen fremde Absender, geprueft von einem Wachposten vor allen
+       Handlern. Befehle laufen ueber eine Warteschlange je Geraet - der
+       MQTT-Rueckruf blockiert nicht mehr in einer Ansage.
+
+       LOXONE-VORLAGE: HintText, <Info templateType>, Einheiten, echte
+       Grenzen, <v.0> statt <v>, Dateinamen mit VI_/VQ_. Textthemen
+       bekommen keinen virtuellen Eingang mehr - sie zeigten dauerhaft 0.
+
+       MQTT-GATEWAY: der Satz "Ohne diesen Eintrag kommt am Miniserver
+       nichts an" gilt nur fuer Gateway V1 und haengt jetzt an
+       Mqtt.Gatewayversion. Unter V2 ist nichts einzutragen; ist die
+       Fassung nicht lesbar, stehen beide Saetze da.
+
+       UMBENANNT: der Konfigurationsschluessel themenpraefix heisst jetzt
+       mqtt_topic, mqtt heisst mqtt_ein. Der WERT bleibt "chromecast4lox" -
+       die Loxone-Seite ist unberuehrt. Moeglich war die Umbenennung, weil
+       1.2.12 nie veroeffentlicht wurde.
+
+       SPRACHE: die Oberflaechentexte lagen als Satzfragmente vor - ein
+       Satz in bis zu zehn Schluesseln. Zwoelf Saetze sind wieder
+       zusammengesetzt, 56 Schluessel entfallen. Die gerenderte Seite ist
+       dabei zeichengleich geblieben.
+
+       NICHT AN ECHTER HARDWARE ERPROBT und deshalb ab Werk AUS: die
+       ereignisgesteuerte Meldung mit dauerhafter Netzsuche und die
+       oertliche Ansage. Der bisherige Abfragetakt bleibt erhalten.
+
 Die urheberrechtliche Nennung des Originalautors steht weiterhin in dieser
 Datei, im README, in der Hilfeseite und im Kopf der Quelldateien.
 

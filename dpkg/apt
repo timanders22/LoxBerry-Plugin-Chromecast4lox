@@ -7,3 +7,7 @@
 python3-pychromecast
 python3-zeroconf
 python3-paho-mqtt
+
+# Fuer die oertliche Ansage (Modus 'lokal'). Klingt maschinell,
+# braucht dafuer weder Google noch einen Zugang zum Internet.
+espeak-ng

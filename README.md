@@ -4,6 +4,86 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Fassung 1.3.0 — Wächter, Herzschlag, Selbstprüfung, eigener Reiter MQTT
+
+Die größte Überarbeitung seit 1.0.0. Sie hat drei Wurzeln: eine zeilenweise
+Durchsicht des ganzen Plugins, den Oberflächen-Hausstandard, und eine Reihe
+von Funktionen, die im Betrieb gefehlt haben.
+
+### Was jetzt erkennbar ist, wenn etwas nicht läuft
+
+- **Ein Wächter** (`cron/cron.05min`) startet den Dienst alle fünf Minuten
+  nach. Bis 1.2.12 lief er nach einem Absturz bis zum nächsten Neustart des
+  Rechners nicht wieder an — und in Loxone sah das aus wie ein stiller
+  Lautsprecher, weil virtuelle Eingänge ihren letzten Wert behalten. Der
+  Haken *Dienst laufen lassen* schaltet ihn ab; die Knöpfe im Reiter Test
+  ziehen ihn mit.
+- **Ein Herzschlag.** `server/ts`, `server/zaehler`, `server/geraete`,
+  `server/verluste` und `server/fassung` gehen bei jedem Durchgang hinaus,
+  am Doppelt-senden-Filter vorbei. Denselben Stand schreibt der Dienst in
+  eine Datei unter `data/` — daran erkennt der Reiter Test, ob er noch
+  *arbeitet*. Eine Prozessnummer beantwortet das nicht.
+- **Eine Selbstprüfung im Reiter Test**, zwölf Zeilen mit Haken, Kreuz oder
+  Strich. Ein Strich heißt nicht „in Ordnung", sondern „hier wurde nichts
+  gemessen".
+
+### Neue Funktionen
+
+- **Favoriten.** Je Zeile `Name = Adresse`, gestartet mit dem **analogen**
+  Ausgangsbefehl `play_favorit` — ein Taster mit dem Wert 2 startet den
+  zweiten Eintrag. Das schließt eine Lücke: mit `play` allein ließ sich aus
+  Loxone kein Medium starten, weil die erzeugte Vorlage dort die Ziffer 1
+  sendet.
+- **Ein Sammelziel `alle`.** `<Präfix>/alle/cmd/tts` spricht auf allen
+  eingetragenen Geräten. Für Musik bleibt eine Google-Lautsprechergruppe der
+  richtige Weg: nur sie spielt synchron.
+- **Ansage ohne Google.** Der Modus *Örtlich erzeugt* lässt `espeak-ng` eine
+  Datei schreiben und liefert sie selbst aus. Die bisher benutzte Adresse bei
+  Google ist nirgends zugesichert und im November 2020 schon einmal
+  gebrochen.
+- **Ein Klang vor der Ansage**, eine **Lautstärke-Obergrenze** und eine
+  **Ruhezeit** mit eigener Grenze. Alle drei ab Werk aus.
+- **`tts_stop`** bricht eine laufende Ansage ab und leert die Warteschlange.
+- **Rückmeldung nach Loxone:** `last_error`, `tts_active` und `favorit`.
+  Bisher stand eine Fehlermeldung nur im Protokoll.
+- **Geräte suchen und übernehmen** im Reiter Einstellungen, mit einem Klick
+  statt zeichengenauem Abtippen.
+
+### Aufbau
+
+- **Ein eigener Reiter MQTT.** Haken, Themenpräfix, Zustand des Gateways, das
+  einzutragende Abo und die vollständige Thementabelle stehen jetzt an einer
+  Stelle. Der Reiter Einstellungen trägt kein MQTT mehr.
+- **Das MQTT-Gateway hat zwei Fassungen**, und der Satz „Ohne diesen Eintrag
+  kommt am Miniserver nichts an" gilt nur für die erste. Er hängt jetzt an
+  `Mqtt.Gatewayversion`; unter Fassung 2 steht dort, dass nichts einzutragen
+  ist. Lässt sich die Fassung nicht lesen, stehen **beide** Sätze da.
+- **Alle Themen kommen aus einer Datei** (`bin/cc_themen.json`), die der
+  Dienst und die Oberfläche gemeinsam lesen. Der Reiter Test hält beide
+  Seiten gegeneinander.
+- **Ein Merkmal an jedem Formular** und ein Wachposten vor allen Handlern.
+  Ohne ihn genügte ein Formular auf einer fremden Seite, um den Dienst
+  anzuhalten.
+- **Die Loxone-Vorlage ist vollständig:** `HintText`, `<Info templateType>`,
+  Einheiten, echte Grenzen, `<v.0>` statt `<v>`, Dateinamen mit `VI_`/`VQ_`.
+  Textthemen bekommen **keinen** virtuellen Eingang mehr — sie zeigten in
+  Loxone dauerhaft 0. Der längste Kachelname war 120 Zeichen lang und ist
+  jetzt kürzer als 40.
+
+### Umbenannte Konfigurationsschlüssel
+
+`themenpraefix` heißt jetzt **`mqtt_topic`**, `mqtt` heißt **`mqtt_ein`** —
+die Namen, die auch die übrigen Plugins dieser Reihe führen. Der **Wert**
+bleibt `chromecast4lox`; auf der Loxone-Seite ist nichts nachzuziehen.
+
+### Zwei Dinge sind ab Werk aus
+
+Sie sind gegen Attrappen und Primärquellen geprüft, aber **nicht an echter
+Hardware**: die **ereignisgesteuerte Meldung** mit dauerhafter Netzsuche und
+die **örtliche Ansage**. Der bisherige Abfragetakt bleibt in beiden Fällen
+vollständig erhalten — schlägt der schnelle Weg fehl, steht es im Protokoll
+und es läuft weiter wie bisher.
+
 ## Fassung 1.2.1 — eigene Kennung, gegen PHP 7.4 *und* 8.1 gemessen
 
 Diese Fassung bekommt eine **eigene Kennung** und heißt ab jetzt
@@ -271,7 +351,7 @@ Aus `Küche Lautsprecher` wird `Kueche_Lautsprecher`.
 Über die LoxBerry-Plugin-Verwaltung, entweder als Datei-Upload des ZIP-Archivs
 oder direkt über die Adresse des Releases:
 
-    https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox/archive/refs/tags/v1.2.1.zip
+    https://github.com/timanders22/LoxBerry-Plugin-Chromecast4lox/releases/latest
 
 Auto-Update ist eingeschaltet und zeigt auf dieses Repository. In der
 Plugin-Verwaltung lässt sich danach zwischen *Aus*, *Nur benachrichtigen*,

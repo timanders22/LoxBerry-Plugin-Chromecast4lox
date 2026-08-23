@@ -27,7 +27,7 @@ function cc_test_ausfuehren($was, $geraet = '')
             $pid = cc_dienst_pid();
             $t = "Dienst:             " . ($pid ? "laeuft (PID $pid)" : 'laeuft nicht') . "\n";
             $t .= "Konfigurierte Geraete: " . (count($geraete) ? implode(', ', $geraete) : 'keine') . "\n";
-            $t .= "MQTT:               " . (cc_cfg($cfg, 'mqtt', '1') === '1' ? 'ein' : 'aus') . "\n";
+            $t .= "MQTT:               " . (cc_cfg($cfg, 'mqtt_ein', '1') === '1' ? 'ein' : 'aus') . "\n";
             $t .= "UDP-Befehle:        " . (cc_cfg($cfg, 'udp', '1') === '1'
                 ? 'ein, Port ' . cc_cfg($cfg, 'udp_port', '7090') : 'aus') . "\n\n";
             if (!$pid) {
@@ -43,7 +43,7 @@ function cc_test_ausfuehren($was, $geraet = '')
             // Dienst unter python3.11 - oder laeuft er ueber das Shebang der
             // Datei selbst -, bleibt die Ausgabe leer, und im Reiter Test
             // stuende nichts, obwohl der Dienst laeuft.
-            $t .= cc_sh('pgrep -a -f "[c]hromecast4lox-server" 2>/dev/null');
+            $t .= cc_sh('pgrep -a -f "[c]hromecast4lox_ng-server" 2>/dev/null');
             $t .= "\n" . cc_sh('ps -o pid,etime,rss,args -p '
                 . (int) cc_dienst_pid() . ' 2>/dev/null');
             return array('Zustand des Dienstes', trim($t) !== '' ? $t : 'Keine Angaben.');
@@ -55,11 +55,12 @@ function cc_test_ausfuehren($was, $geraet = '')
             }
             $t = "Es wird 10 Sekunden im Netz gesucht. Chromecasts melden sich per\n"
                . "mDNS; Geraete im Ruhezustand brauchen manchmal einen Moment.\n\n";
-            $t .= cc_sh('timeout 25 python3 ' . escapeshellarg($skript));
+            $args = cc_cfg($cfg, 'gruppen', '1') === '1' ? '' : ' --ohne-gruppen';
+            $t .= cc_sh('timeout 25 python3 ' . escapeshellarg($skript) . $args);
             return array('Chromecasts im Netz', $t);
 
         case 'themen':
-            $praefix = cc_cfg($cfg, 'themenpraefix', 'chromecast4lox');
+            $praefix = cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
             if (!$geraete) {
                 return array('MQTT-Themen', 'Es ist kein Geraet konfiguriert.');
             }
@@ -123,8 +124,8 @@ function cc_test_ausfuehren($was, $geraet = '')
             $udp = cc_mqtt_udpinport();
             $t = "Broker:              " . ($broker !== '' ? $broker : 'nicht gefunden') . "\n";
             $t .= "UDP-Relay (UDP In):  " . ($udp ? $udp : 'nicht gesetzt') . "\n";
-            $t .= "MQTT im Plugin:      " . (cc_cfg($cfg, 'mqtt', '1') === '1' ? 'ein' : 'aus') . "\n";
-            $t .= "Themenpraefix:       " . cc_cfg($cfg, 'themenpraefix', 'chromecast4lox') . "\n\n";
+            $t .= "MQTT im Plugin:      " . (cc_cfg($cfg, 'mqtt_ein', '1') === '1' ? 'ein' : 'aus') . "\n";
+            $t .= "Themenpraefix:       " . cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . "\n\n";
             if ($broker === '') {
                 $t .= "Ohne MQTT-Gateway kann das Plugin nichts veroeffentlichen.\n"
                     . "Das Gateway ist ein eigenes LoxBerry-Plugin und muss installiert sein.\n\n";
@@ -135,10 +136,13 @@ function cc_test_ausfuehren($was, $geraet = '')
                     . "einen Port setzen und die Vorlage der Ausgaenge neu erzeugen.\n\n";
             }
             $t .= "Zum Mitlesen eignet sich der MQTT Finder des Gateways;\n"
-                . "dort auf " . cc_cfg($cfg, 'themenpraefix', 'chromecast4lox') . "/# achten.";
+                . "dort auf " . cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . "/# achten.";
             return array('MQTT-Gateway', $t);
 
         case 'restart':
+            // Den Schalter mitziehen: wer neu startet, will den Dienst
+            // laufen sehen - auch nach dem naechsten Waechterlauf.
+            cc_dienst_schalter(true);
             $a = cc_dienst('restart');
             $pid = cc_dienst_pid();
             $t = ($a !== '' ? $a . "\n\n" : '');
@@ -147,10 +151,17 @@ function cc_test_ausfuehren($was, $geraet = '')
             return array('Dienst neu starten', $t);
 
         case 'stop':
+            // Erst den Schalter, dann anhalten. Andersherum koennte der
+            // Waechter dazwischen anlaufen und den Dienst sofort wieder
+            // starten.
+            cc_dienst_schalter(false);
             $a = cc_dienst('stop');
             $t = ($a !== '' ? $a . "\n\n" : '');
             $t .= cc_dienst_pid() ? "Es laeuft noch etwas - bitte Protokoll pruefen."
-                : "Angehalten.\n\nHinweis: Beim naechsten Systemstart startet der Dienst wieder.";
+                : "Angehalten.\n\nDer Waechter startet ihn NICHT nach - der Schalter\n"
+                . "\"Dienst laufen lassen\" steht jetzt auf aus. Mit \"Dienst neu starten\"\n"
+                . "oder ueber den Haken im Reiter Einstellungen geht es wieder an.\n"
+                . "Beim naechsten Systemstart bleibt er ebenfalls aus.";
             return array('Dienst anhalten', $t);
 
         case 'ping':
@@ -158,11 +169,11 @@ function cc_test_ausfuehren($was, $geraet = '')
                 $geraet = $geraete ? $geraete[0] : '';
             }
             if ($geraet === '') {
-                return array('Testton', 'Es ist kein Geraet konfiguriert.');
+                return array('Geraet ansprechen', 'Es ist kein Geraet konfiguriert.');
             }
             $port = (int) cc_cfg($cfg, 'udp_port', '7090');
             if (cc_cfg($cfg, 'udp', '1') !== '1') {
-                return array('Testton', "Der UDP-Weg ist ausgeschaltet.\n\n"
+                return array('Geraet ansprechen', "Der UDP-Weg ist ausgeschaltet.\n\n"
                     . "Er wird hier gebraucht, um dem Dienst von aussen einen Befehl\n"
                     . "zu schicken. Im Reiter Einstellungen einschalten oder den\n"
                     . "Befehl per MQTT senden.");
@@ -170,7 +181,7 @@ function cc_test_ausfuehren($was, $geraet = '')
             $befehl = cc_thema($geraet) . '/volume_step 0;';
             $sock = @fsockopen('udp://127.0.0.1', $port, $errno, $errstr, 2);
             if (!$sock) {
-                return array('Testton', "UDP-Port $port nicht erreichbar: $errstr ($errno)");
+                return array('Geraet ansprechen', "UDP-Port $port nicht erreichbar: $errstr ($errno)");
             }
             @fwrite($sock, $befehl);
             @fclose($sock);
@@ -181,4 +192,252 @@ function cc_test_ausfuehren($was, $geraet = '')
     }
 
     return array('Unbekannt', 'Diese Aktion gibt es nicht.');
+}
+
+/* ==================================================================
+ * Selbstpruefung - beantwortet OHNE Loxone, ob die Einrichtung traegt.
+ * ================================================================== */
+
+/** Eine Zeile. $zustand: true = Haken, false = Kreuz, null = Strich. */
+function cc_pruefzeile(&$zeilen, $frage, $zustand, $antwort)
+{
+    $zeilen[] = array($frage, $zustand, $antwort);
+}
+
+/**
+ * Alle Pruefzeilen.
+ *
+ * Rueckgabe: array(zeilen, array(gut, schlecht, unbekannt))
+ */
+function cc_selbstpruefung()
+{
+    $z = array();
+    $p = cc_paths();
+    $cfg = cc_config_read();
+    $geraete = cc_geraete($cfg);
+
+    /* --- 1. Laeuft der Dienst? ------------------------------------- */
+    $pid = cc_dienst_pid();
+    $an = cc_cfg($cfg, 'enabled', '1') === '1';
+    if (!$an) {
+        cc_pruefzeile($z, cc_t('TEST.F_DIENST'), null, cc_t('TEST.A_AUSGESCHALTET'));
+    } else {
+        cc_pruefzeile($z, cc_t('TEST.F_DIENST'), $pid > 0,
+            $pid > 0 ? sprintf(cc_t('TEST.A_PID'), $pid) : cc_t('TEST.A_LAEUFT_NICHT'));
+    }
+
+    /* --- 2. Arbeitet er noch? --------------------------------------
+     * Eine Prozessnummer beantwortet das nicht: ein Prozess kann dastehen
+     * und nichts mehr tun. Ueber einen Dienst, der gar nicht laeuft, wird
+     * aber auch kein Herzschlag beurteilt - das gaebe ein zweites Kreuz
+     * fuer denselben Umstand.
+     */
+    $zdatei = $p['datadir'] . '/zustand.json';
+    if (!$an || $pid <= 0) {
+        cc_pruefzeile($z, cc_t('TEST.F_HERZSCHLAG'), null, cc_t('TEST.A_KEIN_DIENST'));
+    } elseif (!is_file($zdatei)) {
+        cc_pruefzeile($z, cc_t('TEST.F_HERZSCHLAG'), false, cc_t('TEST.A_KEIN_ZUSTAND'));
+    } else {
+        $zu = json_decode((string) @file_get_contents($zdatei), true);
+        $zeit = is_array($zu) && isset($zu['zeit']) ? (int) $zu['zeit'] : 0;
+        $alter = $zeit > 0 ? time() - $zeit : -1;
+        // Die Schwelle haengt am eingestellten Takt: dreimal das Intervall,
+        // mindestens eine Minute. Ein einzelner verpasster Durchgang ist
+        // kein Befund.
+        $grenze = max(60, 3 * (int) cc_cfg($cfg, 'intervall', '10'));
+        if ($alter < 0) {
+            cc_pruefzeile($z, cc_t('TEST.F_HERZSCHLAG'), null, cc_t('TEST.A_ZUSTAND_KAPUTT'));
+        } else {
+            cc_pruefzeile($z, cc_t('TEST.F_HERZSCHLAG'), $alter <= $grenze,
+                sprintf(cc_t('TEST.A_ALTER'), $alter, $grenze,
+                        is_array($zu) && isset($zu['zaehler']) ? (int) $zu['zaehler'] : 0));
+        }
+    }
+
+    /* --- 3. Ist die Konfiguration heil? ----------------------------
+     * Jeder Zustand, den der Code erzeugen kann, bekommt seinen Satz.
+     */
+    $zustand = cc_config_zustand();
+    $saetze = array(
+        'ok'       => array(true,  cc_t('TEST.A_KONFIG_OK')),
+        'fehlt'    => array(null,  cc_t('TEST.A_KONFIG_FEHLT')),
+        'leer'     => array(false, cc_t('TEST.A_KONFIG_LEER')),
+        'unlesbar' => array(false, cc_t('TEST.A_KONFIG_UNLESBAR')),
+    );
+    $s = isset($saetze[$zustand]) ? $saetze[$zustand] : array(false, $zustand);
+    cc_pruefzeile($z, cc_t('TEST.F_KONFIG'), $s[0], $s[1]);
+
+    /* --- 4. Sind Geraete eingetragen? ------------------------------ */
+    cc_pruefzeile($z, cc_t('TEST.F_GERAETE'), count($geraete) > 0,
+        count($geraete) > 0 ? sprintf(cc_t('TEST.A_GERAETE'), count($geraete),
+                                      implode(', ', $geraete))
+                            : cc_t('TEST.A_KEINE_GERAETE'));
+
+    /* --- 5. Sind die Python-Module da? ----------------------------- */
+    $fehlend = array();
+    $angesehen = 0;
+    foreach (array('pychromecast', 'zeroconf', 'paho.mqtt.client') as $m) {
+        $angesehen++;
+        $r = cc_sh('python3 -c ' . escapeshellarg('import ' . $m));
+        if (trim($r) !== '') {
+            $fehlend[] = $m;
+        }
+    }
+    $v = trim(cc_sh('python3 -c ' . escapeshellarg(
+        'import importlib.metadata as m; print(m.version("PyChromecast"))')));
+    cc_pruefzeile($z, cc_t('TEST.F_MODULE'), count($fehlend) === 0,
+        count($fehlend) === 0
+            ? sprintf(cc_t('TEST.A_MODULE_DA'), $angesehen,
+                      $v !== '' && strpos($v, 'Trace') === false ? $v : '?')
+            : sprintf(cc_t('TEST.A_MODULE_FEHLEN'), implode(', ', $fehlend)));
+
+    /* --- 6. MQTT-Gateway ------------------------------------------- */
+    if (cc_cfg($cfg, 'mqtt_ein', '1') !== '1') {
+        cc_pruefzeile($z, cc_t('TEST.F_BROKER'), null, cc_t('TEST.A_MQTT_AUS'));
+        cc_pruefzeile($z, cc_t('TEST.F_AUTOSTART'), null, cc_t('TEST.A_MQTT_AUS'));
+    } else {
+        $broker = cc_mqtt_broker();
+        cc_pruefzeile($z, cc_t('TEST.F_BROKER'), $broker !== '',
+            $broker !== '' ? $broker : cc_t('TEST.A_KEIN_BROKER'));
+        // Autostart UND Fassung aus derselben Funktion - ein Schluessel,
+        // ein Wortlaut, ein Dateizugriff.
+        $gw = cc_mqtt_gateway_info();
+        if ($gw === null) {
+            cc_pruefzeile($z, cc_t('TEST.F_AUTOSTART'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+            cc_pruefzeile($z, cc_t('TEST.F_GWFASSUNG'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+        } else {
+            cc_pruefzeile($z, cc_t('TEST.F_AUTOSTART'), $gw['autostart'],
+                $gw['autostart'] ? cc_t('TEST.A_JA') : cc_t('TEST.A_AUTOSTART_AUS'));
+            // Die Fassung ist KEIN Fehler, egal welche - deshalb ein Strich,
+            // wenn sie unbekannt ist, und ein Haken, wenn sie feststeht.
+            $f = (int) $gw['fassung'];
+            cc_pruefzeile($z, cc_t('TEST.F_GWFASSUNG'), $f > 0 ? true : null,
+                $f > 0 ? sprintf(cc_t('TEST.A_GWFASSUNG'), $f)
+                       : cc_t('TEST.A_GWFASSUNG_UNBEKANNT'));
+        }
+    }
+
+    /* --- 7. Themenliste gegen den Dienst ---------------------------
+     * Zwei Listen in zwei Sprachen halten sich nicht von selbst gleich,
+     * und ein Kommentar ist kein Nachweis.
+     */
+    $eigene = array_keys(cc_status_themen());
+    $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
+    if (!$eigene) {
+        // Eine leere Liste gegen eine leere Liste ist gleich - und beweist
+        // nichts. Ohne diese Wache meldete die Zeile bei einer kaputten
+        // bin/cc_themen.json einen Haken und "0 Zustaende".
+        cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), false, cc_t('TEST.A_THEMEN_LEER'));
+    } elseif (!is_file($skript)) {
+        cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_KEIN_SKRIPT'));
+    } else {
+        $roh = cc_sh('timeout 20 python3 ' . escapeshellarg($skript) . ' --themen');
+        $d = json_decode(trim($roh), true);
+        if (!is_array($d) || !isset($d['geraet'])) {
+            cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+        } else {
+            $gleich = $d['geraet'] === $eigene;
+            cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), $gleich,
+                $gleich ? sprintf(cc_t('TEST.A_THEMEN_GLEICH'), count($eigene),
+                                  count($d['befehle']))
+                        : sprintf(cc_t('TEST.A_THEMEN_ANDERS'),
+                                  implode(', ', array_diff($eigene, $d['geraet'])),
+                                  implode(', ', array_diff($d['geraet'], $eigene))));
+        }
+    }
+
+    /* --- 8. Sind die Vorlagen wohlgeformt? -------------------------
+     * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config,
+     * und dort sucht er den Fehler bei sich.
+     */
+    if (!$geraete) {
+        cc_pruefzeile($z, cc_t('TEST.F_VORLAGE'), null, cc_t('TEST.A_KEINE_GERAETE_KURZ'));
+    } else {
+        $kaputt = array();
+        $gesehen = 0;
+        $vorher = libxml_use_internal_errors(true);
+        foreach (array('mqtt_in', 'mqtt_out', 'udp_out') as $art) {
+            $gesehen++;
+            list($name, $inhalt) = cc_vorlage($art, $cfg, $geraete);
+            if ($inhalt === '' || simplexml_load_string($inhalt) === false) {
+                $kaputt[] = $art;
+            }
+            libxml_clear_errors();
+        }
+        libxml_use_internal_errors($vorher);
+        cc_pruefzeile($z, cc_t('TEST.F_VORLAGE'), count($kaputt) === 0,
+            count($kaputt) === 0 ? sprintf(cc_t('TEST.A_VORLAGE_OK'), $gesehen)
+                                 : sprintf(cc_t('TEST.A_VORLAGE_KAPUTT'),
+                                           implode(', ', $kaputt)));
+    }
+
+    /* --- 9. Reiterleiste, Bereiche und Positivliste --------------- */
+    $eigen = @file_get_contents(__DIR__ . '/index.php');
+    if ($eigen === false) {
+        cc_pruefzeile($z, cc_t('TEST.F_REITER'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+        cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+    } else {
+        preg_match_all('/data-ziel="(tab-[a-z]+)"/', $eigen, $m1);
+        // Zwischen class= und id= steht ein PHP-Block, und dessen
+        // schliessendes Zeichenpaar enthaelt ein Groesserzeichen. Ein
+        // Muster mit einer verneinten Zeichenklasse darauf findet deshalb
+        // NULL Bereiche - so stand die Zeile im ersten Anlauf rot, obwohl
+        // nichts falsch war. Ein rotes Kreuz, das nichts bedeutet, ist
+        // schlimmer als keine Pruefung.
+        //
+        // Und der erste Erklaerkommentar dazu trug das Zeichenpaar
+        // WOERTLICH - damit endete der PHP-Block mitten in der Datei.
+        preg_match_all('/class="sm-seite.{0,200}?id="(tab-[a-z]+)"/s', $eigen, $m2);
+        preg_match('/\$cc_tabliste = array\(([^)]*)\)/', $eigen, $m3);
+        $liste = array();
+        if (!empty($m3[1])) {
+            preg_match_all("/'(tab-[a-z]+)'/", $m3[1], $m4);
+            $liste = $m4[1];
+        }
+        $leiste = $m1[1];
+        $bereiche = $m2[1];
+        sort($leiste); sort($bereiche); sort($liste);
+        $angesehen = count($leiste) + count($bereiche) + count($liste);
+        if ($angesehen === 0) {
+            // Eine Pruefung ohne Fundstellen ist kein Nachweis, sondern ein
+            // blinder Fleck.
+            cc_pruefzeile($z, cc_t('TEST.F_REITER'), null, cc_t('TEST.A_NICHTS_GEFUNDEN'));
+        } else {
+            $gleich = $leiste === $bereiche && $leiste === $liste;
+            cc_pruefzeile($z, cc_t('TEST.F_REITER'), $gleich,
+                sprintf(cc_t('TEST.A_REITER'), count($leiste), count($bereiche),
+                        count($liste)));
+        }
+
+        /* --- 10. Traegt jedes Formular das Merkmal? --------------- */
+        $formulare = preg_match_all('/<form\b/', $eigen);
+        $marken = preg_match_all('/name="fmt"/', $eigen);
+        if ($formulare === 0) {
+            cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), null, cc_t('TEST.A_NICHTS_GEFUNDEN'));
+        } else {
+            cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), $marken >= $formulare,
+                sprintf(cc_t('TEST.A_MERKMAL'), $marken, $formulare));
+        }
+    }
+
+    /* --- 11. Laeuft der Waechter? ---------------------------------- */
+    $home = $p['home'];
+    $wpfad = $home !== '' ? $home . '/system/cron/cron.05min/' . $p['plugin'] : '';
+    if ($home === '') {
+        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+    } elseif (!$an) {
+        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), null, cc_t('TEST.A_AUSGESCHALTET'));
+    } else {
+        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), is_file($wpfad),
+            is_file($wpfad) ? cc_t('TEST.A_JA') : cc_t('TEST.A_KEIN_WAECHTER'));
+    }
+
+    /* --- Bilanz ---------------------------------------------------- */
+    $gut = $schlecht = $unbekannt = 0;
+    foreach ($z as $zeile) {
+        if ($zeile[1] === true) { $gut++; }
+        elseif ($zeile[1] === false) { $schlecht++; }
+        else { $unbekannt++; }
+    }
+    return array($z, array($gut, $schlecht, $unbekannt));
 }

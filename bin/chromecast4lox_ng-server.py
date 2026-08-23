@@ -22,9 +22,11 @@ Getestet gegen pychromecast 9.4 (Debian) und 13.1 (pip). Wo sich die
 Schnittstelle zwischen beiden unterscheidet, sind beide Wege abgedeckt.
 """
 
+import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import socket
 import sys
@@ -54,8 +56,6 @@ def lb_wurzel_ermitteln():
     return ""
 
 
-VERSION = "1.2.1"
-
 # ---------------------------------------------------------------------------
 # Pfade - LoxBerry ersetzt die REPLACE-Marken bei der Installation
 # ---------------------------------------------------------------------------
@@ -72,8 +72,59 @@ LOG_DIR = "REPLACELBPLOGDIR"
 if LOG_DIR.startswith("REPLACE"):
     LOG_DIR = lb_wurzel_ermitteln() + "/log/plugins/" + PLUGIN_NAME
 
+# Das Datenverzeichnis liegt NICHT auf der Ramdisk - anders als log/.
+# Dorthin schreibt der Dienst sein Lebenszeichen, und das soll einen
+# Neustart des Rechners ueberstehen.
+DATA_DIR = "REPLACELBPDATADIR"
+if DATA_DIR.startswith("REPLACE"):
+    DATA_DIR = lb_wurzel_ermitteln() + "/data/plugins/" + PLUGIN_NAME
+
+# Der unangemeldete html-Ordner. Dorthin legt die oertliche Ansage ihre
+# Datei - der Chromecast holt sie ueber HTTP ab und bringt dafuer keine
+# Zugangsdaten mit.
+HTML_DIR = "REPLACELBPHTMLDIR"
+if HTML_DIR.startswith("REPLACE"):
+    HTML_DIR = (lb_wurzel_ermitteln()
+                + "/webfrontend/html/plugins/" + PLUGIN_NAME)
+
 HOME_DIR = os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln()
 CONFIG_FILE = os.path.join(CONFIG_DIR, PLUGIN_NAME + ".cfg")
+ZUSTAND_FILE = os.path.join(DATA_DIR, "zustand.json")
+THEMEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "cc_themen.json")
+
+
+def version():
+    """Fassung aus der Plugindatenbank von LoxBerry.
+
+    Bewusst nicht fest eingetragen: bis 1.2.12 stand hier VERSION = "1.2.1",
+    und zwar seit mindestens 1.2.10 - jede Startzeile im Protokoll nannte
+    also eine Fassung, die es so nicht mehr gab. Eine Nummer im Quelltext
+    bleibt beim naechsten Release stehen; massgeblich ist, was LoxBerry bei
+    der Installation uebernommen hat.
+
+    Gibt "" zurueck, wenn sich die Fassung nicht ermitteln laesst - dann
+    steht im Protokoll keine Nummer, was besser ist als eine falsche.
+    """
+    datei = os.path.join(HOME_DIR, "data", "system", "plugindatabase.json")
+    try:
+        with open(datei, "r", encoding="utf-8") as fh:
+            inhalt = json.load(fh)
+    except (OSError, ValueError):
+        return ""
+    liste = inhalt.get("plugins", inhalt) if isinstance(inhalt, dict) else inhalt
+    if isinstance(liste, dict):
+        liste = list(liste.values())
+    if not isinstance(liste, list):
+        return ""
+    for eintrag in liste:
+        if not isinstance(eintrag, dict):
+            continue
+        if eintrag.get("folder") == PLUGIN_NAME \
+                or eintrag.get("PLUGINDB_FOLDER") == PLUGIN_NAME:
+            return str(eintrag.get("version")
+                       or eintrag.get("PLUGINDB_VERSION") or "").strip()
+    return ""
 
 # ---------------------------------------------------------------------------
 # Protokoll
@@ -105,13 +156,15 @@ log = logging.getLogger("chromecast4lox_ng")
 
 VORGABEN = {
     "geraete": "",
-    "themenpraefix": "chromecast4lox",
-    "mqtt": "1",
+    "mqtt_topic": "chromecast4lox",
+    "mqtt_ein": "1",
     "udp": "1",
     "udp_port": "7090",
     "intervall": "10",
     "aktualisierung": "60",
     "lautstaerke_schritt": "5",
+    # Favoriten: je Zeile "Name = Adresse". Ab Werk leer.
+    "favoriten": "",
     # --- Ansage (TTS) ---
     # Die Felder heissen genau wie im Abfahrtsassistenten und tun dasselbe.
     # Wer dort schon eine Ansage eingerichtet hat, traegt hier dieselben
@@ -127,8 +180,24 @@ VORGABEN = {
     "tts_pegel": "",
     # Nach der Ansage wieder aufnehmen, was vorher lief.
     "tts_fortsetzen": "1",
+    # B10: Klang vor der Ansage. Leer = keiner.
+    "tts_gong": "",
+    # B7: Grundadresse, unter der der LoxBerry den html-Ordner des
+    # Plugins ausliefert. Leer = selbst ermitteln.
+    "tts_lokal_basis": "",
+    # B9: Obergrenzen. 100 heisst "keine Grenze"; die Ruhezeit ist mit
+    # leeren Zeiten ausgeschaltet. AB WERK AUS.
+    "lautstaerke_max": "100",
+    "ruhe_von": "",
+    "ruhe_bis": "",
+    "ruhe_max": "30",
     # Gruppen mitsuchen (Google-Lautsprechergruppen).
     "gruppen": "1",
+    # Schneller melden: Rueckrufe von pychromecast statt Abfragetakt,
+    # und eine dauerhafte Netzsuche statt einer Einzelsuche je Geraet.
+    # AB WERK AUS: an echter Hardware noch nicht erprobt. Der bisherige
+    # Takt bleibt in beiden Faellen als Rueckfallebene erhalten.
+    "beschleunigung": "0",
 }
 
 
@@ -159,6 +228,50 @@ def geraeteliste(cfg):
     return [t.strip() for t in teile if t.strip()]
 
 
+def _themen_lesen():
+    """Die eine Themenliste - dieselbe Datei, die auch die Oberflaeche liest.
+
+    Bis 1.2.12 gab es zwei Listen: cc_status_themen() in PHP und die
+    _senden()-Aufrufe hier. Sie stimmten ueberein, aber nichts hielt sie
+    zusammen. Jetzt entscheidet EINE Datei, was gesendet wird und was
+    retained geht; der Reiter Test haelt beide Seiten gegeneinander.
+    """
+    try:
+        with open(THEMEN_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as fehler:
+        log.error("Themenliste %s nicht lesbar (%s) - es wird nichts "
+                  "veroeffentlicht, was nicht darin steht.", THEMEN_FILE, fehler)
+        return {"geraet": [], "dienst": [], "befehle": []}
+    for schluessel in ("geraet", "dienst", "befehle"):
+        if not isinstance(d.get(schluessel), list):
+            log.error("Themenliste unvollstaendig: %s fehlt", schluessel)
+            d[schluessel] = []
+    return d
+
+
+THEMEN = _themen_lesen()
+
+
+def thema_info(bereich, schluessel):
+    """Angaben zu einem Thema, oder None, wenn es nicht in der Liste steht."""
+    for e in THEMEN.get(bereich, ()):
+        if e.get("schluessel") == schluessel:
+            return e
+    return None
+
+
+def thema_retain(bereich, schluessel):
+    """Retained oder nicht - je Thema entschieden, nicht pauschal.
+
+    position ist bewusst NICHT retained: ein Abnehmer, der sich eine Stunde
+    spaeter verbindet, bekaeme sonst eine stundenalte Laufzeit serviert und
+    hielte sie fuer aktuell.
+    """
+    e = thema_info(bereich, schluessel)
+    return True if e is None else bool(e.get("retain", True))
+
+
 def zahl_oder(wert, vorgabe):
     """Aus einer Nutzlast eine ganze Zahl machen - oder die Vorgabe nehmen.
 
@@ -180,6 +293,42 @@ def zahl_oder(wert, vorgabe):
     except (TypeError, ValueError):
         log.warning("'%s' ist keine Zahl - es gilt die Vorgabe %s", text, vorgabe)
         return vorgabe
+
+
+# Namen, unter denen ein Befehl ALLE Geraete erreicht. Sie sind bewusst
+# keine gueltigen Geraetenamen: ein Chromecast, der wirklich "alle" heisst,
+# waere sonst nicht mehr einzeln ansprechbar - deshalb gewinnt ein echter
+# Geraetename, und das Sammelziel greift erst danach.
+SAMMELZIEL = ("alle", "all", "*")
+
+
+def favoriten(cfg):
+    """Die Favoritenliste aus der Konfiguration.
+
+    Je Zeile "Name = Adresse". Die Reihenfolge ist die Adresse: play_favorit
+    bekommt aus Loxone eine ZAHL, und die zaehlt ab 1. Wer eine Zeile
+    mittendrin loescht, verschiebt alle folgenden - das steht so im
+    Hinweistext, und es ist der Grund, warum die Nummer im Reiter
+    Einstellungen neben jedem Eintrag steht.
+
+    Rueckgabe: Liste von (name, adresse). Zeilen ohne Adresse fallen weg -
+    lieber ein Eintrag weniger als einer, der ins Leere sendet.
+    """
+    aus = []
+    for zeile in re.split(r"[\r\n]+", str(cfg.get("favoriten", "") or "")):
+        zeile = zeile.strip()
+        if zeile == "" or zeile.startswith("#"):
+            continue
+        if "=" not in zeile:
+            log.warning("Favorit ohne Adresse uebergangen: %s", zeile[:60])
+            continue
+        name, adresse = zeile.split("=", 1)
+        name, adresse = name.strip(), adresse.strip()
+        if adresse == "":
+            log.warning("Favorit '%s' hat keine Adresse - uebergangen", name)
+            continue
+        aus.append((name or adresse, adresse))
+    return aus
 
 
 def thema_saeubern(name):
@@ -272,6 +421,11 @@ def tts_adressen(text, cfg):
         # an den TTS-Eingang. Genauso steht es im Abfahrtsassistenten.
         return [], modus
 
+    if modus == "lokal":
+        # Die Adresse baut der Aufrufer - er kennt das Geraet und damit die
+        # richtige eigene Adresse. Hier gibt es nur das Kennzeichen.
+        return ([], modus)
+
     if modus == "chromecast":
         return ([("https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob"
                   "&tl=" + urllib.parse.quote(sprache)
@@ -308,6 +462,135 @@ def tts_adressen(text, cfg):
                         ("{text}", urllib.parse.quote(text, safe=""))):
         fertig = fertig.replace(marke, wert)
     return [fertig], modus
+
+
+def eigene_ip(ziel=None):
+    """Die Adresse, unter der dieser Rechner vom Lautsprecher aus erreichbar ist.
+
+    Kein Verkehr: ein UDP-Socket, der nur verbunden wird, verraet ueber
+    getsockname(), welche Quelladresse das Betriebssystem fuer dieses Ziel
+    waehlen wuerde. Mit dem Lautsprecher als Ziel ist das die richtige
+    Adresse auch dann, wenn der Rechner mehrere hat.
+    """
+    s = None
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((ziel or "8.8.8.8", 9))
+        return s.getsockname()[0]
+    except OSError:
+        return ""
+    finally:
+        try:
+            if s:
+                s.close()
+        except OSError:
+            pass
+
+
+def ansage_lokal_erzeugen(text, sprache):
+    """Den Text mit espeak-ng in eine WAV-Datei schreiben.
+
+    Rueckgabe: (dateiname, fehlertext). Genau eines von beiden ist leer.
+
+    Belegt an der Google-Cast-Dokumentation: WAV (LPCM) gehoert zu den
+    unterstuetzten Formaten. Am Geraet nachgemessen ist es nicht - das steht
+    so im Bericht.
+    """
+    import subprocess
+    ordner = os.path.join(HTML_DIR, "ansage")
+    try:
+        os.makedirs(ordner, exist_ok=True)
+    except OSError as fehler:
+        return "", "Ansageordner nicht anlegbar: {0}".format(fehler)
+
+    # Der Name haengt am Inhalt: derselbe Satz erzeugt dieselbe Datei, und
+    # ein zweiter Aufruf spart den Lauf.
+    kennung = hashlib.sha256((sprache + "|" + text).encode("utf-8")).hexdigest()[:16]
+    name = "cc_" + kennung + ".wav"
+    pfad = os.path.join(ordner, name)
+    if os.path.isfile(pfad) and os.path.getsize(pfad) > 44:
+        return name, ""
+
+    # espeak-ng kennt Sprachen wie "de", "en" - genau die Kuerzel, die auch
+    # im Feld Sprache stehen.
+    befehl = ["espeak-ng", "-v", sprache or "de", "-w", pfad, "--stdin"]
+    try:
+        lauf = subprocess.run(befehl, input=text.encode("utf-8"),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                              timeout=30)
+    except FileNotFoundError:
+        return "", ("espeak-ng ist nicht eingerichtet. Nachholen mit: "
+                    "sudo apt-get install -y espeak-ng")
+    except (OSError, subprocess.SubprocessError) as fehler:
+        return "", "espeak-ng liess sich nicht aufrufen: {0}".format(fehler)
+    # Den RUECKGABEWERT auswerten, nicht nur die Ausgabe: eine leere Ausgabe
+    # bei einem Abbruch ist kein Erfolg.
+    if lauf.returncode != 0:
+        return "", ("espeak-ng endete mit {0}: {1}".format(
+            lauf.returncode,
+            lauf.stderr.decode("utf-8", "replace").strip()[:160]))
+    if not os.path.isfile(pfad) or os.path.getsize(pfad) <= 44:
+        return "", "espeak-ng hat keine brauchbare Datei geschrieben"
+    _ansagen_aufraeumen(ordner)
+    return name, ""
+
+
+def _ansagen_aufraeumen(ordner, behalten=40):
+    """Alte Ansagedateien wegraeumen.
+
+    Wer Dateien anlegt, raeumt sie auch weg - sonst fuellt eine Ansage je
+    Ereignis irgendwann die Karte.
+    """
+    try:
+        dateien = [os.path.join(ordner, n) for n in os.listdir(ordner)
+                   if n.startswith("cc_") and n.endswith(".wav")]
+    except OSError:
+        return
+    if len(dateien) <= behalten:
+        return
+    dateien.sort(key=lambda p: os.path.getmtime(p))
+    for p in dateien[:len(dateien) - behalten]:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def lautstaerke_grenze(cfg, jetzt=None):
+    """Die Obergrenze, die gerade gilt - 0 bis 100.
+
+    Zwei Grenzen: eine allgemeine und eine fuer ein Zeitfenster. Beide sind
+    ab Werk wirkungslos (100 beziehungsweise leere Zeiten). Eine neue
+    Funktion, die beim ersten Lauf ungefragt eingreift, ist ein Fehler.
+    """
+    grenze = max(0, min(100, zahl_oder(cfg.get("lautstaerke_max"), 100)))
+    von = str(cfg.get("ruhe_von", "") or "").strip()
+    bis = str(cfg.get("ruhe_bis", "") or "").strip()
+    if von == "" or bis == "":
+        return grenze
+    def minuten(s):
+        m = re.match(r"^(\d{1,2}):(\d{2})$", s)
+        if not m:
+            return None
+        st, mi = int(m.group(1)), int(m.group(2))
+        if st > 23 or mi > 59:
+            return None
+        return st * 60 + mi
+    a, b = minuten(von), minuten(bis)
+    if a is None or b is None:
+        # Abweisen, nicht zurechtbiegen: eine unverstaendliche Zeit darf
+        # nicht heimlich zu "immer" oder "nie" werden.
+        log.warning("Ruhezeit '%s' bis '%s' ist keine Uhrzeit (HH:MM) - "
+                    "die Ruhezeit bleibt aus.", von, bis)
+        return grenze
+    t = jetzt if jetzt is not None else time.localtime()
+    jetzt_min = t.tm_hour * 60 + t.tm_min
+    # Ein Fenster darf ueber Mitternacht gehen - 22:00 bis 07:00 ist der
+    # Regelfall, nicht die Ausnahme.
+    drin = (a <= jetzt_min < b) if a < b else (jetzt_min >= a or jetzt_min < b)
+    if drin:
+        grenze = min(grenze, max(0, min(100, zahl_oder(cfg.get("ruhe_max"), 30))))
+    return grenze
 
 
 # ---------------------------------------------------------------------------
@@ -450,12 +733,12 @@ class MqttAnbindung:
         except Exception as fehler:  # noqa: BLE001
             log.error("MQTT-Nachricht nicht verarbeitbar: %s", fehler)
 
-    def senden(self, unterthema, wert):
+    def senden(self, unterthema, wert, retain=True):
         if not self.client:
             return False
         try:
             erg = self.client.publish(self.praefix + "/" + unterthema,
-                                      str(wert), qos=0, retain=True)
+                                      str(wert), qos=0, retain=bool(retain))
         except Exception as fehler:  # noqa: BLE001
             log.error("MQTT-Veroeffentlichung fehlgeschlagen: %s", fehler)
             return False
@@ -491,8 +774,19 @@ class MqttAnbindung:
 # ---------------------------------------------------------------------------
 
 def lautstaerke_setzen(cast, wert):
-    """set_volume sass bis pychromecast 12 auf dem Chromecast-Objekt und
-    liegt seit 13 nur noch auf dem receiver_controller. Beide Wege abdecken."""
+    """Lautstaerke setzen, ueber beide moeglichen Wege.
+
+    Hier stand bis 1.2.12, set_volume habe "bis pychromecast 12 auf dem
+    Chromecast-Objekt gesessen und liege seit 13 nur noch auf dem
+    receiver_controller". Das ist nicht so. Nachgemessen am 22.08.2026 an
+    den Quelltexten beider Fassungen: 9.4.0 (__init__.py, Zeilen ~356-365)
+    und 14.0.10 (Zeilen 289-290) setzen den Namen im Konstruktor als Alias
+    auf receiver_controller.set_volume. Der zweite Zweig wurde also in
+    keiner der beiden je erreicht.
+
+    Er bleibt trotzdem stehen: gemessen sind zwei Fassungen, nicht alle,
+    und die Abfrage kostet nichts. Was falsch war, war die Begruendung.
+    """
     if hasattr(cast, "set_volume"):
         cast.set_volume(wert)
     else:
@@ -504,6 +798,84 @@ def stumm_setzen(cast, stumm):
         cast.set_volume_muted(stumm)
     else:
         cast.socket_client.receiver_controller.set_volume_muted(stumm)
+
+
+class Netzsuche:
+    """Dauerhaft lauschen, statt je Geraet einzeln zu suchen.
+
+    Der bisherige Weg ist teuer: verbinden() ruft je Geraet
+    get_listed_chromecasts(discovery_timeout=8), und die Hauptschleife tut
+    das fuer JEDES nicht verbundene Geraet in JEDEM Durchgang. Bei drei
+    abwesenden Geraeten sind das 24 Sekunden in einem Takt, der auf 10
+    eingestellt ist - die Schleife hinkt, und die Meldungen der LAUFENDEN
+    Geraete kommen mit ihr zu spaet.
+
+    CastBrowser und SimpleCastListener stehen in pychromecast 9.4 wie in
+    14.x mit denselben Signaturen; get_chromecast_from_cast_info nimmt in
+    beiden (cast_info, zconf) in dieser Stellung.
+    """
+
+    def __init__(self):
+        self.browser = None
+        self.zconf = None
+        self.gefunden = {}
+        self.laeuft = False
+
+    def start(self):
+        try:
+            import zeroconf
+            from pychromecast.discovery import CastBrowser, SimpleCastListener
+        except ImportError as fehler:
+            log.warning("Dauersuche nicht moeglich (%s) - es bleibt bei der "
+                        "Einzelsuche je Geraet.", fehler)
+            return False
+
+        def dazu(uuid, service):
+            info = None
+            try:
+                info = self.browser.devices.get(uuid)
+            except Exception:  # noqa: BLE001
+                pass
+            name = getattr(info, "friendly_name", "") if info else ""
+            if name:
+                self.gefunden[name] = info
+
+        def weg(uuid, service, cast_info):
+            name = getattr(cast_info, "friendly_name", "")
+            if name in self.gefunden:
+                del self.gefunden[name]
+                log.info("'%s' hat sich aus dem Netz abgemeldet", name)
+
+        try:
+            self.zconf = zeroconf.Zeroconf()
+            self.browser = CastBrowser(SimpleCastListener(dazu, weg, dazu),
+                                       self.zconf)
+            self.browser.start_discovery()
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("Dauersuche liess sich nicht starten (%s) - es bleibt "
+                        "bei der Einzelsuche je Geraet.", fehler)
+            self.browser = None
+            return False
+        self.laeuft = True
+        log.info("Dauersuche laeuft - Geraete werden gemeldet, sobald sie sich "
+                 "im Netz zeigen.")
+        return True
+
+    def info(self, name):
+        return self.gefunden.get(name)
+
+    def stop(self):
+        try:
+            if self.browser:
+                self.browser.stop_discovery()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            if self.zconf:
+                self.zconf.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.laeuft = False
 
 
 class Geraet:
@@ -518,9 +890,38 @@ class Geraet:
         self.letzter_stand = {}
         self.art = ""
         self.ist_gruppe = False
+        # Duerfen Lautsprechergruppen benutzt werden? Der Dienst setzt das
+        # bei jedem Aufbau der Geraeteliste neu, damit eine Aenderung der
+        # Einstellung ohne Neustart ankommt.
+        self.gruppen_erlaubt = True
         # Was lief vor einer Ansage? Fuer die Wiederaufnahme.
         self.vorher = None
         self.ansage_laeuft = False
+        # Zuletzt gestarteter Favorit und zuletzt aufgetretene Meldung.
+        # Beide gehen nach Loxone: dort war bisher nicht erkennbar, ob ein
+        # Befehl angekommen ist - die Meldung stand nur im Protokoll.
+        self.favorit = "0"
+        self.letzte_meldung = ""
+        # Wartezeit-Staffelung: eine erfolglose Suche kostet acht Sekunden.
+        # Sie in JEDEM Durchgang zu wiederholen laesst die Schleife hinken,
+        # und zwar zu Lasten der Geraete, die laufen.
+        self.naechster_versuch = 0.0
+        self.wartezeit = 0.0
+        # Rueckrufe (B2). Ab Werk aus; der Dienst setzt es beim Aufbau.
+        self.lauscher_erlaubt = False
+        self.lauscher_an = False
+        self.letzter_rueckruf = 0.0
+        self.netzsuche = None
+        # B4: Ein Arbeitsfaden je Geraet. Der MQTT-Rueckruf legt nur ab.
+        self.auftraege = queue.Queue()
+        self.faden = None
+        self.faden_laeuft = False
+        # Wird gesetzt, wenn eine laufende Ansage abgebrochen werden soll.
+        self.ansage_abbrechen = False
+        # melden() kann jetzt aus zwei Faeden kommen - der Hauptschleife und
+        # dem Arbeitsfaden. Ein Schloss kostet nichts und spart eine Klasse
+        # von Fehlern, die sich hinterher nicht mehr nachstellen laesst.
+        self.schloss = threading.Lock()
 
     # -- Verbindung ---------------------------------------------------------
 
@@ -541,22 +942,37 @@ class Geraet:
         # Einstellungen. Der Wert ist erheblich: eine Gruppe spielt synchron
         # auf allen ihren Lautsprechern, was sich mit Einzelbefehlen nicht
         # nachbauen laesst (sie liefen um Sekundenbruchteile versetzt).
-        try:
-            gefunden, browser = pychromecast.get_listed_chromecasts(
-                friendly_names=[self.name], discovery_timeout=8
-            )
-        except Exception as fehler:  # noqa: BLE001
-            log.error("Suche nach '%s' fehlgeschlagen: %s", self.name, fehler)
-            return False
+        # Erst in der Dauersuche nachsehen - das kostet nichts. Nur wenn
+        # sie nicht laeuft oder das Geraet dort nicht steht, wird die teure
+        # Einzelsuche bemueht.
+        info = self.netzsuche.info(self.name) if self.netzsuche else None
+        if info is not None:
+            try:
+                self.cast = pychromecast.get_chromecast_from_cast_info(
+                    info, self.netzsuche.zconf)
+                self.browser = None
+            except Exception as fehler:  # noqa: BLE001
+                log.warning("'%s' steht in der Dauersuche, liess sich aber "
+                            "nicht verbinden (%s) - es wird einzeln gesucht.",
+                            self.name, fehler)
+                info = None
+        if info is None:
+            try:
+                gefunden, browser = pychromecast.get_listed_chromecasts(
+                    friendly_names=[self.name], discovery_timeout=8
+                )
+            except Exception as fehler:  # noqa: BLE001
+                log.error("Suche nach '%s' fehlgeschlagen: %s", self.name, fehler)
+                return False
 
-        if not gefunden:
-            log.warning("Chromecast '%s' nicht gefunden", self.name)
-            self._browser_beenden(browser)
-            self.melden_offline()
-            return False
+            if not gefunden:
+                log.warning("Chromecast '%s' nicht gefunden", self.name)
+                self._browser_beenden(browser)
+                self.melden_offline()
+                return False
 
-        self.cast = gefunden[0]
-        self.browser = browser
+            self.cast = gefunden[0]
+            self.browser = browser
         try:
             self.cast.wait(timeout=10)
         except Exception as fehler:  # noqa: BLE001
@@ -568,10 +984,190 @@ class Geraet:
 
         self.art = str(getattr(self.cast, "cast_type", "") or "")
         self.ist_gruppe = self.art.lower() == "group"
+        if self.ist_gruppe and not self.gruppen_erlaubt:
+            # Der Haken "Google-Lautsprechergruppen mitsuchen" steht aus.
+            # Abweisen und sagen warum - nicht stillschweigend doch benutzen.
+            log.warning("'%s' ist eine Lautsprechergruppe, und Gruppen sind "
+                        "in den Einstellungen abgeschaltet - nicht benutzt.",
+                        self.name)
+            self.trennen()
+            self.melden_offline()
+            return False
         log.info("Verbunden mit '%s' (%s%s)", self.name,
                  getattr(self.cast, "model_name", "?"),
                  ", Lautsprechergruppe" if self.ist_gruppe else "")
+        self._lauscher_anmelden()
         return True
+
+    def _lauscher_anmelden(self):
+        """Rueckrufe anmelden - OHNE von den Basisklassen zu erben.
+
+        MediaStatusListener hat ab pychromecast 12 ZWEI abstrakte Methoden
+        (dazu load_media_failed), und deren Parametername wechselte in
+        14.0.0 noch einmal. Eine Klasse, die davon erbt und nur
+        new_media_status umsetzt, laesst sich dort nicht einmal anlegen.
+        Die Anmeldung ist reines Duck-Typing - also wird nicht geerbt, und
+        die zweite Methode nimmt einfach alles entgegen.
+        """
+        if not self.lauscher_erlaubt or self.lauscher_an or self.cast is None:
+            return
+        geraet = self
+
+        class _Lauscher(object):
+            def new_cast_status(self, status):
+                geraet._rueckruf()
+
+            def new_media_status(self, status):
+                geraet._rueckruf()
+
+            def load_media_failed(self, *args, **kwargs):
+                geraet._rueckruf()
+
+            def new_connection_status(self, status):
+                geraet._rueckruf()
+
+        h = _Lauscher()
+        try:
+            self.cast.register_status_listener(h)
+            self.cast.media_controller.register_status_listener(h)
+            self.cast.register_connection_listener(h)
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("'%s': Rueckrufe liessen sich nicht anmelden (%s) - "
+                        "es bleibt beim Abfragetakt.", self.name, fehler)
+            return
+        self.lauscher_an = True
+        log.info("'%s': meldet jetzt ereignisgesteuert", self.name)
+
+    def _rueckruf(self):
+        """Ein Zustand hat sich geaendert - sofort melden.
+
+        Zwei Wachen: waehrend einer Ansage wird nicht dazwischengefunkt, und
+        oefter als zweimal je Sekunde wird nicht gemeldet. Eine App kann in
+        einer Sekunde dutzende Statuswechsel schicken; jeder davon eine
+        MQTT-Nachricht waere eine Last, die niemand braucht.
+        """
+        if self.ansage_laeuft:
+            return
+        jetzt = time.time()
+        if jetzt - self.letzter_rueckruf < 0.5:
+            return
+        self.letzter_rueckruf = jetzt
+        try:
+            self.melden()
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("'%s': Meldung aus dem Rueckruf misslungen: %s",
+                        self.name, fehler)
+
+    def faden_starten(self):
+        """Den Arbeitsfaden anwerfen, falls er nicht schon laeuft."""
+        if self.faden_laeuft:
+            return
+        self.faden_laeuft = True
+        self.faden = threading.Thread(target=self._arbeiten, daemon=True,
+                                      name="cc-" + self.thema)
+        self.faden.start()
+
+    def _arbeiten(self):
+        """Auftraege nacheinander abarbeiten.
+
+        Ein Faden je Geraet, nicht einer fuer alle: sonst blockierte eine
+        Ansage im Wohnzimmer den Pausenbefehl in der Kueche. Und
+        NACHEINANDER, nicht gleichzeitig: zwei play_media() auf demselben
+        Lautsprecher ueberschrieben einander.
+        """
+        while self.faden_laeuft:
+            try:
+                auftrag = self.auftraege.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            if auftrag is None:
+                break
+            befehl, wert, schrittweite, cfg = auftrag
+            try:
+                ergebnis = self.befehl(befehl, wert, schrittweite, cfg)
+            except Exception as fehler:  # noqa: BLE001
+                ergebnis = "Fehler: {0}".format(fehler)
+                log.error("'%s': Auftrag %s abgebrochen: %s",
+                          self.name, befehl, fehler)
+            if ergebnis != "OK":
+                log.warning("%s: %s", self.name, ergebnis)
+            self.meldung_setzen("" if ergebnis == "OK" else ergebnis)
+            self.auftraege.task_done()
+
+    def einreihen(self, befehl, wert, schrittweite, cfg):
+        """Einen Auftrag ablegen und SOFORT zurueckkehren.
+
+        Genau darum geht es: der Aufrufer ist der Netzfaden von paho. Bleibt
+        er in einer Ansage stehen, geht kein Lebenszeichen mehr an den
+        Broker, und der trennt.
+        """
+        befehl_klein = (befehl or "").strip().lower()
+        if befehl_klein in ("tts_stop", "ansage_stop"):
+            # Der Abbruch geht NICHT in die Warteschlange - er soll ja
+            # gerade das ueberholen, was darin steht.
+            self.ansage_abbrechen = True
+            geleert = 0
+            while True:
+                try:
+                    self.auftraege.get_nowait()
+                    self.auftraege.task_done()
+                    geleert += 1
+                except queue.Empty:
+                    break
+            log.info("'%s': Ansage abgebrochen, %d wartende Auftraege verworfen",
+                     self.name, geleert)
+            return
+        self.faden_starten()
+        self.auftraege.put((befehl, wert, schrittweite, cfg))
+
+    def meldung_setzen(self, text):
+        """Die letzte Meldung nach Loxone geben.
+
+        Bis 1.2.12 stand sie nur im Protokoll - in Loxone war nicht
+        erkennbar, ob ein Befehl angekommen ist.
+        """
+        text = " ".join(str(text or "").split())[:200]
+        if text == self.letzte_meldung:
+            return
+        self.letzte_meldung = text
+        self._senden("last_error", text)
+
+    def _geraete_adresse(self):
+        """Die IP des Lautsprechers, soweit bekannt - sonst leer."""
+        info = getattr(self.cast, "cast_info", None)
+        host = getattr(info, "host", "") if info else ""
+        if host:
+            return host
+        uri = str(getattr(self.cast, "uri", "") or "")
+        return uri.split(":")[0] if ":" in uri else ""
+
+    def _gedeckelt(self, pegel, cfg):
+        """Die Obergrenze anwenden und es sagen, wenn sie greift."""
+        grenze = lautstaerke_grenze(cfg or {})
+        if pegel <= grenze:
+            return pegel
+        log.info("'%s': Lautstaerke %d auf die Grenze %d gesenkt",
+                 self.name, pegel, grenze)
+        self.meldung_setzen("Lautstaerke auf {0} begrenzt".format(grenze))
+        return grenze
+
+    def darf_suchen(self, jetzt=None):
+        """Ist die Wartezeit bis zum naechsten Suchversuch abgelaufen?"""
+        return (jetzt or time.time()) >= self.naechster_versuch
+
+    def suche_vermerken(self, erfolg, grenze):
+        """Nach einem Suchversuch die Wartezeit fortschreiben.
+
+        Erfolg setzt sie zurueck. Ein Fehlschlag verdoppelt sie, bis zur
+        Grenze - sonst kostet ein abwesendes Geraet in jedem Durchgang acht
+        Sekunden, und die Geraete, die LAUFEN, melden dadurch zu spaet.
+        """
+        if erfolg:
+            self.wartezeit = 0.0
+            self.naechster_versuch = 0.0
+            return
+        self.wartezeit = min(grenze, max(2.0, self.wartezeit * 2))
+        self.naechster_versuch = time.time() + self.wartezeit
 
     def _browser_beenden(self, browser):
         try:
@@ -589,6 +1185,8 @@ class Geraet:
         self._browser_beenden(self.browser)
         self.cast = None
         self.browser = None
+        # Die Rueckrufe hingen am alten Cast-Objekt und sind mit ihm fort.
+        self.lauscher_an = False
 
     def verbunden(self):
         return self.cast is not None and getattr(self.cast, "socket_client", None) is not None
@@ -597,12 +1195,17 @@ class Geraet:
 
     def _senden(self, schluessel, wert, erzwingen=False):
         """Nur senden, wenn sich der Wert geaendert hat. Sonst laeuft der
-        Broker bei kurzem Intervall unnoetig voll."""
+        Broker bei kurzem Intervall unnoetig voll.
+
+        Ob retained gesendet wird, entscheidet die Themenliste je Thema -
+        nicht dieser Code und schon gar nicht pauschal.
+        """
         wert = "" if wert is None else str(wert)
         if not erzwingen and self.letzter_stand.get(schluessel) == wert:
             return
         self.letzter_stand[schluessel] = wert
-        self.mqtt.senden(self.thema + "/" + schluessel, wert)
+        self.mqtt.senden(self.thema + "/" + schluessel, wert,
+                         thema_retain("geraet", schluessel))
 
     def melden_offline(self):
         self._senden("online", "0")
@@ -610,7 +1213,15 @@ class Geraet:
         self._senden("playing", "0")
 
     def melden(self, erzwingen=False):
-        """Aktuellen Zustand einsammeln und veroeffentlichen."""
+        """Aktuellen Zustand einsammeln und veroeffentlichen.
+
+        Kann aus der Hauptschleife UND aus einem Rueckruf kommen - deshalb
+        unter einem Schloss.
+        """
+        with self.schloss:
+            self._melden(erzwingen)
+
+    def _melden(self, erzwingen=False):
         if not self.verbunden():
             self.melden_offline()
             return
@@ -644,6 +1255,13 @@ class Geraet:
             self._senden("position", int(medien.adjusted_current_time or 0), erzwingen)
         self._senden("state", zustand, erzwingen)
         self._senden("playing", "1" if zustand == "PLAYING" else "0", erzwingen)
+
+        # Diese drei stehen in der Themenliste und bekommen ihren Ruhewert,
+        # damit im Broker kein Thema leer bleibt. Belegt werden sie von der
+        # Ansage und vom Favoritenbefehl.
+        self._senden("tts_active", "1" if self.ansage_laeuft else "0", erzwingen)
+        self._senden("favorit", self.favorit, erzwingen)
+        self._senden("last_error", self.letzte_meldung, erzwingen)
 
     # -- Befehle ------------------------------------------------------------
 
@@ -704,6 +1322,22 @@ class Geraet:
         if text == "":
             return "Ansage ohne Text - nichts zu sagen"
         adressen, modus = tts_adressen(text, cfg)
+        if modus == "lokal":
+            if not self.verbunden() and not self.verbinden():
+                return "Geraet nicht erreichbar"
+            name, fehlertext = ansage_lokal_erzeugen(
+                text, (cfg.get("tts_sprache") or "de").strip() or "de")
+            if fehlertext:
+                return fehlertext
+            basis = str(cfg.get("tts_lokal_basis", "") or "").strip().rstrip("/")
+            if basis == "":
+                ip = eigene_ip(self._geraete_adresse())
+                if ip == "":
+                    return ("Die eigene Adresse liess sich nicht ermitteln - "
+                            "im Feld Grundadresse eintragen.")
+                basis = "http://{0}/plugins/{1}".format(ip, PLUGIN_NAME)
+            adressen = [basis + "/ansage/" + name]
+            modus = "chromecast"   # ab hier derselbe Weg
         if modus == "audioserver":
             return ("Modus 'audioserver': der originale Loxone Audioserver hat keine "
                     "HTTP-Schnittstelle fuer Ansagen. Die Ansage baut man in Loxone "
@@ -729,15 +1363,42 @@ class Geraet:
 
         fortsetzen = str(cfg.get("tts_fortsetzen", "1")).strip() == "1"
         ansagepegel = cfg.get("tts_pegel")
+        self.ansage_abbrechen = False
         self.ansage_laeuft = True
+        # Loxone soll wissen, dass gerade gesprochen wird - wer in dieser
+        # Zeit Befehle schickt, unterbricht die Ansage.
+        self._senden("tts_active", "1")
         try:
             if fortsetzen:
                 self._lage_merken()
             if str(ansagepegel or "").strip() != "":
                 stufe = max(0, min(100, zahl_oder(ansagepegel, 40)))
+                grenze = lautstaerke_grenze(cfg)
+                if stufe > grenze:
+                    log.info("'%s': Ansagelautstaerke %d auf die Grenze %d "
+                             "gesenkt", self.name, stufe, grenze)
+                    stufe = grenze
                 lautstaerke_setzen(self.cast, stufe / 100.0)
+            gong = str(cfg.get("tts_gong", "") or "").strip()
+            if gong != "":
+                # Ein Klang vor der Ansage. Wer ohne Vorwarnung angesprochen
+                # wird, ueberhoert es oder erschrickt.
+                try:
+                    self.cast.media_controller.play_media(gong, "audio/mp3")
+                    self.cast.media_controller.block_until_active(timeout=10)
+                    self._auf_ende_warten(self.cast.media_controller, 15.0)
+                except Exception as fehler:  # noqa: BLE001
+                    log.warning("'%s': Gong misslungen: %s", self.name, fehler)
             mc = self.cast.media_controller
             for nummer, adresse in enumerate(adressen, start=1):
+                if self.ansage_abbrechen:
+                    log.info("'%s': Ansage nach Teil %d abgebrochen",
+                             self.name, nummer - 1)
+                    try:
+                        mc.stop()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    return "Abgebrochen"
                 mc.play_media(adresse, "audio/mp3")
                 mc.block_until_active(timeout=10)
                 # Warten, bis dieses Stueck durch ist. Ohne das ueberschriebe
@@ -755,6 +1416,8 @@ class Geraet:
             return "Fehler: {0}".format(fehler)
         finally:
             self.ansage_laeuft = False
+            self.ansage_abbrechen = False
+            self._senden("tts_active", "0")
 
     def _auf_ende_warten(self, mc, hoechstens=60.0):
         """Warten, bis das laufende Stueck zu Ende ist.
@@ -773,6 +1436,12 @@ class Geraet:
             except Exception:  # noqa: BLE001
                 return
             if zustand not in ("PLAYING", "BUFFERING"):
+                return
+            if self.ansage_abbrechen:
+                try:
+                    mc.stop()
+                except Exception:  # noqa: BLE001
+                    pass
                 return
             time.sleep(0.5)
         log.warning("'%s': Ansage laeuft nach %.0f s noch - es wird weitergemacht",
@@ -813,16 +1482,17 @@ class Geraet:
                 jetzt_proz = int(round((self.cast.status.volume_level or 0) * 100)) \
                     if self.cast.status else 0
                 pegel = max(0, min(100, zahl_oder(wert, jetzt_proz)))
-                lautstaerke_setzen(self.cast, pegel / 100.0)
+                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_step", "adjust_volume"):
                 delta = zahl_oder(wert, schrittweite)
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = max(0, min(100, int(round(jetzt * 100)) + delta))
-                lautstaerke_setzen(self.cast, pegel / 100.0)
+                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_up", "lauter"):
                 delta = zahl_oder(wert, schrittweite)
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
-                lautstaerke_setzen(self.cast, min(1.0, jetzt + delta / 100.0))
+                pegel = int(round(min(1.0, jetzt + delta / 100.0) * 100))
+                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_down", "leiser"):
                 delta = zahl_oder(wert, schrittweite)
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
@@ -835,6 +1505,27 @@ class Geraet:
                 mc.queue_prev()
             elif befehl == "seek":
                 mc.seek(max(0, zahl_oder(wert, 0)))
+            elif befehl in ("play_favorit", "favorit"):
+                liste = favoriten(cfg or {})
+                nummer = zahl_oder(wert, 0)
+                if nummer <= 0:
+                    # 0 tut nichts. Ein virtueller Ausgang in Loxone steht
+                    # nach dem Neustart des Miniservers auf 0, und das darf
+                    # nicht das erste Lied starten.
+                    return "OK"
+                if nummer > len(liste):
+                    return ("Favorit {0} gibt es nicht - eingetragen sind {1}"
+                            .format(nummer, len(liste)))
+                name, adresse = liste[nummer - 1]
+                typ = "audio/mp3"
+                if re.search(r"\.(mp4|mkv|avi|mov|webm)(\?|$)", adresse, re.I):
+                    typ = "video/mp4"
+                log.info("'%s': Favorit %d (%s) wird gestartet",
+                         self.name, nummer, name)
+                mc.play_media(adresse, typ)
+                mc.block_until_active(timeout=10)
+                self.favorit = str(nummer)
+                self._senden("favorit", self.favorit)
             elif befehl in ("tts", "say", "ansage"):
                 return self.ansage(wert, cfg or {})
             else:
@@ -920,12 +1611,17 @@ class UdpEmpfaenger(threading.Thread):
 class Dienst:
     def __init__(self):
         self.cfg = konfiguration_lesen()
-        self.praefix = self.cfg.get("themenpraefix", "chromecast4lox") or "chromecast4lox"
+        self.praefix = self.cfg.get("mqtt_topic", "chromecast4lox") or "chromecast4lox"
         self.geraete = {}
         self.mqtt = MqttAnbindung(self.praefix, self.befehl_ausfuehren)
         self.udp = None
         self.laeuft = True
         self.config_mtime = self._mtime()
+        # Umlaufender Taktzaehler. Bleibt er stehen, arbeitet der Dienst
+        # nicht mehr - das erkennt Loxone mit einer Aenderungsueberwachung,
+        # und der Reiter Test an der Zustandsdatei.
+        self.zaehler = 0
+        self.netzsuche = Netzsuche()
 
     def _mtime(self):
         try:
@@ -939,6 +1635,61 @@ class Dienst:
         except (TypeError, ValueError):
             return int(vorgabe)
 
+    def herzschlag(self, erreichbar):
+        """Lebenszeichen - per MQTT UND in eine Datei.
+
+        Wer nur bei Aenderungen sendet, hoert bei einer Stoerung einfach auf.
+        Die zuletzt gesendeten Werte bleiben im Broker stehen, und in Loxone
+        sieht ein toter Dienst genauso aus wie ein ruhiges Haus.
+
+        Diese Themen gehen deshalb bei JEDEM Durchgang hinaus, am
+        Doppelt-senden-Filter vorbei - sonst waere der Zeitstempel selbst der
+        aelteste Wert im Broker.
+        """
+        self.zaehler = (self.zaehler + 1) % 1000
+        jetzt = int(time.time())
+        werte = {
+            "ts": jetzt,
+            "zaehler": self.zaehler,
+            "geraete": erreichbar,
+            "verluste": self.mqtt.verluste,
+            "fassung": version(),
+        }
+        for schluessel, wert in werte.items():
+            self.mqtt.senden("server/" + schluessel, wert,
+                             thema_retain("dienst", schluessel))
+        self.zustand_schreiben(jetzt, erreichbar)
+
+    def zustand_schreiben(self, jetzt, erreichbar):
+        """Denselben Stand in eine Datei unter data/.
+
+        Unabhaengig von MQTT: daran erkennt der Reiter Test, ob der Dienst
+        noch arbeitet. Eine Prozessnummer beantwortet das nicht - ein Prozess
+        kann dastehen und nichts mehr tun.
+
+        Nach data/, nicht nach log/: log/plugins liegt auf einer Ramdisk.
+        """
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            vorlaeufig = ZUSTAND_FILE + ".neu"
+            with open(vorlaeufig, "w", encoding="utf-8") as fh:
+                json.dump({
+                    "zeit": jetzt,
+                    "zaehler": self.zaehler,
+                    "geraete_erreichbar": erreichbar,
+                    "geraete_konfiguriert": len(self.geraete),
+                    "verluste": self.mqtt.verluste,
+                    "mqtt_verbunden": bool(self.mqtt.verbunden),
+                    "fassung": version(),
+                }, fh)
+            # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
+            # Oberflaeche irgendwann eine halbe Datei und meldet einen
+            # Defekt, den es nicht gibt.
+            os.replace(vorlaeufig, ZUSTAND_FILE)
+        except OSError as fehler:
+            log.warning("Zustandsdatei %s nicht schreibbar: %s",
+                        ZUSTAND_FILE, fehler)
+
     def geraete_aufbauen(self):
         namen = geraeteliste(self.cfg)
         if not namen:
@@ -948,9 +1699,30 @@ class Dienst:
             if alt not in namen:
                 self.geraete[alt].trennen()
                 del self.geraete[alt]
+        erlaubt = str(self.cfg.get("gruppen", "1")).strip() != "0"
+        schnell = str(self.cfg.get("beschleunigung", "0")).strip() == "1"
         for name in namen:
             if name not in self.geraete:
                 self.geraete[name] = Geraet(name, self.mqtt)
+            # Bei jedem Aufbau neu setzen: die Einstellung kann sich
+            # geaendert haben, und der Dienst liest sie ohne Neustart nach.
+            self.geraete[name].gruppen_erlaubt = erlaubt
+            self.geraete[name].lauscher_erlaubt = schnell
+            self.geraete[name].netzsuche = self.netzsuche if schnell else None
+
+    def geraete_fuer(self, kennung):
+        """Welche Geraete meint diese Kennung? Immer eine LISTE.
+
+        Ein echter Geraetename gewinnt vor dem Sammelziel: wer seinen
+        Lautsprecher tatsaechlich "alle" nennt, soll ihn weiter einzeln
+        ansprechen koennen.
+        """
+        einzeln = self.geraet_finden(kennung)
+        if einzeln is not None:
+            return [einzeln]
+        if kennung and str(kennung).strip().lower() in SAMMELZIEL:
+            return list(self.geraete.values())
+        return []
 
     def geraet_finden(self, kennung):
         """Geraet nach Name oder nach gesaeubertem Thema suchen."""
@@ -965,21 +1737,26 @@ class Dienst:
         return None
 
     def befehl_ausfuehren(self, kennung, befehl, wert):
-        geraet = self.geraet_finden(kennung)
-        if not geraet:
-            log.warning("Kein Geraet fuer '%s' - konfiguriert sind: %s",
-                        kennung, ", ".join(self.geraete) or "keine")
+        ziele = self.geraete_fuer(kennung)
+        if not ziele:
+            log.warning("Kein Geraet fuer '%s' - konfiguriert sind: %s "
+                        "(Sammelziel: %s)", kennung,
+                        ", ".join(self.geraete) or "keine", "/".join(SAMMELZIEL))
             return
-        ergebnis = geraet.befehl(befehl, wert,
-                                 self._zahl("lautstaerke_schritt", 5), self.cfg)
-        if ergebnis != "OK":
-            log.warning("%s: %s", geraet.name, ergebnis)
+        if len(ziele) > 1:
+            log.info("Sammelbefehl '%s' an %d Geraete", befehl, len(ziele))
+        for geraet in ziele:
+            # EINREIHEN, nicht aufrufen. Der Aufrufer ist der Netzfaden von
+            # paho oder der UDP-Faden; beide duerfen nicht minutenlang in
+            # einer Ansage stehen bleiben.
+            geraet.einreihen(befehl, wert,
+                             self._zahl("lautstaerke_schritt", 5), self.cfg)
 
     def start(self):
-        log.info("Chromecast 4 Lox NG %s startet", VERSION)
+        log.info("Chromecast 4 Lox NG %s startet", version() or "(Fassung unbekannt)")
         log.info("Konfiguration: %s", CONFIG_FILE)
 
-        if self.cfg.get("mqtt", "1") == "1":
+        if self.cfg.get("mqtt_ein", "1") == "1":
             self.mqtt.start()
         else:
             log.info("MQTT ist ausgeschaltet")
@@ -989,6 +1766,9 @@ class Dienst:
         if self.cfg.get("udp", "1") == "1":
             self.udp = UdpEmpfaenger(self._zahl("udp_port", 7090), self)
             self.udp.start()
+
+        if str(self.cfg.get("beschleunigung", "0")).strip() == "1":
+            self.netzsuche.start()
 
         intervall = max(2, self._zahl("intervall", 10))
         vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60))
@@ -1012,11 +1792,20 @@ class Dienst:
                     # Verbindungsaufbau mitten hinein wuerde sie abbrechen.
                     continue
                 if not geraet.verbunden():
-                    geraet.verbinden()
+                    # Nicht in jedem Durchgang suchen: ein erfolgloser
+                    # Versuch kostet acht Sekunden, und die zahlen die
+                    # Geraete, die gerade laufen.
+                    if geraet.darf_suchen():
+                        geraet.suche_vermerken(geraet.verbinden(),
+                                               max(60.0, intervall * 6))
                 erzwingen = neu_verbunden or (time.time() - letzte_vollmeldung) >= vollmeldung_alle
                 geraet.melden(erzwingen=erzwingen)
             if (time.time() - letzte_vollmeldung) >= vollmeldung_alle:
                 letzte_vollmeldung = time.time()
+
+            # Das Lebenszeichen geht in JEDEM Durchgang hinaus, auch wenn
+            # sich sonst nichts geaendert hat.
+            self.herzschlag(sum(1 for g in self.geraete.values() if g.verbunden()))
 
             # Konfigurationsaenderung uebernehmen, ohne Neustart
             if self._mtime() != self.config_mtime:
@@ -1031,15 +1820,42 @@ class Dienst:
 
     def stop(self):
         self.laeuft = False
+        # -1 heisst: der Takt laeuft nicht mehr. Ein stehengebliebener
+        # Zaehler waere von einem langsamen nicht zu unterscheiden.
+        try:
+            self.mqtt.senden("server/zaehler", -1, thema_retain("dienst", "zaehler"))
+        except Exception:  # noqa: BLE001
+            pass
         if self.udp:
             self.udp.stop()
         for geraet in self.geraete.values():
+            geraet.faden_laeuft = False
+            geraet.ansage_abbrechen = True
+            try:
+                geraet.auftraege.put_nowait(None)
+            except Exception:  # noqa: BLE001
+                pass
+        for geraet in self.geraete.values():
             geraet.melden_offline()
             geraet.trennen()
+        self.netzsuche.stop()
         self.mqtt.stop()
 
 
 def main():
+    # Die Selbstpruefung im Reiter Test ruft den Dienst mit --themen auf und
+    # haelt die Liste gegen die der Oberflaeche. Zwei Listen in zwei Sprachen
+    # halten sich nicht von selbst gleich - und ein Kommentar ist kein
+    # Nachweis.
+    if "--themen" in sys.argv[1:]:
+        print(json.dumps({
+            "fassung": THEMEN.get("fassung", 0),
+            "geraet": [e["schluessel"] for e in THEMEN.get("geraet", ())],
+            "dienst": [e["schluessel"] for e in THEMEN.get("dienst", ())],
+            "befehle": [e["schluessel"] for e in THEMEN.get("befehle", ())],
+        }))
+        return
+
     dienst = Dienst()
     try:
         dienst.start()

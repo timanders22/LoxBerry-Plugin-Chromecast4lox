@@ -116,6 +116,6 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "chromecast-4lox-ng.cfg" "eda8aa7c819c6948cf56ad84c1649484c6300c85e9cce9b6b28d05ce96acc1f7"
+netz_zurueck "chromecast-4lox-ng.cfg" "65135c8d8908517fd87eefb3bcabc41f3e7e0fdd855aa8d25955eea7eee37e27"
 
 exit 0

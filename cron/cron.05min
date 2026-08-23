@@ -1,0 +1,84 @@
+#!/bin/sh
+#
+# Chromecast 4 Lox NG - Waechter, alle fuenf Minuten.
+#
+# Bis 1.2.12 gab es keinen. Starb der Dienst - an einem unerwarteten Fehler
+# oder weil ihn jemand beendet hat -, lief er bis zum naechsten Neustart des
+# Rechners nicht wieder an. In Loxone sieht das aus wie ein stiller
+# Lautsprecher: virtuelle Eingaenge behalten ihren letzten Wert, und niemand
+# merkt, dass niemand mehr sendet.
+#
+# Fuenf Minuten statt einer: der Dienst ist ein Dauerlaeufer, kein Cron-Job.
+# Ein minuetlicher Anlauf brauchte nur Rechenzeit.
+#
+# Die Platzhalter werden bei der Installation ersetzt. Sie stehen deshalb NUR
+# in den Zuweisungen und nicht im Kommentar: der Installer ersetzt sie
+# ueberall, und danach stuende hier ein fest verdrahteter Systempfad - genau
+# danach sucht der Pluginpruefer, ohne den Zusammenhang zu lesen.
+#
+# NICHT vom eigenen Ablageort eine feste Zahl Ebenen aufwaerts rechnen:
+# LoxBerry legt diese Datei unter <Wurzel>/system/cron/cron.05min/<plugin>
+# ab. Eine Rechnung mit ".." landet daneben, und der Waechter liefe ins
+# Leere, ohne es zu sagen.
+DIENST="REPLACELBPBINDIR/chromecast4lox_ng-server.py"
+CFG="REPLACELBPCONFIGDIR/chromecast-4lox-ng.cfg"
+LOG="REPLACELBPLOGDIR/REPLACELBPPLUGINDIR.log"
+PIDDATEI="REPLACELBPDATADIR/dienst.pid"
+
+# Ist das Plugin ausgeschaltet, hat der Waechter nichts zu tun. Sonst
+# startete er einen Dienst nach, den der Anwender im Reiter Test bewusst
+# angehalten hat - und ein Waechter, der gegen den Willen des Anwenders
+# arbeitet, ist schlimmer als keiner.
+#
+# Der Knopf "Dienst anhalten" setzt enabled=0, "Dienst neu starten" setzt es
+# wieder auf 1. Ohne diese Kopplung waere der Haltebefehl nach spaetestens
+# fuenf Minuten wirkungslos gewesen.
+if [ -f "$CFG" ] && grep -q '^enabled=0' "$CFG"; then
+    exit 0
+fi
+
+# Fail loud statt still. Ein Waechter, der schweigend nichts tut, ist
+# schlimmer als keiner.
+if [ ! -x "$DIENST" ]; then
+    MELDUNG="Chromecast 4 Lox NG: der Waechter findet chromecast4lox_ng-server.py nicht - es wird nicht nachgestartet."
+    command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 1
+fi
+
+# Laeuft er schon? Punktgenau ueber die PID-Datei, und die eingetragene
+# Nummer wird gegen /proc/<pid>/cmdline gehalten. Nicht ueber
+# "pgrep -f chromecast4lox_ng-server": das traefe auch einen offenen Editor
+# oder ein Sicherungsskript, das gerade den Ordner durchsucht.
+if [ -f "$PIDDATEI" ]; then
+    P=$(cat "$PIDDATEI" 2>/dev/null)
+    case "$P" in
+        ''|*[!0-9]*) P="" ;;
+    esac
+    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null \
+       && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null \
+          | sed 's#.*/##' | grep -qx "chromecast4lox_ng-server.py"; then
+        exit 0
+    fi
+fi
+
+# Er laeuft nicht. Nachstarten - als loxberry, nicht als root: der Dienst
+# spricht nur mDNS, MQTT und einen UDP-Port und braucht keine Rootrechte.
+#
+# 'echo $!' muss INNERHALB der su-Zeichenkette stehen: draussen waere es die
+# Nummer des su-Prozesses, und der beendet sich sofort.
+mkdir -p "$(dirname "$PIDDATEI")" 2>/dev/null
+if su loxberry -c "nohup '$DIENST' >> '$LOG' 2>&1 & echo \$! > '$PIDDATEI'" >/dev/null 2>&1; then
+    chown loxberry:loxberry "$PIDDATEI" 2>/dev/null
+    # Im Normalfall schweigt dieses Skript. Nur der Nachstart selbst ist eine
+    # Zeile wert - sonst schriebe ein Cron alle fuenf Minuten in den
+    # Systemlogger, und niemand laese ihn mehr.
+    MELDUNG="Chromecast 4 Lox NG: der Dienst lief nicht mehr und wurde nachgestartet."
+    command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+    exit 0
+fi
+
+MELDUNG="Chromecast 4 Lox NG: der Dienst liess sich nicht nachstarten - siehe Reiter Logdateien."
+command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+echo "$MELDUNG" >&2
+exit 1
