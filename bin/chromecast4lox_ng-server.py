@@ -154,57 +154,86 @@ log = logging.getLogger("chromecast4lox_ng")
 # Konfiguration
 # ---------------------------------------------------------------------------
 
-VORGABEN = {
-    "geraete": "",
-    "mqtt_topic": "chromecast4lox",
-    "mqtt_ein": "1",
-    "udp": "1",
-    "udp_port": "7090",
-    "intervall": "10",
-    "aktualisierung": "60",
-    "lautstaerke_schritt": "5",
-    # Favoriten: je Zeile "Name = Adresse". Ab Werk leer.
-    "favoriten": "",
-    # --- Ansage (TTS) ---
-    # Die Felder heissen genau wie im Abfahrtsassistenten und tun dasselbe.
-    # Wer dort schon eine Ansage eingerichtet hat, traegt hier dieselben
-    # Werte ein und bekommt dasselbe Verhalten.
-    "tts_modus": "chromecast",   # chromecast | musicserver | ms4h | audioserver | custom
-    "tts_ip": "",
-    "tts_port": "7091",
-    "tts_zonen": "1",
-    "tts_lautstaerke": "8",
-    "tts_sprache": "de",
-    "tts_vorlage": "",
-    # Ansagelautstaerke am Chromecast. Leer = die aktuelle beibehalten.
-    "tts_pegel": "",
-    # Nach der Ansage wieder aufnehmen, was vorher lief.
-    "tts_fortsetzen": "1",
-    # B10: Klang vor der Ansage. Leer = keiner.
-    "tts_gong": "",
-    # B7: Grundadresse, unter der der LoxBerry den html-Ordner des
-    # Plugins ausliefert. Leer = selbst ermitteln.
-    "tts_lokal_basis": "",
-    # B9: Obergrenzen. 100 heisst "keine Grenze"; die Ruhezeit ist mit
-    # leeren Zeiten ausgeschaltet. AB WERK AUS.
-    "lautstaerke_max": "100",
-    "ruhe_von": "",
-    "ruhe_bis": "",
-    "ruhe_max": "30",
-    # Gruppen mitsuchen (Google-Lautsprechergruppen).
-    "gruppen": "1",
-    # Schneller melden: Rueckrufe von pychromecast statt Abfragetakt,
-    # und eine dauerhafte Netzsuche statt einer Einzelsuche je Geraet.
-    # AB WERK AUS: an echter Hardware noch nicht erprobt. Der bisherige
-    # Takt bleibt in beiden Faellen als Rueckfallebene erhalten.
-    "beschleunigung": "0",
-}
+VORGABEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "cc_vorgaben.json")
+
+
+def _vorgaben_lesen():
+    """Die Vorgabewerte - aus derselben Datei, die auch die Oberflaeche liest.
+
+    Bis 1.3.0 stand hier eine eigene Liste, in der Oberflaeche eine zweite
+    und in der ausgelieferten Konfiguration eine dritte: 26, 28 und 27
+    Schluessel. Zwei getrennt gepflegte Vorgabelisten sind zwei Wahrheiten.
+
+    Fail closed: laesst sich die Datei nicht lesen, bleibt die Liste leer.
+    Der Dienst sagt das und arbeitet mit dem, was in der Konfiguration
+    steht - er erfindet keine Werte und schreibt erst recht keine.
+    """
+    try:
+        with open(VORGABEN_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+    except (OSError, ValueError) as fehler:
+        log.error("Vorgabeliste %s nicht lesbar (%s) - es gelten nur die "
+                  "Werte, die in der Konfiguration stehen.",
+                  VORGABEN_FILE, fehler)
+        return {}
+    werte = d.get("vorgaben")
+    if not isinstance(werte, dict) or not werte:
+        log.error("Vorgabeliste %s ist leer oder unvollstaendig.", VORGABEN_FILE)
+        return {}
+    return dict((str(k), str(v)) for k, v in werte.items())
+
+
+VORGABEN = _vorgaben_lesen()
+
+
+def konfiguration_vervollstaendigen(werte, vorhanden):
+    """Fehlende Schluessel EINMAL in die Konfigurationsdatei schreiben.
+
+    Ergaenzen hiesse: beim Lesen tritt die Vorgabe ein, die Datei bleibt
+    lueckenhaft, und "fehlt" ist von "steht auf dem Vorgabewert" nicht mehr
+    zu unterscheiden.
+
+    Geschrieben wird NUR ueber eine Datei, die es schon gibt. Eine frische
+    Anlage bekommt ihre Konfiguration von der Oberflaeche; der Dienst legt
+    sie nicht an - sonst schriebe er eine Datei, die der Anwender nie
+    gesehen hat.
+
+    Schluessel, die NICHT in der Vorgabeliste stehen, bleiben erhalten. Der
+    Dienst ist nicht die Stelle, die entscheidet, was in der Konfiguration
+    stehen darf.
+    """
+    fehlen = [k for k in VORGABEN if k not in vorhanden]
+    if not fehlen or not os.path.isfile(CONFIG_FILE):
+        return fehlen
+    zeilen = ["; Chromecast 4 Lox NG",
+              "; Wird von der Plugin-Oberflaeche geschrieben.", "", "[CONFIG]"]
+    geschrieben = set()
+    for k in VORGABEN:
+        zeilen.append("%s=%s" % (k, werte.get(k, VORGABEN[k])))
+        geschrieben.add(k)
+    for k in sorted(vorhanden - geschrieben):
+        zeilen.append("%s=%s" % (k, werte.get(k, "")))
+    try:
+        vorlaeufig = CONFIG_FILE + ".neu"
+        with open(vorlaeufig, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(zeilen) + "\n")
+        os.replace(vorlaeufig, CONFIG_FILE)
+        log.info("Konfiguration vervollstaendigt, es fehlten: %s",
+                 ", ".join(fehlen))
+    except OSError as fehler:
+        log.warning("Konfiguration liess sich nicht vervollstaendigen: %s",
+                    fehler)
+    return fehlen
 
 
 def konfiguration_lesen():
     """Konfiguration im Config::Lite-Format lesen. Fehlende Werte werden
     durch die Vorgaben ersetzt, damit der Dienst nie ohne Werte dasteht."""
     werte = dict(VORGABEN)
+    # Mitzaehlen, was WIRKLICH in der Datei stand: nach dem Untermischen
+    # der Vorgaben ist das nicht mehr zu erkennen.
+    gelesen = set()
     parser = ConfigParser(interpolation=None)
     parser.optionxform = str
     try:
@@ -216,7 +245,10 @@ def konfiguration_lesen():
 
     for abschnitt in parser.sections():
         for schluessel, wert in parser.items(abschnitt):
-            werte[schluessel.strip().lower()] = wert.strip().strip('"').strip("'")
+            k = schluessel.strip().lower()
+            werte[k] = wert.strip().strip('"').strip("'")
+            gelesen.add(k)
+    konfiguration_vervollstaendigen(werte, gelesen)
     return werte
 
 
@@ -1321,6 +1353,7 @@ class Geraet:
         text = " ".join(str(text or "").split())
         if text == "":
             return "Ansage ohne Text - nichts zu sagen"
+        war_lokal = False
         adressen, modus = tts_adressen(text, cfg)
         if modus == "lokal":
             if not self.verbunden() and not self.verbinden():
@@ -1338,6 +1371,11 @@ class Geraet:
                 basis = "http://{0}/plugins/{1}".format(ip, PLUGIN_NAME)
             adressen = [basis + "/ansage/" + name]
             modus = "chromecast"   # ab hier derselbe Weg
+            # Gemerkt, weil unten anders gemeldet wird: dieser Weg ist an
+            # echter Hardware nicht erprobt, und ob der Lautsprecher die
+            # Adresse auf dem eigenen Webserver ueberhaupt erreicht, laesst
+            # sich nur am Abspielzustand ablesen.
+            war_lokal = True
         if modus == "audioserver":
             return ("Modus 'audioserver': der originale Loxone Audioserver hat keine "
                     "HTTP-Schnittstelle fuer Ansagen. Die Ansage baut man in Loxone "
@@ -1365,6 +1403,7 @@ class Geraet:
         ansagepegel = cfg.get("tts_pegel")
         self.ansage_abbrechen = False
         self.ansage_laeuft = True
+        gespielt = False
         # Loxone soll wissen, dass gerade gesprochen wird - wer in dieser
         # Zeit Befehle schickt, unterbricht die Ansage.
         self._senden("tts_active", "1")
@@ -1404,12 +1443,21 @@ class Geraet:
                 # Warten, bis dieses Stueck durch ist. Ohne das ueberschriebe
                 # das naechste play_media() die laufende Ansage nach
                 # Sekundenbruchteilen, und man hoerte nur den letzten Satz.
-                self._auf_ende_warten(mc)
+                if self._auf_ende_warten(mc):
+                    gespielt = True
                 if len(adressen) > 1:
                     log.info("'%s': Ansageteil %d von %d gesprochen",
                              self.name, nummer, len(adressen))
             if fortsetzen:
                 self._lage_herstellen()
+            if war_lokal and not gespielt:
+                # Kein erfundener Erfolg. Der Lautsprecher hat den Auftrag
+                # angenommen, aber nie zu spielen begonnen - das ist genau
+                # das Bild, wenn er die Adresse nicht erreicht.
+                return ("Ansage abgesetzt, Ergebnis unbekannt - der "
+                        "Lautsprecher hat nicht zu spielen begonnen. "
+                        "Meistens erreicht er die Grundadresse nicht; sie "
+                        "steht im Reiter Einstellungen.")
             return "OK"
         except Exception as fehler:  # noqa: BLE001
             log.error("Ansage an '%s' fehlgeschlagen: %s", self.name, fehler)
@@ -1425,7 +1473,13 @@ class Geraet:
         Die Obergrenze ist eine Notbremse: haenge der Lautsprecher in
         BUFFERING fest, wartete der Dienst sonst ewig und meldete in dieser
         Zeit keinen Zustand mehr.
+
+        Rueckgabe: ob PLAYING oder BUFFERING ueberhaupt einmal zu sehen
+        war. Wer eine Adresse abspielen laesst, die der Lautsprecher nicht
+        erreicht, bekommt sonst dasselbe stille Gelingen wie bei einer
+        Ansage, die wirklich gesprochen wurde.
         """
+        gespielt = False
         ende = time.time() + hoechstens
         # Kurz Anlauf geben - unmittelbar nach play_media steht der Zustand
         # noch auf IDLE, und die Schleife waere sofort fertig.
@@ -1434,18 +1488,20 @@ class Geraet:
             try:
                 zustand = mc.status.player_state if mc.status else "IDLE"
             except Exception:  # noqa: BLE001
-                return
+                return gespielt
             if zustand not in ("PLAYING", "BUFFERING"):
-                return
+                return gespielt
+            gespielt = True
             if self.ansage_abbrechen:
                 try:
                     mc.stop()
                 except Exception:  # noqa: BLE001
                     pass
-                return
+                return gespielt
             time.sleep(0.5)
         log.warning("'%s': Ansage laeuft nach %.0f s noch - es wird weitergemacht",
                     self.name, hoechstens)
+        return True
 
     def befehl(self, befehl, wert, schrittweite, cfg=None):
         """Einen Befehl ausfuehren. Rueckgabe: Meldung fuer das Protokoll."""

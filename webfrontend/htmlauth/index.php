@@ -285,6 +285,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
 
 $cc_cfg = cc_config_read();
 $cc_konfig_zustand = cc_config_zustand();
+/* Fehlende Schluessel EINMAL in die Datei schreiben - nur ueber eine heile
+ * Datei. Danach heisst "fehlt" nie mehr "gilt als Vorgabe". */
+cc_cfg_vervollstaendigen($cc_cfg);
 $cc_geraete = cc_geraete($cc_cfg);
 $cc_praefix = cc_cfg($cc_cfg, 'mqtt_topic', 'chromecast4lox');
 $cc_pid = cc_dienst_pid();
@@ -554,7 +557,7 @@ if ($cc_frame) {
 <label style="display:inline-flex;align-items:center;gap:6px;">
 <input data-role="none" type="checkbox" name="beschleunigung" value="1"<?= cc_cfg($cc_cfg, 'beschleunigung', '0') === '1' ? ' checked' : '' ?>> <?php echo cc_t('SCHNELL.L'); ?>
 </label>
-<div class="sm-small"><?php echo cc_t('SCHNELL.HINWEIS'); ?></div>
+<div class="sm-alert sm-warn"><?php echo cc_t('SCHNELL.HINWEIS'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
@@ -684,10 +687,14 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <h2><?php echo cc_t('MQTT.H_DIENST'); ?></h2>
 <table class="sm-tbl">
 <tr><th style="width:22%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
-<?php foreach ($cc_alle['dienst'] as $cc_e1) { ?>
-<tr><td><span class="sm-mono"><?= cc_e($cc_praefix . '/server/' . $cc_e1['schluessel']) ?></span></td>
-<td><?= cc_e($cc_e1['art']) ?></td>
-<td><?= cc_e(cc_thema_lang('server_' . $cc_e1['schluessel'])) ?></td></tr>
+<?php /* Ueber die Huelle, nicht ueber eine zweite Schleife: cc_dienst_themen()
+        setzt Beschriftung und Art in derselben Form zusammen wie
+        cc_status_themen() daneben. Zwei Stellen, die dasselbe tun, laufen
+        auseinander. */ ?>
+<?php foreach (cc_dienst_themen() as $cc_k1 => $cc_i1) { ?>
+<tr><td><span class="sm-mono"><?= cc_e($cc_praefix . '/server/' . $cc_k1) ?></span></td>
+<td><?= cc_e($cc_i1[1]) ?></td>
+<td><?= cc_e($cc_i1[0]) ?></td></tr>
 <?php } ?>
 </table>
 

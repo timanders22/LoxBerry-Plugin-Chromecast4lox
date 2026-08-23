@@ -4,6 +4,45 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Fassung 1.3.1 — eine Quelle für die Vorgabewerte
+
+Ein Nachtrag zu 1.3.0, kein neues Merkmal. Er räumt drei Dinge auf, die eine
+Durchsicht des veröffentlichten Standes gefunden hat.
+
+### Die Vorgabewerte standen dreimal da
+
+Die Oberfläche führte 28 Schlüssel, der Dienst 26, die mitgelieferte
+Konfiguration 27 — `beschleunigung` fehlte dort ganz. Die Werte
+widersprachen sich nicht, aber nichts hielt sie zusammen. Jetzt liest jede
+Seite **`bin/cc_vorgaben.json`**, so wie beide Seiten schon die Themen aus
+`bin/cc_themen.json` lesen. Lässt sich die Datei nicht lesen, wird nicht
+geschrieben — eine geratene Liste über die Einstellungen des Anwenders zu
+schreiben wäre schlimmer als gar nichts zu tun.
+
+### Vervollständigen statt ergänzen
+
+Fehlte ein Schlüssel, trat beim Lesen seine Vorgabe ein — die Datei blieb
+lückenhaft, und *fehlt* war von *steht auf dem Vorgabewert* nicht mehr zu
+unterscheiden. Jetzt schreibt das Plugin einen fehlenden Schlüssel **einmal**
+mit seiner Vorgabe in die Datei, beim Laden der Oberfläche und beim
+Dienststart. Vorhandene Werte werden dabei nicht angefasst, auch bewusst
+geleerte nicht.
+
+Im Reiter Test steht dazu eine neue Zeile: *Ist die Konfiguration
+vollständig?* — mit der Zahl und, wenn etwas fehlt, den Namen.
+
+### Was belegt ist und was erprobt ist, steht jetzt auseinander
+
+Die beiden ab Werk ausgeschalteten Wege — **ereignisgesteuertes Melden** und
+die **örtliche Ansage** — tragen die Kennzeichnung *(nicht am Gerät erprobt)*
+jetzt an jedem Bedienelement, nicht nur im Hinweiskasten. Und die örtliche
+Ansage meldet **„abgesetzt, Ergebnis unbekannt"** statt eines Erfolgs, wenn
+der Lautsprecher den Auftrag zwar angenommen, aber nie zu spielen begonnen
+hat. Genau so sieht es aus, wenn er die Grundadresse nicht erreicht — ein
+„OK" an dieser Stelle wäre eine Behauptung gewesen.
+
+Der bisherige Weg über Google bleibt unverändert.
+
 ## Fassung 1.3.0 — Wächter, Herzschlag, Selbstprüfung, eigener Reiter MQTT
 
 Die größte Überarbeitung seit 1.0.0. Sie hat drei Wurzeln: eine zeilenweise

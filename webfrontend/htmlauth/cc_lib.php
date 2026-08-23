@@ -111,51 +111,116 @@ function cc_paths()
     return $p;
 }
 
-/** Voreinstellungen. Gleiche Werte wie im Python-Dienst. */
+/**
+ * Die Vorgabewerte - aus bin/cc_vorgaben.json, die auch der Dienst liest.
+ *
+ * Bis 1.3.0 stand hier eine eigene Liste, im Dienst eine zweite und in der
+ * ausgelieferten Konfiguration eine dritte: 28, 26 und 27 Schluessel. Die
+ * Werte widersprachen sich nicht, aber nichts hielt sie zusammen - und
+ * 'beschleunigung' fehlte in der ausgelieferten Datei ganz.
+ *
+ * Fail closed: laesst sich die Datei nicht lesen, kommt eine LEERE Liste
+ * zurueck. cc_config_write() schreibt dann nicht, und cc_config_read()
+ * liefert nur, was in der Konfiguration steht. Jede Aufrufstelle von
+ * cc_cfg() nennt ihre eigene Vorgabe - die Oberflaeche zeigt also weiter
+ * richtige Werte an, statt eine geratene Liste ueber die Einstellungen des
+ * Anwenders zu schreiben.
+ */
 function cc_defaults()
 {
-    return array(
-        // Ab Werk an. Der Waechter (cron.05min) startet den Dienst nur
-        // nach, solange dieser Schalter auf 1 steht - sonst arbeitete er
-        // gegen einen Anwender, der bewusst angehalten hat.
-        'enabled'             => '1',
-        'geraete'             => '',
-        'mqtt_topic'          => 'chromecast4lox',
-        'mqtt_ein'            => '1',
-        'udp'                 => '1',
-        'udp_port'            => '7090',
-        'intervall'           => '10',
-        'aktualisierung'      => '60',
-        'lautstaerke_schritt' => '5',
-        // Favoriten: je Zeile "Name = Adresse". Ab Werk leer.
-        'favoriten'           => '',
-        // --- Ansage (TTS). Feldnamen und Bedeutung wie im
-        // Abfahrtsassistenten 1.5.0 - wer dort eingerichtet hat, traegt
-        // hier dasselbe ein.
-        'tts_modus'           => 'chromecast',
-        'tts_ip'              => '',
-        'tts_port'            => '7091',
-        'tts_zonen'           => '1',
-        'tts_lautstaerke'     => '8',
-        'tts_sprache'         => 'de',
-        'tts_vorlage'         => '',
-        'tts_pegel'           => '',
-        'tts_fortsetzen'      => '1',
-        'tts_gong'            => '',
-        'tts_lokal_basis'     => '',
-        // B9: ab Werk wirkungslos (100 = keine Grenze, leere Zeiten).
-        'lautstaerke_max'     => '100',
-        'ruhe_von'            => '',
-        'ruhe_bis'            => '',
-        'ruhe_max'            => '30',
-        'gruppen'             => '1',
-        // Ab Werk AUS: an echter Hardware noch nicht erprobt.
-        'beschleunigung'      => '0',
-        // Merkwort gegen fremde Absender. Es entsteht beim ersten
-        // Aufruf der Oberflaeche; hier steht es, damit
-        // cc_config_write() es nicht bei jedem Speichern verliert.
-        'aktionstoken'        => '',
-    );
+    static $v = null;
+    if ($v !== null) {
+        return $v;
+    }
+    $v = array();
+    $orte = array(cc_paths()['bindir'] . '/cc_vorgaben.json',
+                  dirname(dirname(__DIR__)) . '/bin/cc_vorgaben.json');
+    foreach ($orte as $pfad) {
+        if (!is_file($pfad)) {
+            continue;
+        }
+        $d = json_decode((string) @file_get_contents($pfad), true);
+        if (is_array($d) && !empty($d['vorgaben']) && is_array($d['vorgaben'])) {
+            $v = array_map('strval', $d['vorgaben']);
+            break;
+        }
+    }
+    return $v;
+}
+
+/**
+ * Nur, was WIRKLICH in der Datei steht - ohne Vorgaben.
+ *
+ * cc_config_read() mischt die Vorgaben unter; auf dessen Ergebnis ist
+ * "fehlt" von "steht auf dem Vorgabewert" nicht zu unterscheiden. Genau
+ * diesen Unterschied brauchen cc_cfg_vervollstaendigen() und die
+ * Pruefzeile im Reiter Test.
+ */
+function cc_config_roh()
+{
+    $out = array();
+    $file = cc_paths()['config'];
+    if (!is_file($file)) {
+        return $out;
+    }
+    foreach (preg_split('/\R/', (string) @file_get_contents($file)) as $line) {
+        $t = trim($line);
+        if ($t === '' || $t[0] === ';' || $t[0] === '#' || $t[0] === '[') {
+            continue;
+        }
+        $pos = strpos($t, '=');
+        if ($pos === false) {
+            continue;
+        }
+        $key = strtolower(trim(substr($t, 0, $pos)));
+        $val = trim(substr($t, $pos + 1));
+        $len = strlen($val);
+        if ($len >= 2 && (($val[0] === '"' && $val[$len - 1] === '"')
+            || ($val[0] === "'" && $val[$len - 1] === "'"))) {
+            $val = substr($val, 1, -1);
+        }
+        $out[$key] = $val;
+    }
+    return $out;
+}
+
+/**
+ * Fehlende Schluessel EINMAL in die Datei schreiben.
+ *
+ * Ergaenzen hiesse: beim Lesen tritt fuer einen fehlenden Schluessel seine
+ * Vorgabe ein, die Datei bleibt lueckenhaft, und "fehlt" ist von "steht auf
+ * dem Vorgabewert" nicht mehr zu unterscheiden.
+ *
+ * Geprueft wird mit array_key_exists(), NICHT mit isset(): isset() haelt
+ * einen leeren Wert fuer nicht vorhanden, und die Haelfte dieser Vorgaben
+ * IST leer - eine bewusst geleerte Angabe wuerde bei jedem Lauf
+ * zurueckgeschrieben.
+ *
+ * Geschrieben wird nur ueber eine heile Datei. Gibt es sie noch gar nicht,
+ * legt sie cc_aktionstoken() beim ersten Aufruf vollstaendig an.
+ *
+ * Rueckgabe: welche Schluessel gefehlt haben.
+ */
+function cc_cfg_vervollstaendigen(&$cfg)
+{
+    $vorgaben = cc_defaults();
+    if (!$vorgaben) {
+        return array();
+    }
+    $roh = cc_config_roh();
+    $fehlten = array();
+    foreach ($vorgaben as $k => $v) {
+        if (!array_key_exists($k, $roh)) {
+            $fehlten[] = $k;
+            if (!array_key_exists($k, $cfg)) {
+                $cfg[$k] = $v;
+            }
+        }
+    }
+    if ($fehlten && cc_config_zustand() === 'ok') {
+        cc_config_write($cfg);
+    }
+    return $fehlten;
 }
 
 /** Die Ausgabewege der Ansage. Dieselben wie im Abfahrtsassistenten,
@@ -200,33 +265,15 @@ function cc_config_zustand()
     return @file_get_contents($file) === false ? 'unlesbar' : 'ok';
 }
 
-/** Konfiguration lesen. */
+/**
+ * Konfiguration lesen: Vorgaben, darueber der Dateiinhalt.
+ *
+ * EINE Leseschleife - sie steht in cc_config_roh(). Zwei Schleifen, die
+ * dasselbe Format auslegen, laufen frueher oder spaeter auseinander.
+ */
 function cc_config_read()
 {
-    $out = cc_defaults();
-    $file = cc_paths()['config'];
-    if (!is_file($file)) {
-        return $out;
-    }
-    foreach (preg_split('/\R/', (string) @file_get_contents($file)) as $line) {
-        $t = trim($line);
-        if ($t === '' || $t[0] === ';' || $t[0] === '#' || $t[0] === '[') {
-            continue;
-        }
-        $pos = strpos($t, '=');
-        if ($pos === false) {
-            continue;
-        }
-        $key = strtolower(trim(substr($t, 0, $pos)));
-        $val = trim(substr($t, $pos + 1));
-        $len = strlen($val);
-        if ($len >= 2 && (($val[0] === '"' && $val[$len - 1] === '"')
-            || ($val[0] === "'" && $val[$len - 1] === "'"))) {
-            $val = substr($val, 1, -1);
-        }
-        $out[$key] = $val;
-    }
-    return $out;
+    return array_merge(cc_defaults(), cc_config_roh());
 }
 
 /** Wert lesen, mit Vorgabe. */
@@ -244,6 +291,14 @@ function cc_config_write($cfg)
     // Werkseinstellung - sie hier zurueckzuschreiben hiesse, die
     // Einstellungen des Anwenders durch Vorgabewerte zu ersetzen.
     if (cc_config_zustand() === 'unlesbar') {
+        return false;
+    }
+    // Und nicht ohne Vorgabeliste: cc_defaults() bestimmt, WELCHE
+    // Schluessel geschrieben werden. Ist sie leer - weil sich
+    // bin/cc_vorgaben.json nicht lesen laesst -, entstuende eine Datei
+    // ohne einen einzigen Schluessel, und die Einstellungen des Anwenders
+    // waeren fort.
+    if (!cc_defaults()) {
         return false;
     }
     // is_dir() VOR mkdir(): der Klammeraffe ist stumm, aber nicht
@@ -997,7 +1052,7 @@ function cc_vorlage($art, $cfg, $geraete)
             $t = cc_thema($g);
             foreach (cc_themen()['befehle'] as $e) {
                 $b = $e['schluessel'];
-                $analog = $e['art'] === 'analog';
+                $analog = cc_befehl_analog($b);
                 $cmds[] = array(
                     'title'   => $praefix . '_' . $t . '_' . $b,
                     'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),
@@ -1022,7 +1077,7 @@ function cc_vorlage($art, $cfg, $geraete)
             $t = cc_thema($g);
             foreach (cc_themen()['befehle'] as $e) {
                 $b = $e['schluessel'];
-                $analog = $e['art'] === 'analog';
+                $analog = cc_befehl_analog($b);
                 $cmds[] = array(
                     'title'   => $t . '_' . $b,
                     'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),

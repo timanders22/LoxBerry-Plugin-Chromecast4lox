@@ -141,6 +141,33 @@ Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
          noch am receiver_controller. An beiden Quelltexten nachgemessen:
          der Alias steht in 9.4.0 wie in 14.0.10 am Cast-Objekt.
 
+1.3.1  Nachtrag zu 1.3.0.
+
+       EINE QUELLE FUER DIE VORGABEWERTE: bis 1.3.0 fuehrten die
+       Oberflaeche 28 Schluessel, der Dienst 26 und die mitgelieferte
+       Konfiguration 27 - "beschleunigung" fehlte dort ganz. Beide Seiten
+       lesen jetzt bin/cc_vorgaben.json. Laesst sie sich nicht lesen, wird
+       NICHT geschrieben.
+
+       VERVOLLSTAENDIGEN STATT ERGAENZEN: ein fehlender Schluessel wird
+       EINMAL mit seiner Vorgabe in die Datei geschrieben - beim Laden der
+       Oberflaeche und beim Dienststart. Geprueft mit array_key_exists()
+       gegen den rohen Dateiinhalt, damit ein bewusst geleerter Wert nicht
+       bei jedem Lauf zurueckkommt. Neue Zeile im Reiter Test: "Ist die
+       Konfiguration vollstaendig?"
+
+       BELEGT IST NICHT ERPROBT: die beiden ab Werk ausgeschalteten Wege
+       tragen die Kennzeichnung "(nicht am Geraet erprobt)" jetzt an jedem
+       Bedienelement. Die oertliche Ansage meldet "abgesetzt, Ergebnis
+       unbekannt" statt eines Erfolgs, wenn der Lautsprecher nie zu spielen
+       begonnen hat - genau so sieht es aus, wenn er die Grundadresse nicht
+       erreicht.
+
+       AUFGERAEUMT: cc_dienst_themen() und cc_befehl_analog() waren in
+       1.3.0 neu und wurden nie gerufen; sie ersetzen jetzt die Schleifen,
+       die dasselbe von Hand taten. Die erzeugten Loxone-Vorlagen und die
+       Thementabelle im Reiter MQTT sind dabei zeichengleich geblieben.
+
 1.3.0  Groesste Ueberarbeitung seit 1.0.0.
 
        NEU: Waechter (cron/cron.05min) mit Schalter "enabled"; Herzschlag

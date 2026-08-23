@@ -267,6 +267,37 @@ function cc_selbstpruefung()
     $s = isset($saetze[$zustand]) ? $saetze[$zustand] : array(false, $zustand);
     cc_pruefzeile($z, cc_t('TEST.F_KONFIG'), $s[0], $s[1]);
 
+    /* --- 3b. Ist die Konfiguration VOLLSTAENDIG? --------------------
+     * Etwas anderes als "heil": eine lesbare Datei kann Schluessel
+     * vermissen lassen. Gezaehlt wird gegen cc_config_roh() - also gegen
+     * das, was wirklich in der Datei steht. Auf cc_config_read() waere
+     * die Frage sinnlos, denn dort sind die Vorgaben schon untergemischt.
+     */
+    $soll = cc_defaults();
+    $roh = cc_config_roh();
+    if (!$soll) {
+        // Ohne Sollliste beweist der Vergleich nichts - und die
+        // Oberflaeche schreibt in diesem Zustand ohnehin nicht mehr.
+        cc_pruefzeile($z, cc_t('TEST.F_VOLLSTAENDIG'), false,
+            cc_t('TEST.A_KEINE_VORGABEN'));
+    } elseif ($zustand !== 'ok') {
+        cc_pruefzeile($z, cc_t('TEST.F_VOLLSTAENDIG'), null,
+            cc_t('TEST.A_KEIN_VERGLEICH'));
+    } else {
+        $fehlen = array();
+        foreach ($soll as $k => $v) {
+            if (!array_key_exists($k, $roh)) {
+                $fehlen[] = $k;
+            }
+        }
+        cc_pruefzeile($z, cc_t('TEST.F_VOLLSTAENDIG'), count($fehlen) === 0,
+            count($fehlen) === 0
+                ? sprintf(cc_t('TEST.A_VOLLSTAENDIG'), count($soll), count($soll))
+                : sprintf(cc_t('TEST.A_UNVOLLSTAENDIG'),
+                          count($soll) - count($fehlen), count($soll),
+                          implode(', ', $fehlen)));
+    }
+
     /* --- 4. Sind Geraete eingetragen? ------------------------------ */
     cc_pruefzeile($z, cc_t('TEST.F_GERAETE'), count($geraete) > 0,
         count($geraete) > 0 ? sprintf(cc_t('TEST.A_GERAETE'), count($geraete),
