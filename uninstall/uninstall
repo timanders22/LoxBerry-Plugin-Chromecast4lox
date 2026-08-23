@@ -67,4 +67,14 @@ if [ "$beendet" = "1" ]; then
 else
     echo "<INFO> Kein laufender Dienst gefunden."
 fi
+
+# ---------- Den Nachbarn der Sicherung wegraeumen ----------
+# data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
+# LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
+# Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
+UN_FOLDER="${3:-}"
+UN_BASE="${5:-$LBHOMEDIR}"
+if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
+    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
+fi
 exit 0

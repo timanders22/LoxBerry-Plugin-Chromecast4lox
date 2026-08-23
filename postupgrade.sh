@@ -31,6 +31,19 @@ COMMAND=$0    # Zero argument is shell command
 PTEMPDIR=$1   # First argument is temp folder during install
 PSHNAME=$2    # Second argument is Plugin-Name for scipts etc.
 PDIR=$3       # Third argument is Plugin installation folder
+# Rueckfall, falls sudo die Umgebung ausgeraeumt hat (env_reset).
+# Das fuenfte Argument ist das Wurzelverzeichnis und traegt immer.
+LBHOMEDIR="${LBHOMEDIR:-$5}"
+LBPCONFIG="${LBPCONFIG:-$5/config/plugins}"
+LBPLOG="${LBPLOG:-$5/log/plugins}"
+LBPBIN="${LBPBIN:-$5/bin/plugins}"
+LBPHTML="${LBPHTML:-$5/webfrontend/html/plugins}"
+LBPTEMPL="${LBPTEMPL:-$5/templates/plugins}"
+LBPSBIN="${LBPSBIN:-$5/sbin/plugins}"
+LBPCGI="${LBPCGI:-$5/webfrontend/htmlauth/plugins}"
+# sudo -n -u loxberry setzt die Umgebung zurueck - ohne diesen
+# Rueckfall zeigte $LBPDATA ins Nichts und der Pfad auf /<ordner>.
+LBPDATA="${LBPDATA:-$5/data/plugins}"
 PVERSION=$4   # Forth argument is Plugin version
 #LBHOMEDIR=$5 # Comes from /etc/environment now. Fifth argument is
               # Base folder of LoxBerry
@@ -75,7 +88,7 @@ zurueck() {
 # Nebenbei behoben: die alten Pfade trugen ein zusaetzliches /$PDIR am Ende,
 # weil 'cp -r quelle/ ziel' das Quellverzeichnis MIT anlegt. Jetzt sichert
 # preupgrade mit 'cp -a quelle/. ziel/' den Inhalt - ohne die Zwischenebene.
-SICHER="$LBHOMEDIR/data/plugins/$PDIR/upgrade_sicherung"
+SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
 
 zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
 zurueck "$SICHER/log" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
