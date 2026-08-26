@@ -302,6 +302,54 @@ $cc_frame = class_exists('LBWeb', false);
 if ($cc_frame) {
     LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
 }
+
+/* ---------------- Einstellungen sichern ----------------
+ *
+ * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
+ * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
+ * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
+ * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
+    $cc_js = json_encode(cc_cfg(),
+        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($cc_js !== false) {
+        header('Content-Type: application/json; charset=utf-8');
+        header('Content-Disposition: attachment; filename="chromecast4lox_einstellungen_'
+               . date('Ymd_His') . '.json"');
+        echo $cc_js;
+        exit;
+    }
+    $cc_error = cc_t('TEXT.SICH_SCHREIBFEHLER');
+}
+
+/* ---------------- Einstellungen zurueckspielen ----------------
+ *
+ * is_uploaded_file() ZUERST: ohne diese Pruefung liesse sich jede Datei des
+ * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
+ * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_zurueck'])) {
+    if (!isset($_FILES['cc_sicherung']) || !is_array($_FILES['cc_sicherung'])
+        || !isset($_FILES['cc_sicherung']['tmp_name'])
+        || !@is_uploaded_file($_FILES['cc_sicherung']['tmp_name'])) {
+        $cc_error = cc_t('TEXT.SICH_KEINE_DATEI');
+    } elseif ((int) $_FILES['cc_sicherung']['size'] > 262144) {
+        $cc_error = cc_t('TEXT.SICH_ZU_GROSS');
+    } else {
+        list($cc_neu, $cc_mangel, $cc_n) = cc_sicherung_lesen(
+            (string) @file_get_contents($_FILES['cc_sicherung']['tmp_name']));
+        if ($cc_neu === null) {
+            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
+             * nichts. */
+            $cc_error = cc_t('TEXT.SICH_ABGELEHNT') . ' '
+                            . implode(' ', $cc_mangel);
+        } elseif (cc_config_write($cc_neu)) {
+            $cc_saved = true; $cc_hinweis = sprintf(cc_t('TEXT.SICH_UEBERNOMMEN'), $cc_n);
+        } else {
+            $cc_error = cc_t('TEXT.SICH_SCHREIBFEHLER');
+        }
+    }
+}
+
 ?>
 <style>
 .sm-wrap { max-width: 980px; margin: 0 auto; font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; color: #333; }
@@ -602,6 +650,27 @@ if ($cc_frame) {
 <button data-role="none" class="sm-btn" type="submit" name="save" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
 <div class="sm-small"><?php echo cc_t('TEXT.T036'); ?></div>
 </form>
+
+<h2><?= cc_t('TEXT.H_SICHERUNG') ?></h2>
+<div class="sm-hinweis"><?= cc_t('TEXT.SICH_ERKLAERUNG') ?></div>
+<div class="sm-warnung"><?= cc_t('TEXT.SICH_WARNUNG') ?></div>
+<div class="sm-knopfreihe">
+  <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
+       exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
+       Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
+       einen Download, der das Speichern verschluckt. -->
+  <form action="index.php" method="post">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="cc_sichern" value="1"><?= cc_t('TEXT.K_SICHERN') ?></button>
+  </form>
+  <form action="index.php" method="post" enctype="multipart/form-data">
+    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
+    <input data-role="none" type="file" name="cc_sicherung" accept=".json">
+    <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cc_zurueck" value="1"><?= cc_t('TEXT.K_ZURUECK') ?></button>
+  </form>
+</div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->

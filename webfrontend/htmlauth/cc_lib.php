@@ -1162,3 +1162,43 @@ function cc_t($schluessel)
     list($a, $s) = array_pad(explode('.', $schluessel, 2), 2, '');
     return isset($texte[$a][$s]) ? $texte[$a][$s] : $schluessel;
 }
+
+
+/**
+ * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ *
+ * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
+ * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
+ * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
+ * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
+ * sieht es ihr nicht an.
+ *
+ * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
+ * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ *
+ * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ */
+function cc_sicherung_lesen($roh)
+{
+    $mangel = array();
+    $daten = json_decode((string) $roh, true);
+    if (!is_array($daten)) {
+        return array(null, array(cc_t('TEXT.SICH_KEIN_JSON')), 0);
+    }
+    $neu = cc_defaults();
+    $bekannt = array_keys($neu);
+    $anzahl = 0;
+    foreach ($daten as $k => $w) {
+        if (!in_array($k, $bekannt, true)) {
+            $mangel[] = sprintf(cc_t('TEXT.SICH_FREMD'),
+                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            continue;
+        }
+        $neu[$k] = $w;
+        $anzahl++;
+    }
+    if ($anzahl === 0) {
+        $mangel[] = cc_t('TEXT.SICH_LEER');
+    }
+    return array($mangel ? null : $neu, $mangel, $anzahl);
+}
