@@ -71,6 +71,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
+/* ==================================================================
+ * DIE HANDLER STEHEN VOR lbheader() - DAS IST BAUVORSCHRIFT
+ * ==================================================================
+ *
+ * Stand der Kopf davor, war er beim Aufruf von header() schon
+ * geschrieben - "Cannot modify header information", und der Knopf
+ * "Einstellungen sichern" lieferte eine Seite mit angehaengtem JSON
+ * statt einer Datei.
+ *
+ * Am PHP-CLI ist das unsichtbar: header() ist dort wirkungslos und
+ * headers_sent() immer falsch. Und wer OHNE gueltiges Formularmerkmal
+ * misst, wird vom Wachposten abgewiesen, bevor der Handler anlaeuft.
+ * Beides hat den Fehler lange verdeckt.
+ *
+ * Reihenfolge: Bibliothek, Konfiguration, Wachposten, Reiterwahl,
+ * ALLE Handler samt Downloads, dann erst lbheader(), dann HTML.
+ * ================================================================== */
 /* ============ Loxone-Vorlage herunterladen ============ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
     $cfg = cc_config_read();
@@ -299,9 +316,6 @@ $cc_zeilen = cc_log_tail($cc_log);
 
 // WICHTIG: LBWeb::lbheader() setzt SDK-Globale - deshalb ueberall cc_-Praefix.
 $cc_frame = class_exists('LBWeb', false);
-if ($cc_frame) {
-    LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
-}
 
 /* ---------------- Einstellungen sichern ----------------
  *
@@ -348,6 +362,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_zurueck'])) {
             $cc_error = cc_t('TEXT.SICH_SCHREIBFEHLER');
         }
     }
+}
+
+
+if ($cc_frame) {
+    LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
 }
 
 ?>
