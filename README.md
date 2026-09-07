@@ -4,6 +4,76 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Fassung 1.3.7 — der Wächter startet den Dienst wirklich nach
+
+Ein Befund, am Gerät gemessen, kein neues Merkmal.
+
+### Der Wächter hat seit 1.3.0 nie einen Dienst nachgestartet
+
+`cron/cron.05min` startete den Dienst mit `su loxberry -c …`. LoxBerry ruft
+jede Datei unter `cron.05min` aber **schon als `loxberry`** auf
+(`/etc/cron.d/lbdefaults`), und `su` auf denselben Benutzer verlangt trotzdem
+Rootrechte. Am Gerät gemessen am 06.09.2026:
+
+    su loxberry -c "echo x"   →   su: Authentication failure   (Rückgabewert 1)
+
+Damit war der Wächter wirkungslos: Starb der Dienst, blieb er tot, und in
+Loxone sah alles normal aus — virtuelle Eingänge behalten ihren letzten
+Wert. Aufgefallen ist es nur deshalb nicht, weil der Dienst nicht gestorben
+ist.
+
+Der Benutzer wird jetzt **gemessen** statt angenommen. Der `su`-Weg bleibt
+für den Fall, dass wirklich `root` aufruft — beim Systemstart über
+`daemon/daemon` ist das so, und dort war er immer richtig. Läuft der Wächter
+als jemand drittes, sagt er es und startet nichts.
+
+### Und er meldet keinen Erfolg mehr, den er nicht geprüft hat
+
+`nohup … &` endet **immer** mit 0 — das sagt, dass die Shell abgezweigt hat,
+nicht dass das Programm lebt. Die alte Fassung leitete genau daraus ihre
+Erfolgsmeldung ab. Jetzt wird nach dem Start gewartet, die Prozessnummer
+gelesen, `kill -0` geprüft und `/proc/<pid>/cmdline` gegengelesen; erst dann
+steht „nachgestartet" im Protokoll.
+
+### Die Rückrufe von `paho-mqtt` sind fassungsfest
+
+Der Dienst legte `paho-mqtt` auf `CallbackAPIVersion.VERSION1` fest. Am
+Gerät gemessen (`paho-mqtt` 2.1.0, echter Broker): das schreibt bei **jedem**
+Dienststart die Zeile *„Callback API version 1 is deprecated"* in die
+Protokolldatei.
+
+Ein bloßer Wechsel auf VERSION2 hätte allerdings einen neuen Fehler
+eingebaut, denn die beiden Fassungen übergeben nicht dasselbe:
+
+| Rückruf | VERSION1 | VERSION2 |
+|---|---|---|
+| `on_connect` | `flags` (dict), `rc` (int) | `ConnectFlags`, `ReasonCode`, `Properties` |
+| `on_disconnect` | `rc` | `DisconnectFlags`, `ReasonCode`, `Properties` |
+
+`_on_disconnect` hätte unter VERSION2 also die Flags für den Trenngrund
+gehalten und `DisconnectFlags(is_disconnect_packet_from_server=False)` ins
+Protokoll geschrieben. Beide Rückrufe suchen den Grund deshalb jetzt, statt
+ihn abzuzählen; danach erst wird die Fassung gewechselt — abgetastet, nicht
+angenommen: VERSION2, sonst VERSION1, sonst ohne Argument (paho 1.x kennt
+die Aufzählung nicht).
+
+### Die Fehlerausgabe geht nicht mehr ins Leere
+
+Der Cron des LoxBerry ruft jede Datei als `($f … > /dev/null 2>&1 &)` auf.
+Alles, was der Wächter auf die Fehlerausgabe schrieb, war damit fort. Er
+schreibt sie jetzt nach `cron.err` im Protokollordner des Plugins — der
+Reiter *Logdateien* zeigt sie.
+
+## Neu in 1.3.6
+
+- **Das Auswahlfeld zeichnet seinen Pfeil selbst.** Bis 1.3.5 kam er von der
+  Oberfläche des LoxBerry. Am 05.09.2026 am Gerät gemessen (LoxBerry 4.0.0.15,
+  `system/css/components.css`): deren Regel `.lb-content select`
+  gibt es erst seit der neuen Oberfläche, und jede eigene Feldregel mit der
+  Kurzform `background:` löscht sie wieder. Darauf soll sich eine
+  Plugin-Oberfläche nicht verlassen (`Regeln/04`). Sonst ist an dieser
+  Fassung nichts geändert.
+
 ## Fassung 1.3.1 — eine Quelle für die Vorgabewerte
 
 Ein Nachtrag zu 1.3.0, kein neues Merkmal. Er räumt drei Dinge auf, die eine

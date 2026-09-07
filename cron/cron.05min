@@ -25,6 +25,12 @@ CFG="REPLACELBPCONFIGDIR/chromecast-4lox-ng.cfg"
 LOG="REPLACELBPLOGDIR/REPLACELBPPLUGINDIR.log"
 PIDDATEI="REPLACELBPDATADIR/dienst.pid"
 
+# Die eigene Fehlerausgabe sichern. Der Cron des LoxBerry ruft jede Datei
+# als "($f cron=05min > /dev/null 2>&1 &)" auf - am Geraet gemessen in
+# /etc/cron.d/lbdefaults. Was dieses Skript auf die Fehlerausgabe schreibt,
+# waere sonst fort, und im Reiter Logdateien stuende nichts.
+exec 2>>"REPLACELBPLOGDIR/cron.err"
+
 # Ist das Plugin ausgeschaltet, hat der Waechter nichts zu tun. Sonst
 # startete er einen Dienst nach, den der Anwender im Reiter Test bewusst
 # angehalten hat - und ein Waechter, der gegen den Willen des Anwenders
@@ -62,18 +68,63 @@ if [ -f "$PIDDATEI" ]; then
     fi
 fi
 
-# Er laeuft nicht. Nachstarten - als loxberry, nicht als root: der Dienst
-# spricht nur mDNS, MQTT und einen UDP-Port und braucht keine Rootrechte.
+# Er laeuft nicht. Nachstarten.
 #
-# 'echo $!' muss INNERHALB der su-Zeichenkette stehen: draussen waere es die
-# Nummer des su-Prozesses, und der beendet sich sofort.
+# NICHT ueber "su loxberry -c". Bis 1.3.6 stand hier genau das, und der
+# Waechter hat damit nie einen Dienst nachgestartet. Am Geraet gemessen am
+# 06.09.2026: /etc/cron.d/lbdefaults ruft jede Datei unter cron.05min
+# bereits ALS loxberry auf -
+#
+#     */5 * * * * loxberry cd / && for f in .../cron.05min/*; do ($f &); done
+#
+# und "su" auf denselben Benutzer verlangt trotzdem root:
+#
+#     su loxberry -c "echo x"   ->   su: Authentication failure   rc=1
+#
+# Der Benutzer wird deshalb GEMESSEN, nicht angenommen. Der su-Weg bleibt
+# fuer den Fall, dass wirklich root aufruft - Handprobe oder ein fremder
+# Cron. Dann, und nur dann, stimmt er.
 mkdir -p "$(dirname "$PIDDATEI")" 2>/dev/null
-if su loxberry -c "nohup '$DIENST' >> '$LOG' 2>&1 & echo \$! > '$PIDDATEI'" >/dev/null 2>&1; then
+WER=$(id -un 2>/dev/null)
+if [ "$WER" = "loxberry" ]; then
+    # 'echo $!' unmittelbar nach dem Abzweigen: das ist die Nummer des
+    # Dienstes selbst.
+    nohup "$DIENST" >> "$LOG" 2>&1 &
+    echo $! > "$PIDDATEI"
+elif [ "$(id -u 2>/dev/null)" = "0" ]; then
+    # Hier muss 'echo $!' INNERHALB der su-Zeichenkette stehen: draussen
+    # waere es die Nummer des su-Prozesses, und der beendet sich sofort.
+    su loxberry -c "nohup '$DIENST' >> '$LOG' 2>&1 & echo \$! > '$PIDDATEI'" >/dev/null 2>&1
     chown loxberry:loxberry "$PIDDATEI" 2>/dev/null
+else
+    MELDUNG="Chromecast 4 Lox NG: der Waechter laeuft als '$WER' - weder loxberry noch root. Es wird nicht nachgestartet."
+    command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 1
+fi
+
+# Die WIRKUNG messen, nicht den Rueckgabewert.
+#
+# "nohup ... &" endet IMMER mit 0 - die Schale meldet, dass sie abgezweigt
+# hat, nicht dass das Programm lebt. Die alte Fassung leitete genau daraus
+# ihre Erfolgsmeldung ab; sie haette "nachgestartet" auch dann gemeldet,
+# wenn der Dienst nach einer Zehntelsekunde am fehlenden pychromecast
+# gestorben waere.
+#
+# Der Dienst baut beim Start eine MQTT-Verbindung auf und sucht im Netz.
+# Drei Sekunden reichen, um zu sehen, ob er ueberhaupt steht.
+sleep 3
+NEU=$(cat "$PIDDATEI" 2>/dev/null)
+case "$NEU" in
+    ''|*[!0-9]*) NEU="" ;;
+esac
+if [ -n "$NEU" ] && kill -0 "$NEU" 2>/dev/null \
+   && tr '\0' '\n' < "/proc/$NEU/cmdline" 2>/dev/null \
+      | sed 's#.*/##' | grep -qx "chromecast4lox_ng-server.py"; then
     # Im Normalfall schweigt dieses Skript. Nur der Nachstart selbst ist eine
     # Zeile wert - sonst schriebe ein Cron alle fuenf Minuten in den
     # Systemlogger, und niemand laese ihn mehr.
-    MELDUNG="Chromecast 4 Lox NG: der Dienst lief nicht mehr und wurde nachgestartet."
+    MELDUNG="Chromecast 4 Lox NG: der Dienst lief nicht mehr und wurde nachgestartet (PID $NEU)."
     command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
     exit 0
 fi

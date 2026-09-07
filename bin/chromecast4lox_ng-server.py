@@ -691,10 +691,29 @@ class MqttAnbindung:
         if not zugang:
             return False
 
-        try:
-            self.client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1)
-        except (AttributeError, TypeError):
-            # paho-mqtt 1.x kennt CallbackAPIVersion noch nicht
+        # Die Fassung der Rueckruf-Schnittstelle wird ABGETASTET, nicht
+        # angenommen. Reihenfolge: VERSION2, sonst VERSION1, sonst gar kein
+        # Argument (paho 1.x kennt die Aufzaehlung nicht).
+        #
+        # Bis 1.3.6 stand hier VERSION1 zuerst. Am Geraet gemessen am
+        # 06.09.2026 mit paho-mqtt 2.1.0: das legt bei JEDEM Dienststart
+        # eine Zeile "Callback API version 1 is deprecated" in die
+        # Protokolldatei. Unter VERSION2 kommt sie nicht.
+        #
+        # Voraussetzung dafuer waren die fassungsfesten Rueckrufe darunter -
+        # VERSION2 uebergibt andere Argumente. Siehe _grund().
+        self.client = None
+        for fassung in ("VERSION2", "VERSION1"):
+            merkmal = getattr(mqtt.CallbackAPIVersion, fassung, None) \
+                if hasattr(mqtt, "CallbackAPIVersion") else None
+            if merkmal is None:
+                continue
+            try:
+                self.client = mqtt.Client(merkmal)
+                break
+            except (AttributeError, TypeError, ValueError):
+                self.client = None
+        if self.client is None:
             self.client = mqtt.Client()
 
         if zugang["user"]:
@@ -736,7 +755,34 @@ class MqttAnbindung:
         log.info("MQTT-Schleife gestartet, Ziel %s:%s", zugang["host"], zugang["port"])
         return True
 
-    def _on_connect(self, client, userdata, flags, rc, properties=None):
+    @staticmethod
+    def _grund(rest):
+        """Den Anmelde- bzw. Trenngrund aus dem holen, was paho uebergibt.
+
+        Am Geraet gemessen (paho 2.1.0): die beiden Fassungen uebergeben
+        NICHT dasselbe.
+
+            on_connect     VERSION1: (flags, rc)
+                           VERSION2: (ConnectFlags, ReasonCode, Properties)
+            on_disconnect  VERSION1: (rc,)
+                           VERSION2: (DisconnectFlags, ReasonCode, Properties)
+
+        Der Grund steht also einmal an erster, einmal an zweiter Stelle. Er
+        wird deshalb gesucht, nicht abgezaehlt: das erste Element, das sich
+        mit einer Zahl vergleichen laesst und keine Flags-Struktur ist.
+
+        "rc != 0" traegt auf beiden - auf dem int von VERSION1 und auf der
+        ReasonCode von VERSION2 (gemessen: False bei Erfolg).
+        """
+        for wert in rest:
+            name = type(wert).__name__
+            if name in ("ConnectFlags", "DisconnectFlags", "Properties", "dict"):
+                continue
+            return wert
+        return 0
+
+    def _on_connect(self, client, userdata, *rest):
+        rc = self._grund(rest)
         if rc != 0:
             log.error("MQTT-Anmeldung abgelehnt, Code %s", rc)
             return
@@ -747,9 +793,10 @@ class MqttAnbindung:
         log.info("MQTT verbunden, Befehle abonniert: %s", thema)
         self.senden("server/online", "1")
 
-    def _on_disconnect(self, client, userdata, rc, properties=None, reason=None):
+    def _on_disconnect(self, client, userdata, *rest):
         self.verbunden = False
-        log.warning("MQTT-Verbindung getrennt (Code %s), Wiederaufbau laeuft", rc)
+        log.warning("MQTT-Verbindung getrennt (Code %s), Wiederaufbau laeuft",
+                    self._grund(rest))
 
     def _on_message(self, client, userdata, nachricht):
         try:

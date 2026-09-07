@@ -141,6 +141,38 @@ Aenderungen gegenueber dem Original (Apache License 2.0, Abschnitt 4 b)
          noch am receiver_controller. An beiden Quelltexten nachgemessen:
          der Alias steht in 9.4.0 wie in 14.0.10 am Cast-Objekt.
 
+1.3.7  Der Waechter startet den Dienst wirklich nach.
+
+       BEFUND, am Geraet gemessen 06.09.2026: cron/cron.05min startete den
+       Dienst ueber "su loxberry -c ...". LoxBerry ruft jede Datei unter
+       cron.05min bereits ALS loxberry auf (/etc/cron.d/lbdefaults), und su
+       auf denselben Benutzer verlangt trotzdem root - "su: Authentication
+       failure", Rueckgabewert 1. Der Waechter war seit 1.3.0 wirkungslos.
+
+       BEHOBEN: der Benutzer wird gemessen (id -un) statt angenommen. Der
+       su-Weg bleibt fuer den Fall, dass wirklich root aufruft - beim
+       Systemstart ueber daemon/daemon ist das so. Laeuft der Waechter als
+       jemand drittes, meldet er es und startet nichts.
+
+       DAZU: "nohup ... &" endet immer mit 0. Die alte Fassung leitete
+       daraus ihre Erfolgsmeldung ab. Jetzt wird die WIRKUNG geprueft -
+       warten, Prozessnummer lesen, kill -0, /proc/<pid>/cmdline gegenlesen.
+
+       UND: die eigene Fehlerausgabe geht nach cron.err im Protokollordner
+       statt nach /dev/null.
+
+       PAHO-MQTT: der Dienst legte sich auf CallbackAPIVersion.VERSION1
+       fest - am Geraet gemessen (paho 2.1.0) eine Verfallswarnung bei
+       jedem Dienststart. Die Fassung wird jetzt abgetastet (VERSION2,
+       sonst VERSION1, sonst ohne Argument). Voraussetzung dafuer waren
+       fassungsfeste Rueckrufe: VERSION2 uebergibt on_disconnect
+       (DisconnectFlags, ReasonCode, Properties) statt (rc), ein blosser
+       Fassungswechsel haette die Flags fuer den Trenngrund gehalten.
+
+       Dieselbe Messung an daemon/daemon nachgezogen: dort ruft LoxBerry als
+       root auf, der su-Weg stimmt - er wird jetzt trotzdem gemessen statt
+       angenommen.
+
 1.3.1  Nachtrag zu 1.3.0.
 
        EINE QUELLE FUER DIE VORGABEWERTE: bis 1.3.0 fuehrten die
