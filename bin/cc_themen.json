@@ -34,6 +34,11 @@
     "         eine leere Nutzlast mit retain LOESCHT das Thema im Broker. Ein",
     "         nicht leerer Text dagegen bliebe nach dem Leeren zurueckbehalten",
     "         stehen - ein Titel von gestern, ein laengst behobener Fehler.",
+    "         server/ts und server/zaehler sind seit 1.3.9 false: sie sind",
+    "         das Lebenszeichen, und das geht nie retained hinaus (Regeln/07).",
+    "         Zurueckbehalten stuende nach dem Tod des Dienstes ein Zaehler",
+    "         im Broker, der wie Betrieb aussieht. Ein Thema ohne Eintrag",
+    "         geht nicht retained hinaus.",
     "         Der Sender schickt einen leeren Wert ohnehin nie retained."
   ],
   "fassung": 1,
@@ -59,8 +64,8 @@
 
   "dienst": [
     { "schluessel": "online",   "art": "digital", "einheit": "",  "min": 0, "max": 1,          "retain": true  },
-    { "schluessel": "ts",       "art": "analog",  "einheit": "s", "min": 1704067200, "max": 2145916800, "retain": true  },
-    { "schluessel": "zaehler",  "art": "analog",  "einheit": "",  "min": -1, "max": 999,       "retain": true  },
+    { "schluessel": "ts",       "art": "analog",  "einheit": "s", "min": 1704067200, "max": 2145916800, "retain": false },
+    { "schluessel": "zaehler",  "art": "analog",  "einheit": "",  "min": -1, "max": 999,       "retain": false },
     { "schluessel": "geraete",  "art": "analog",  "einheit": "",  "min": 0, "max": 99,         "retain": true  },
     { "schluessel": "verluste", "art": "analog",  "einheit": "",  "min": 0, "max": 999999,     "retain": true  },
     { "schluessel": "fassung",  "art": "text",    "einheit": "",  "min": null, "max": null,    "retain": true  }

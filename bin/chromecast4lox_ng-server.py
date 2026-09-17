@@ -323,9 +323,13 @@ def thema_retain(bereich, schluessel):
     position ist bewusst NICHT retained: ein Abnehmer, der sich eine Stunde
     spaeter verbindet, bekaeme sonst eine stundenalte Laufzeit serviert und
     hielte sie fuer aktuell.
+
+    Ein Thema ohne Eintrag geht NICHT retained hinaus (seit 1.3.9; bis 1.3.8
+    war es umgekehrt). Retained ist eine Zusage, dass der Wert auch ohne
+    neue Nachricht gilt - die gibt nur, wer das Thema eingetragen hat.
     """
     e = thema_info(bereich, schluessel)
-    return True if e is None else bool(e.get("retain", True))
+    return False if e is None else bool(e.get("retain", False))
 
 
 def zahl_oder(wert, vorgabe):
@@ -1934,8 +1938,15 @@ class Dienst:
                     # hinaus, und ihr letzter Wert liegt noch im Broker. Der
                     # frische Wert folgt im selben Durchgang (erzwingen).
                     for eintrag in THEMEN.get("geraet", []):
-                        if not eintrag.get("retain", True):
+                        if not eintrag.get("retain", False):
                             self.mqtt.abraeumen(geraet.thema + "/" + eintrag["schluessel"])
+                # Ebenso das Lebenszeichen des Dienstes: bis 1.3.8 gingen
+                # server/ts und server/zaehler retained hinaus. Ohne das
+                # Abraeumen laege ihr letzter Wert nach einem Update weiter im
+                # Broker. Der frische Wert folgt mit dem naechsten Durchgang.
+                for eintrag in THEMEN.get("dienst", []):
+                    if not eintrag.get("retain", False):
+                        self.mqtt.abraeumen("server/" + eintrag["schluessel"])
                 log.info("MQTT neu verbunden - alle Zustaende werden erneut gemeldet")
 
             for geraet in list(self.geraete.values()):
@@ -1974,7 +1985,9 @@ class Dienst:
     def stop(self):
         self.laeuft = False
         # -1 heisst: der Takt laeuft nicht mehr. Ein stehengebliebener
-        # Zaehler waere von einem langsamen nicht zu unterscheiden.
+        # Zaehler waere von einem langsamen nicht zu unterscheiden. Seit 1.3.9
+        # nicht retained - das erreicht nur, wer gerade verbunden ist; den
+        # dauerhaften Stand traegt server/online (retained, mit Testament).
         try:
             self.mqtt.senden("server/zaehler", -1, thema_retain("dienst", "zaehler"))
         except Exception:  # noqa: BLE001
@@ -2006,6 +2019,11 @@ def main():
             "geraet": [e["schluessel"] for e in THEMEN.get("geraet", ())],
             "dienst": [e["schluessel"] for e in THEMEN.get("dienst", ())],
             "befehle": [e["schluessel"] for e in THEMEN.get("befehle", ())],
+            # Die Retain-Entscheidung, wie DIESER Code sie trifft - mit einem
+            # Thema, das in keiner Liste steht, als Gegenprobe der Vorgabe.
+            "retain_dienst": {e["schluessel"]: thema_retain("dienst", e["schluessel"])
+                              for e in THEMEN.get("dienst", ())},
+            "retain_unbekannt": thema_retain("dienst", "_kein_eintrag_"),
         }))
         return
 

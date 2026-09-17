@@ -4,6 +4,21 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.9
+
+- **Das Lebenszeichen geht nicht mehr retained hinaus.** `server/ts` und
+  `server/zaehler` blieben bis 1.3.8 im Broker zurückbehalten. Nach dem Tod
+  des Dienstes bekam jeder neu verbundene Teilnehmer einen Zählerstand, der
+  wie Betrieb aussah. Jetzt gilt der Hausstandard: Zustände retained, das
+  Lebenszeichen nie. Die alten Werte räumt der Dienst bei jeder Verbindung
+  zum Broker ab. Ob der Dienst beendet ist, sagt weiter `server/online`
+  (retained, mit Testament).
+- Ein Thema ohne Eintrag in `bin/cc_themen.json` geht nicht retained hinaus
+  (bis 1.3.8 umgekehrt).
+- Der Reiter MQTT zeigt die Spalte *Retained* auch für die Themen des
+  Dienstes; der Reiter Test fragt den Dienst selbst, ob das Lebenszeichen
+  ohne Retain hinausgeht.
+
 ## Neu in 1.3.8
 
 - **Tabellen mit Eingabefeldern rollen seitlich, statt abgeschnitten zu werden.**

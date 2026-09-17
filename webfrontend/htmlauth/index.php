@@ -808,7 +808,7 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 
 <h2><?php echo cc_t('MQTT.H_DIENST'); ?></h2>
 <table class="sm-tbl">
-<tr><th style="width:22%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
+<tr><th style="width:22%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_RETAIN'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
 <?php /* Ueber die Huelle, nicht ueber eine zweite Schleife: cc_dienst_themen()
         setzt Beschriftung und Art in derselben Form zusammen wie
         cc_status_themen() daneben. Zwei Stellen, die dasselbe tun, laufen
@@ -816,6 +816,8 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <?php foreach (cc_dienst_themen() as $cc_k1 => $cc_i1) { ?>
 <tr><td><span class="sm-mono"><?= cc_e($cc_praefix . '/server/' . $cc_k1) ?></span></td>
 <td><?= cc_e($cc_i1[1]) ?></td>
+<?php $cc_d1 = cc_thema_info('dienst', $cc_k1); ?>
+<td><?= empty($cc_d1['retain']) ? '&ndash;' : cc_e(cc_t('TEST.A_JA')) ?></td>
 <td><?= cc_e($cc_i1[0]) ?></td></tr>
 <?php } ?>
 </table>

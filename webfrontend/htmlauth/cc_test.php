@@ -354,6 +354,7 @@ function cc_selbstpruefung()
      */
     $eigene = array_keys(cc_status_themen());
     $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
+    $d = null;
     if (!$eigene) {
         // Eine leere Liste gegen eine leere Liste ist gleich - und beweist
         // nichts. Ohne diese Wache meldete die Zeile bei einer kaputten
@@ -375,6 +376,31 @@ function cc_selbstpruefung()
                                   implode(', ', array_diff($eigene, $d['geraet'])),
                                   implode(', ', array_diff($d['geraet'], $eigene))));
         }
+    }
+
+    /* --- 7b. Geht das Lebenszeichen ohne Retain hinaus? -------------
+     * Gefragt wird der DIENST (--themen), nicht die Datei: die Datei sagt,
+     * was gewollt ist, der Code entscheidet, was hinausgeht. Bis 1.3.8
+     * gingen server/ts und server/zaehler retained hinaus, und ein Thema
+     * ohne Eintrag galt als retained (Regeln/07: das Lebenszeichen nie).
+     */
+    $lz = isset($d) && is_array($d) && isset($d['retain_dienst']) && is_array($d['retain_dienst'])
+        ? $d['retain_dienst'] : null;
+    if ($lz === null || !array_key_exists('retain_unbekannt', $d)) {
+        cc_pruefzeile($z, cc_t('TEST.F_LZ_RETAIN'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+    } else {
+        $falsch = array();
+        foreach (array('ts', 'zaehler') as $k) {
+            if (!array_key_exists($k, $lz) || $lz[$k] !== false) {
+                $falsch[] = 'server/' . $k;
+            }
+        }
+        if ($d['retain_unbekannt'] !== false) {
+            $falsch[] = cc_t('TEST.A_LZ_UNBEKANNT');
+        }
+        cc_pruefzeile($z, cc_t('TEST.F_LZ_RETAIN'), count($falsch) === 0,
+            count($falsch) === 0 ? cc_t('TEST.A_LZ_OK')
+                                 : sprintf(cc_t('TEST.A_LZ_FALSCH'), implode(', ', $falsch)));
     }
 
     /* --- 8. Sind die Vorlagen wohlgeformt? -------------------------
