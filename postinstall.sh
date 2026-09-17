@@ -33,6 +33,20 @@ PVERSION=$4   # Forth argument is Plugin version
 #LBHOMEDIR=$5 # Comes from /etc/environment now. Fifth argument is
               # Base folder of LoxBerry
 
+# Rueckfall, falls sudo die Umgebung ausgeraeumt hat (env_reset) - wie in
+# preupgrade.sh und postupgrade.sh. Bis 1.3.9 fehlte er hier: mit leerer
+# Umgebung zeigte $PBIN auf /<ordner>, und chmod lief ins Leere (in WSL
+# gemessen am 17.09.2026).
+LBHOMEDIR="${LBHOMEDIR:-$5}"
+LBPCONFIG="${LBPCONFIG:-$5/config/plugins}"
+LBPLOG="${LBPLOG:-$5/log/plugins}"
+LBPBIN="${LBPBIN:-$5/bin/plugins}"
+LBPHTML="${LBPHTML:-$5/webfrontend/html/plugins}"
+LBPTEMPL="${LBPTEMPL:-$5/templates/plugins}"
+LBPSBIN="${LBPSBIN:-$5/sbin/plugins}"
+LBPCGI="${LBPCGI:-$5/webfrontend/htmlauth/plugins}"
+LBPDATA="${LBPDATA:-$5/data/plugins}"
+
 # Combine them with /etc/environment
 PCGI=$LBPCGI/$PDIR
 PHTML=$LBPHTML/$PDIR

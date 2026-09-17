@@ -1785,6 +1785,53 @@ class Dienst:
         except (TypeError, ValueError):
             return int(vorgabe)
 
+    def verbindungen_nachziehen(self, vorher):
+        """Themenpraefix, MQTT-Schalter und UDP beim Neueinlesen nachziehen.
+
+        Bis 1.3.9 las der Dienst diese vier Werte nur beim Start. Das
+        Neueinlesen uebernahm Geraete und Takt, sendete aber weiter unter
+        dem alten Praefix und hoerte auf dem alten UDP-Port - bis zum
+        naechsten Neustart (in WSL gemessen am 17.09.2026). Die Oberflaeche
+        startet nach dem Speichern ohnehin neu; getroffen hat es jede
+        Aenderung ohne Neustart, etwa die Rueckholung der Einstellungen in
+        postinstall.sh bei einem Dienst, den der Waechter in der
+        Upgrade-Luecke gestartet hatte.
+
+        Die Huelle self.mqtt bleibt dasselbe Objekt: die Geraete halten
+        einen Verweis darauf.
+        """
+        praefix = self.cfg.get("mqtt_topic", "chromecast4lox") or "chromecast4lox"
+        mqtt_ein = self.cfg.get("mqtt_ein", "1") == "1"
+        mqtt_vorher = vorher.get("mqtt_ein", "1") == "1"
+        if praefix != self.praefix or mqtt_ein != mqtt_vorher:
+            log.info("MQTT-Einstellungen geaendert (Praefix %s -> %s, MQTT %s -> %s)"
+                     " - die Verbindung wird neu aufgebaut", self.praefix, praefix,
+                     "ein" if mqtt_vorher else "aus", "ein" if mqtt_ein else "aus")
+            self.mqtt.stop()
+            self.mqtt.client = None
+            self.mqtt.verbunden = False
+            self.praefix = praefix
+            self.mqtt.praefix = praefix
+            if mqtt_ein:
+                self.mqtt.start()
+            else:
+                log.info("MQTT ist ausgeschaltet")
+
+        udp_ein = self.cfg.get("udp", "1") == "1"
+        port = self._zahl("udp_port", 7090)
+        port_bisher = self.udp.port if self.udp else None
+        if (udp_ein and port != port_bisher) or (not udp_ein and self.udp):
+            log.info("UDP-Einstellungen geaendert (Port %s -> %s) - der Empfang "
+                     "wird neu eingerichtet", port_bisher or "aus",
+                     port if udp_ein else "aus")
+            if self.udp:
+                self.udp.stop()
+                self.udp.join(timeout=3)
+                self.udp = None
+            if udp_ein:
+                self.udp = UdpEmpfaenger(port, self)
+                self.udp.start()
+
     def herzschlag(self, erreichbar):
         """Lebenszeichen - per MQTT UND in eine Datei.
 
@@ -1975,7 +2022,9 @@ class Dienst:
             if self._mtime() != self.config_mtime:
                 log.info("Konfiguration geaendert - wird neu eingelesen")
                 self.config_mtime = self._mtime()
+                vorher = self.cfg
                 self.cfg = konfiguration_lesen()
+                self.verbindungen_nachziehen(vorher)
                 self.geraete_aufbauen()
                 intervall = max(2, self._zahl("intervall", 10))
                 vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60))

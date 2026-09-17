@@ -13,8 +13,121 @@ fi
 
 datadir=REPLACELBPDATADIR
 piddatei=$datadir/dienst.pid
+cfgdatei=REPLACELBPCONFIGDIR/chromecast-4lox-ng.cfg
+marke=REPLACELBPDATADIR.upgrade_laeuft
+dienst=$pluginbindir/chromecast4lox_ng-server.py
 
+cc_melden() {
+    if [ -x /usr/bin/logger ]; then
+        /usr/bin/logger "loxberry-plugin-$pluginname - $1"
+    fi
+    if [ -d "$logdir" ]; then
+        echo "$(date '+%Y-%m-%d %H:%M:%S') INFO    daemon: $1" >> "$log" 2>/dev/null
+    fi
+}
+
+# ---------- Prozesse des Dienstes finden ----------
+# Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den
+# vollen Dienstpfad DIESES Plugins ($1). Dazu muss der Prozess dem Benutzer
+# mit der Nummer $2 gehoeren. Ein Editor oder "tail" auf die Datei, eine
+# Suche mit dem Namen im Muster und der Dienst eines anderen Plugin-Ordners
+# treffen damit nicht. "pgrep -f" traf jede Befehlszeile, in der die
+# Zeichenkette irgendwo vorkam.
+cc_dienste_finden() {
+    for cc_d in /proc/[0-9]*; do
+        grep -qaF "chromecast4lox_ng-server.py" "$cc_d/cmdline" 2>/dev/null || continue
+        [ "$(stat -c %u "$cc_d" 2>/dev/null)" = "$2" ] || continue
+        cc_n=0
+        cc_treffer=0
+        while IFS= read -r cc_arg; do
+            cc_n=$((cc_n + 1))
+            if [ "$cc_n" = 1 ]; then
+                case "${cc_arg##*/}" in
+                    python|python3|python3.*) ;;
+                    *) break ;;
+                esac
+            elif [ "$cc_n" = 2 ] && [ "$cc_arg" = "$1" ]; then
+                cc_treffer=1
+            fi
+        done <<CC_ARGUMENTE
+$(tr '\0' '\n' < "$cc_d/cmdline" 2>/dev/null)
+CC_ARGUMENTE
+        if [ "$cc_treffer" = 1 ] && [ "$cc_n" = 2 ]; then
+            echo "${cc_d#/proc/}"
+        fi
+    done
+}
+
+# ---------- Drei Fragen vor dem Start ----------
+# Diese Datei laeuft beim Systemstart und aus postroot.sh. Bis 1.3.10 startete
+# sie in beiden Faellen bedingungslos. Folgen, in WSL gemessen (17.09.2026,
+# Fall q4): ein im Reiter Test bewusst angehaltener Dienst lief nach jedem
+# Update und nach jedem Neustart wieder; ein zweiter Aufruf legte einen
+# zweiten Dienst an (drei Prozesse nach drei Aufrufen); und waehrend einer
+# Aktualisierung startete sie den Dienst mit der Vorgabe-Konfiguration.
+
+# 1. Ist das Plugin ausgeschaltet, wird nichts gestartet. Der Knopf
+#    "Dienst anhalten" im Reiter Test setzt enabled=0; ein Start dagegen
+#    waere das Gegenteil dessen, was der Anwender eingestellt hat.
+if [ -f "$cfgdatei" ] && grep -q '^enabled=0' "$cfgdatei"; then
+    cc_melden "Start uebersprungen: enabled=0 - der Dienst ist bewusst angehalten."
+    exit 0
+fi
+
+# 2. Laeuft gerade eine Aktualisierung? preupgrade.sh legt die Marke neben
+#    den Datenordner, postroot.sh entfernt sie nach dem Start. Nur eine
+#    Marke, die hoechstens eine Stunde alt ist, zaehlt - eine abgebrochene
+#    Installation darf den Dienst nicht fuer immer stilllegen.
+#    CC_START_TROTZ_MARKE=1 setzt nur postroot.sh: dort ist die Marke die
+#    eigene, und der Start ist der letzte Schritt der Installation.
+if [ "${CC_START_TROTZ_MARKE:-0}" != "1" ] && [ -f "$marke" ]; then
+    seit=$(cat "$marke" 2>/dev/null)
+    case "$seit" in
+        ''|*[!0-9]*) seit=0 ;;
+    esac
+    # Die Uhr wird gemessen, nicht angenommen: liefert "date" nichts - unter
+    # Last kann ein fork scheitern -, rechnet die Schale mit einer leeren
+    # Zeichenkette, das Alter wird negativ, die Bedingung faellt durch, und
+    # der Dienst startete mitten in der Aktualisierung. Ein Schutz faellt geschlossen aus (Regeln/01):
+    # ohne Uhr gilt die Marke. Dieselbe Stelle wie in cron/cron.05min.
+    jetzt=$(date +%s 2>/dev/null)
+    case "$jetzt" in
+        ''|*[!0-9]*) jetzt="" ;;
+    esac
+    if [ -z "$jetzt" ]; then
+        cc_melden "Start uebersprungen: eine Aktualisierung laeuft (Uhrzeit nicht lesbar)."
+        exit 0
+    fi
+    alter=$(( jetzt - seit ))
+    if [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ]; then
+        cc_melden "Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
+        exit 0
+    fi
+fi
+
+# 3. Laeuft schon einer? Argumentweise, nicht ueber die PID-Datei allein -
+#    die loescht purge_installation beim Upgrade mit dem Datenordner.
+cc_uid=$(id -u loxberry 2>/dev/null)
+[ -n "$cc_uid" ] || cc_uid=$(id -u 2>/dev/null)
+cc_laeuft=$(cc_dienste_finden "$dienst" "$cc_uid")
+if [ -n "$cc_laeuft" ]; then
+    cc_erste=$(echo "$cc_laeuft" | head -1)
+    mkdir -p "$datadir" 2>/dev/null
+    echo "$cc_erste" > "$piddatei"
+    cc_melden "Start uebersprungen: der Dienst laeuft bereits (PID $cc_erste)."
+    exit 0
+fi
+
+# Beim Systemstart und aus postroot.sh laeuft diese Datei als root. Was sie
+# dann anlegt, gehoert root - und der Dienst, der als loxberry laeuft, koennte
+# weder Protokoll noch PID-Datei schreiben. Deshalb beide Ordner gleich
+# uebergeben. Bis 1.3.10 stand hier nur das mkdir, uebergeben wurde allein die
+# PID-Datei (in WSL ueber eine chown-Attrappe gemessen, 17.09.2026, Fall q7).
 mkdir -p "$logdir" "$datadir" 2>/dev/null
+if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    chown loxberry:loxberry "$logdir" 2>/dev/null
+    chown loxberry:loxberry "$datadir" 2>/dev/null
+fi
 
 # Der Dienst braucht keine Rootrechte - er spricht nur mDNS, MQTT und UDP.
 # Deshalb als loxberry starten. Das war im Quelltext der Originalfassung
@@ -37,6 +150,9 @@ if [ "$(id -u 2>/dev/null)" = "0" ]; then
     # die Nummer des su-Prozesses, und der beendet sich sofort.
     su loxberry -c "nohup '$pluginbindir/chromecast4lox_ng-server.py' >> '$log' 2>&1 & echo \$! > '$piddatei'" >/dev/null 2>&1
     chown loxberry:loxberry "$piddatei" 2>/dev/null
+    # Die Protokolldatei kann aus einer frueheren Fassung root gehoeren; dann
+    # haengt der Dienst beim ersten Schreiben. Einmal uebergeben kostet nichts.
+    chown loxberry:loxberry "$log" 2>/dev/null
 elif [ "$(id -un 2>/dev/null)" = "loxberry" ]; then
     nohup "$pluginbindir/chromecast4lox_ng-server.py" >> "$log" 2>&1 &
     echo $! > "$piddatei"

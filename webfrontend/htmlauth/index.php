@@ -24,6 +24,41 @@ if ($cc_p['home']) {
     }
 }
 
+/* ============ Waehrend einer Aktualisierung nichts tun ============
+ *
+ * VOR allem anderen - insbesondere vor cc_formtoken(). Das ruft
+ * cc_aktionstoken(), und das SCHREIBT die Konfigurationsdatei, wenn noch kein
+ * Token darin steht. In der Upgrade-Luecke ist genau das der Fall: die Datei
+ * ist die mitgelieferte Vorgabe. Ein blosser Aufruf dieser Seite hat sie also
+ * angefasst, ohne dass jemand einen Knopf gedrueckt haette (in WSL gemessen
+ * 17.09.2026, Fall q2: die Pruefsumme der Datei aenderte sich nach zwei
+ * Seitenaufrufen).
+ *
+ * Was dem Anwender in dieser Zeit angezeigt wuerde, sind die Vorgabewerte -
+ * kein Geraet, Themenpraefix chromecast4lox. Speichert er, nimmt die Seite
+ * es an, meldet Erfolg, startet den Dienst damit, und postupgrade.sh
+ * ueberschreibt es Sekunden spaeter mit der gesicherten Konfiguration
+ * (Fall q2b). Deshalb: ein Hinweis, sonst nichts. Wie Intercom 2.2.11.
+ */
+if (cc_upgrade_laeuft()) {
+    $cc_rahmen = class_exists('LBWeb', false);
+    if ($cc_rahmen) {
+        LBWeb::lbheader('Chromecast 4 Lox NG',
+            'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
+    }
+    echo '<div style="max-width:980px;margin:0 auto;'
+       . 'font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#333">' . "\n"
+       . '<h2 style="color:#6dac20">Chromecast 4 Lox NG</h2>' . "\n"
+       . '<div style="border-radius:8px;padding:10px 14px;margin:12px 0;'
+       . 'background:#fdf3e3;border:1px solid #e0620d"><b>'
+       . cc_e(cc_t('UPGRADE.T_TITEL')) . '</b> ' . cc_e(cc_t('UPGRADE.T_TEXT'))
+       . '</div>' . "\n" . '</div>' . "\n";
+    if ($cc_rahmen) {
+        LBWeb::lbfooter();
+    }
+    exit;
+}
+
 $cc_saved = false;
 $cc_error = '';
 $cc_hinweis = '';

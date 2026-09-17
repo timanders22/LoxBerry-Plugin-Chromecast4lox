@@ -4,6 +4,77 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.10
+
+- **Nach einem Update läuft genau ein Dienst.** Bis 1.3.9 lief der alte
+  Dienst durch das Update weiter, ohne dass ihn jemand sah: seine
+  PID-Datei löscht der Installer mit dem Datenordner. Startete der Wächter
+  in dieser Zeit einen zweiten, beendete `postroot.sh` nur einen, und zwei
+  Dienste liefen nebeneinander auf demselben UDP-Port — bis zum Neustart
+  des LoxBerry, auch nach einer Deinstallation (in WSL nachgestellt, nicht
+  am Gerät). Jetzt hält `preupgrade.sh` den Dienst an, und `postroot.sh` und
+  die Deinstallation beenden jeden Prozess dieses Dienstes: genau ein
+  Python-Interpreter mit dem Dienstpfad dieses Plugins, nur Benutzer
+  loxberry.
+- **Der Wächter startet während eines Updates nichts.** `preupgrade.sh`
+  legt `data/plugins/<ordner>.upgrade_laeuft` an, `cron.05min` startet
+  nicht, solange die Marke höchstens eine Stunde alt ist, `postroot.sh`
+  entfernt sie nach dem Start. Bricht ein Update ab, gilt die Marke nach
+  einer Stunde nicht mehr.
+- **Das Protokoll behält die Zeilen aus dem Update.** Es wird nicht mehr
+  gesichert und zurückkopiert; der Installer lässt `log/` beim Update
+  ohnehin stehen, und das Zurückkopieren überschrieb die neuen Zeilen.
+- **Die Deinstallation räumt die Zweitschrift der Einstellungen weg**
+  (`config/plugins/<ordner>.backup.chromecast-4lox-ng.cfg`). Sie trägt das
+  Aktionstoken, und `postinstall.sh` spielt sie bei einer Neuinstallation
+  zurück, solange die Konfiguration der Vorgabe gleicht.
+- **Themenpräfix, MQTT-Schalter und UDP-Port wirken auch ohne Neustart.**
+  Ändert sich die Konfigurationsdatei, baut der Dienst MQTT-Verbindung und
+  UDP-Empfang neu auf; bisher übernahm er nur Geräte und Takt.
+- `postinstall.sh` findet seine Ordner auch bei ausgeräumter Umgebung;
+  `postupgrade.sh` meldet nicht mehr, Eigentümer gesetzt zu haben (es läuft
+  als loxberry und konnte das nie).
+- **Die Oberfläche fasst während einer Aktualisierung nichts an.** Zwischen
+  den neuen Dateien und `postinstall.sh` ist die Konfigurationsdatei die
+  mitgelieferte Vorgabe. Bis dahin zeigte die Seite diese Vorgabe als Ihre
+  Einstellungen an, nahm Eingaben an, meldete Erfolg und startete den Dienst
+  damit — und der Installer warf beides Sekunden später weg. Jetzt zeigt sie
+  in dieser Zeit einen Hinweis, auf Deutsch und auf Englisch, und die Knöpfe
+  im Reiter Test weisen ebenso ab.
+- **Die Oberfläche erkennt ihren eigenen Dienst.** Fehlte die PID-Datei,
+  suchte sie mit `pgrep -o -f` im ganzen System nach einer Zeichenkette und
+  fand dabei auch den Dienst eines zweiten Plugin-Ordners: „Dienst anhalten"
+  beendete den fremden. Jetzt gilt dieselbe argumentweise Erkennung wie in
+  den Installationsskripten — genau zwei Argumente, ein Python-Interpreter
+  und der volle Dienstpfad dieses Plugins, Benutzer `loxberry`. Und es werden
+  **alle** eigenen Prozesse behandelt, nicht der erste.
+- **Der Wächter findet einen Dienst ohne PID-Datei.** Nach einem Update gibt
+  es sie nicht mehr; bisher startete er deshalb einen zweiten Dienst. Jetzt
+  sucht er zusätzlich argumentweise, trägt die PID-Datei nach und meldet es.
+- **Ein angehaltener Dienst bleibt angehalten.** `daemon/daemon` startete
+  beim Hochfahren und aus `postroot.sh` bedingungslos — auch bei
+  `enabled=0`, auch während einer Aktualisierung, auch wenn schon einer lief.
+  Jetzt prüft es alle drei Punkte, und `postroot.sh` sagt im
+  Installationsprotokoll, warum der Dienst aus bleibt.
+- **Der Wächter lief nicht, wenn der Protokollordner fehlte.** Er liegt auf
+  der Ramdisk; fehlte er, scheiterte die Umlenkung der Fehlerausgabe, und das
+  Skript beendete sich, bevor eine Zeile gelaufen war. Der Ordner wird jetzt
+  vorher angelegt.
+- **Die Deinstallation löscht nichts an einem Ort, der kein LoxBerry ist.**
+  Die Wurzelsuche verlangt jetzt `config/system/general.json`; ohne sie wird
+  gewarnt und gesagt, was von Hand nachzusehen ist. Dieselbe Bedingung gilt
+  für die Wurzelsuche der Oberfläche.
+- **Was der Systemstart anlegt, gehört `loxberry`.** `daemon/daemon` und der
+  Wächter legten Protokoll- und Datenordner im Wurzelzweig als `root` an; der
+  Dienst hätte darin nicht schreiben können.
+- **Ohne lesbare Uhr gilt die Aktualisierungsmarke.** Antwortete `date` nicht,
+  wurde das Alter der Marke negativ, die Prüfung fiel durch, und Wächter oder
+  `daemon` starteten mitten in der Aktualisierung. Ein Schutz fällt jetzt
+  geschlossen aus.
+- **Der Reiter Test trennt die eigenen Prozesse von der Suche nach dem
+  Namen.** Die Liste darunter läuft über das ganze System und kann fremde
+  Prozesse enthalten; das steht jetzt darüber.
+
 ## Neu in 1.3.9
 
 - **Das Lebenszeichen geht nicht mehr retained hinaus.** `server/ts` und

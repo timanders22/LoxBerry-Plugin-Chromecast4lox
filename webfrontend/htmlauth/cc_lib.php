@@ -23,11 +23,18 @@ if (!function_exists('cc_e')) {
 /* Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
  *
  * Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
- * config/plugins UND webfrontend enthaelt. Das trifft die uebliche
- * Installation genauso wie eine an einem anderen Ort - und es trifft auch
- * den Fall, dass das Plugin noch als entpacktes Archiv daliegt (dann findet
- * es nichts und gibt einen Leerstring zurueck, was der Aufrufer ohnehin
- * abfangen muss).
+ * config/plugins, webfrontend UND config/system/general.json traegt. Das
+ * trifft die uebliche Installation genauso wie eine an einem anderen Ort -
+ * und es trifft auch den Fall, dass das Plugin noch als entpacktes Archiv
+ * daliegt (dann findet es nichts und gibt einen Leerstring zurueck, was der
+ * Aufrufer ohnehin abfangen muss).
+ *
+ * Die dritte Bedingung ist seit 1.3.10 dabei und stammt aus Regeln/06: auf
+ * einem Pruefrechner liegen unter C:\ aus alten Prueflaeufen ein
+ * config/plugins und ein webfrontend, und die Suche erklaerte das Laufwerk
+ * zur LoxBerry-Wurzel. Ein LoxBerry hat immer config/system/general.json;
+ * ein solcher Rest hat sie nie. Gemessen 17.09.2026 (Fall q6): ohne die
+ * Bedingung lieferte die Suche den Attrappenordner, mit ihr den Leerstring.
  *
  * Der Name traegt kein Plugin-Kuerzel und ist deshalb abgesichert: zwei
  * Bibliotheken landen nie im selben Prozess, aber die Pruefung kostet nichts.
@@ -37,7 +44,8 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
-            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')) {
+            if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
+                && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
             $eltern = dirname($d);
@@ -717,44 +725,178 @@ function cc_pid_datei()
     return cc_paths()['datadir'] . '/dienst.pid';
 }
 
+/* ------------------------------------------------------------------
+ * Die Marke "Aktualisierung laeuft"
+ * ------------------------------------------------------------------
+ *
+ * Zwischen dem Kopieren der neuen Dateien und postinstall.sh liegt beim
+ * Upgrade fast eine Minute (Regeln/06, am Geraet an der Einspeisebremse
+ * gemessen). In dieser Zeit ist die Konfigurationsdatei die mitgelieferte
+ * Vorgabe: kein Geraet, Themenpraefix chromecast4lox, UDP-Port 7090. Die
+ * Oberflaeche zeigte dem Anwender bis 1.3.10 genau diese Vorgabe als seine
+ * Einstellungen an, nahm Eingaben entgegen und startete den Dienst damit -
+ * und der Installer warf beides zwei Sekunden spaeter weg (in WSL gemessen
+ * 17.09.2026, Fall q2b: die Eingabe "InDerLuecke" war nach postupgrade.sh
+ * fort, der Dienst lief mit der Vorgabe-Konfiguration).
+ *
+ * preupgrade.sh legt die Marke als Erstes an, postroot.sh entfernt sie nach
+ * dem Dienststart. Sie liegt NEBEN dem Datenordner, weil purge_installation
+ * den Ordner selbst loescht. Aelter als eine Stunde oder unlesbar gilt sie
+ * nicht: eine abgebrochene Installation darf die Seite nicht fuer immer
+ * stilllegen.
+ */
+function cc_upgrade_marke()
+{
+    $d = cc_paths()['datadir'];
+    return dirname($d) . '/' . basename($d) . '.upgrade_laeuft';
+}
+
+function cc_upgrade_laeuft()
+{
+    $f = cc_upgrade_marke();
+    $roh = @is_file($f) ? @file_get_contents($f) : false;
+    if ($roh === false) {
+        return false;
+    }
+    $roh = trim((string) $roh);
+    if (!preg_match('/^[0-9]{1,12}$/', $roh)) {
+        return false;
+    }
+    $alter = time() - (int) $roh;
+    // Ein paar Minuten "Zukunft" sind eine nachgestellte Uhr, keine Luege.
+    return $alter > -300 && $alter < 3600;
+}
+
+/**
+ * Die Benutzernummern, deren Prozesse als eigener Dienst gelten.
+ *
+ * Der Dienst laeuft als loxberry - daemon/daemon steigt dazu ab. Die Nummer
+ * kommt aus /etc/passwd und nicht aus posix_getpwnam(): die posix-Erweiterung
+ * ist auf einem LoxBerry nicht zugesichert, und eine Oberflaeche darf sich
+ * auf keine Erweiterung verlassen, die nicht garantiert geladen ist
+ * (Regeln/02). Dazu die eigene Nummer: was diese Seite selbst gestartet hat,
+ * gehoert ihr.
+ */
+function cc_dienst_uids()
+{
+    static $u = null;
+    if ($u !== null) {
+        return $u;
+    }
+    $u = array();
+    $eigen = @getmyuid();
+    if ($eigen !== false) {
+        $u[] = (int) $eigen;
+    }
+    // is_readable() VOR dem Lesen, nicht nur ein @ davor: der Pruefstand
+    // rendert die Oberflaeche unter Windows, dort gibt es weder /etc/passwd
+    // noch /proc, und ein eigener Fehlerbehandler sieht die Meldung auch
+    // hinter dem @. Ein Fehlalarm bei jedem Lauf ist eine abgeschaltete
+    // Pruefung (Regeln/02).
+    $zeilen = is_readable('/etc/passwd')
+        ? @file('/etc/passwd', FILE_IGNORE_NEW_LINES) : false;
+    if (is_array($zeilen)) {
+        foreach ($zeilen as $z) {
+            $f = explode(':', $z);
+            if (isset($f[2]) && $f[0] === 'loxberry') {
+                $u[] = (int) $f[2];
+                break;
+            }
+        }
+    }
+    $u = array_values(array_unique($u));
+    return $u;
+}
+
+/**
+ * ALLE Prozesse dieses Dienstes - argumentweise erkannt.
+ *
+ * Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den
+ * vollen Dienstpfad DIESES Plugins. Dazu gehoert er loxberry oder dem
+ * Benutzer, unter dem diese Seite laeuft. Dieselbe Regel wie in
+ * postroot.sh, preupgrade.sh, uninstall, daemon und cron.05min.
+ *
+ * Bis 1.3.10 stand hier als Rueckfallebene ein pgrep-Aufruf mit dem
+ * Dateinamen als Muster und dem Schalter fuer den aeltesten Treffer. Das
+ * sucht SYSTEMWEIT nach einer Zeichenkette und trifft damit auch den Dienst
+ * eines zweiten Plugin-Ordners, einen Editor auf der Datei oder ein 'tail' -
+ * und nimmt davon ausgerechnet den aeltesten. Der Aufruf ist hier
+ * absichtlich nicht abgeschrieben: ein Kommentar darf nicht die
+ * Zeichenfolge enthalten, nach der ein Werkzeug den Bestand absucht
+ * (Regeln/02). In WSL gemessen (17.09.2026, Fall q1): ohne eigene
+ * PID-Datei meldete cc_dienst_pid() den Dienst des NACHBARORDNERS, und
+ * cc_dienst('stop') hat ihn beendet. Ausserdem sah die Oberflaeche immer nur
+ * EINEN Prozess: lief nach einem Update ein zweiter, blieb er stehen.
+ *
+ * Rueckgabe: aufsteigend sortierte Liste von Prozessnummern.
+ */
+function cc_dienst_pids()
+{
+    $p = cc_paths();
+    $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
+    $uids = cc_dienst_uids();
+    $aus = array();
+    // Ohne /proc gibt es hier nichts zu sehen - und die Frage danach wird
+    // gestellt, bevor opendir() sie mit einer Warnung beantwortet (siehe
+    // cc_dienst_uids()).
+    if (!is_dir('/proc')) {
+        return $aus;
+    }
+    $d = @opendir('/proc');
+    if ($d === false) {
+        return $aus;
+    }
+    while (($e = readdir($d)) !== false) {
+        if (!preg_match('/^[0-9]+$/', $e)) {
+            continue;
+        }
+        $roh = @file_get_contents('/proc/' . $e . '/cmdline');
+        if ($roh === false || $roh === '') {
+            continue;
+        }
+        $args = explode("\0", rtrim($roh, "\0"));
+        if (count($args) !== 2 || $args[1] !== $skript) {
+            continue;
+        }
+        $i = basename($args[0]);
+        if ($i !== 'python' && $i !== 'python3' && strpos($i, 'python3.') !== 0) {
+            continue;
+        }
+        $besitzer = @fileowner('/proc/' . $e);
+        if ($besitzer === false || !in_array((int) $besitzer, $uids, true)) {
+            continue;
+        }
+        $aus[] = (int) $e;
+    }
+    closedir($d);
+    sort($aus);
+    return $aus;
+}
+
 /**
  * Laeuft der Dienst? Rueckgabe: PID oder 0.
  *
- * Zuerst die PID-Datei, und die eingetragene Nummer wird gegen
- * /proc/<pid>/cmdline gehalten. Die Suche nach dem Namen bleibt als
- * Rueckfallebene fuer einen Dienst, der noch vor 1.2.0 gestartet wurde.
- *
- * Warum nicht einfach pgrep: 'pgrep -f chromecast4lox_ng-server' trifft jede
- * Befehlszeile, in der diese Zeichenkette vorkommt - ein Editor auf der
- * Datei genuegt -, und '-o' nimmt davon den AELTESTEN Treffer, also
- * womoeglich genau den fremden. Die Oberflaeche zeigte dann einen
- * laufenden Dienst, den es nicht gibt, und 'pkill -f' haette den fremden
- * Prozess erwischt.
+ * Die PID-Datei bleibt die erste Frage - steht ihre Nummer unter den
+ * Treffern, ist sie die Antwort. Sonst gilt der erste Treffer; eine
+ * PID-Datei, die ins Leere zeigt, wird abgeraeumt.
  */
 function cc_dienst_pid()
 {
+    $pids = cc_dienst_pids();
     $datei = cc_pid_datei();
+    if (!$pids) {
+        if (is_file($datei)) {
+            @unlink($datei);   // zeigt ins Leere - von einem Absturz uebrig
+        }
+        return 0;
+    }
     if (is_file($datei)) {
-        $pid = (int) trim((string) @file_get_contents($datei));
-        if ($pid > 0 && is_dir('/proc/' . $pid)) {
-            $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-            if (strpos($cmd, 'chromecast4lox_ng-server') !== false) {
-                return $pid;
-            }
-        }
-        @unlink($datei);   // zeigt ins Leere - von einem Absturz uebrig
-    }
-    $out = array();
-    @exec('pgrep -o -f "[c]hromecast4lox_ng-server" 2>/dev/null', $out);
-    $pid = $out ? (int) $out[0] : 0;
-    if ($pid > 0 && is_dir('/proc/' . $pid)) {
-        $cmd = (string) @file_get_contents('/proc/' . $pid . '/cmdline');
-        if (strpos($cmd, 'chromecast4lox_ng-server') !== false
-            && strpos($cmd, 'python') !== false) {
-            return $pid;
+        $eingetragen = (int) trim((string) @file_get_contents($datei));
+        if (in_array($eingetragen, $pids, true)) {
+            return $eingetragen;
         }
     }
-    return 0;
+    return $pids[0];
 }
 
 /**
@@ -779,22 +921,34 @@ function cc_dienst($aktion)
 
     $datei = cc_pid_datei();
     if (in_array($aktion, array('stop', 'restart'), true)) {
-        $pid = cc_dienst_pid();
-        if ($pid > 0) {
-            @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
+        // ALLE eigenen Prozesse, nicht einer. Bis 1.3.10 wurde genau die eine
+        // Nummer aus cc_dienst_pid() beendet; lief nach einem Update ein
+        // zweiter Dienst, blieb er stehen und hielt den UDP-Port (in WSL
+        // gemessen 17.09.2026, Fall q1: nach "stop" lief noch einer).
+        $pids = cc_dienst_pids();
+        if ($pids) {
+            foreach ($pids as $pid) {
+                @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
+            }
             // Zeit lassen: der Dienst meldet server/online=0 und die Geraete
             // offline. Hart abgeschossen bliebe im Broker ein retained '1'
             // stehen, und Loxone glaubte weiter an einen laufenden Dienst.
             for ($i = 0; $i < 20; $i++) {
                 usleep(500000);
-                if (cc_dienst_pid() === 0) {
+                if (!cc_dienst_pids()) {
                     break;
                 }
             }
-            if (cc_dienst_pid() === $pid) {
-                @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
+            $rest = cc_dienst_pids();
+            if ($rest) {
+                foreach ($rest as $pid) {
+                    @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
+                }
                 usleep(500000);
                 $meldungen[] = 'Der Dienst reagierte nicht auf SIGTERM und wurde abgeschossen.';
+            }
+            if (count($pids) > 1) {
+                $meldungen[] = 'Es liefen ' . count($pids) . ' Prozesse dieses Dienstes - alle wurden beendet.';
             }
         } else {
             $meldungen[] = 'Es lief kein Dienst.';

@@ -29,6 +29,18 @@ PIDDATEI="REPLACELBPDATADIR/dienst.pid"
 # als "($f cron=05min > /dev/null 2>&1 &)" auf - am Geraet gemessen in
 # /etc/cron.d/lbdefaults. Was dieses Skript auf die Fehlerausgabe schreibt,
 # waere sonst fort, und im Reiter Logdateien stuende nichts.
+#
+# Den Ordner vorher anlegen. "exec" ist ein besonderer eingebauter Befehl:
+# scheitert seine Umlenkung, beendet sich die Schale sofort - der Waechter
+# haette dann gar nichts getan. Der Protokollordner liegt auf der Ramdisk und
+# kann nach einem Neustart fehlen. In WSL gemessen (17.09.2026, Fall q8):
+# ohne den Ordner endete dieses Skript mit Rueckgabewert 2, ohne eine einzige
+# Zeile auszufuehren, und der Dienst blieb aus. Dieselbe Bauart steht in
+# Regeln/06 fuer den Abfahrts-Assistenten 1.6.10; dort kam heraus, dass ein
+# blosses Anhaengen die Aenderungszeit nicht auffrischt - deshalb "touch",
+# damit die stuendliche Logwartung die Datei nicht wegraeumt.
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
 exec 2>>"REPLACELBPLOGDIR/cron.err"
 
 # Ist das Plugin ausgeschaltet, hat der Waechter nichts zu tun. Sonst
@@ -43,6 +55,77 @@ if [ -f "$CFG" ] && grep -q '^enabled=0' "$CFG"; then
     exit 0
 fi
 
+# Waehrend einer Aktualisierung nichts starten. preupgrade.sh legt die
+# Marke neben den Datenordner, postroot.sh entfernt sie nach dem
+# Dienststart. Bis 1.3.9 gab es sie nicht: der Installer legt diese Datei
+# lange vor postroot.sh neu an, und ein Lauf in dieser Luecke startete den
+# Dienst mit der mitgelieferten Vorgabe-Konfiguration (in WSL nachgestellt
+# am 17.09.2026). Nur eine Marke, die hoechstens eine Stunde alt ist,
+# zaehlt. Aelter, aus der Zukunft oder unlesbar: eine abgebrochene
+# Installation hat sie liegen lassen, und der Dienst darf nicht fuer immer
+# stillstehen.
+MARKE="REPLACELBPDATADIR.upgrade_laeuft"
+if [ -f "$MARKE" ]; then
+    SEIT=$(cat "$MARKE" 2>/dev/null)
+    case "$SEIT" in
+        ''|*[!0-9]*) SEIT=0 ;;
+    esac
+    # Die Uhr wird gemessen, nicht angenommen. Liefert "date" nichts -
+    # unter Last kann ein fork scheitern -, dann rechnet die Schale mit einer
+    # leeren Zeichenkette: das Alter wird negativ, die Bedingung faellt durch,
+    # und der Waechter startete den Dienst MITTEN in der Aktualisierung.
+    # (Der alte Ausdruck ist hier absichtlich nicht abgeschrieben - ein
+    # Kommentar darf nicht die Zeichenfolge enthalten, nach der ein Werkzeug
+    # den Bestand absucht, Regeln/02.) Ein Schutz faellt
+    # geschlossen aus (Regeln/01): ohne Uhr wird nicht gestartet, die Marke
+    # gilt. Anlass: ein einzelner Lauf des Falls k5a am 17.09.2026 startete
+    # trotz liegender Marke; die Ursache ist NICHT belegt, dies ist der
+    # einzige Weg im Block, der offen ausfaellt, und er ist jetzt zu.
+    JETZT=$(date +%s 2>/dev/null)
+    case "$JETZT" in
+        ''|*[!0-9]*) JETZT="" ;;
+    esac
+    if [ -z "$JETZT" ]; then
+        exit 0
+    fi
+    ALTER=$(( JETZT - SEIT ))
+    if [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ]; then
+        exit 0
+    fi
+fi
+
+# ---------- Prozesse des Dienstes finden ----------
+# Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den
+# vollen Dienstpfad DIESES Plugins ($1). Dazu muss der Prozess dem Benutzer
+# mit der Nummer $2 gehoeren. Ein Editor oder "tail" auf die Datei, eine
+# Suche mit dem Namen im Muster und der Dienst eines anderen Plugin-Ordners
+# treffen damit nicht. "pgrep -f" traf jede Befehlszeile, in der die
+# Zeichenkette irgendwo vorkam.
+cc_dienste_finden() {
+    for cc_d in /proc/[0-9]*; do
+        grep -qaF "chromecast4lox_ng-server.py" "$cc_d/cmdline" 2>/dev/null || continue
+        [ "$(stat -c %u "$cc_d" 2>/dev/null)" = "$2" ] || continue
+        cc_n=0
+        cc_treffer=0
+        while IFS= read -r cc_arg; do
+            cc_n=$((cc_n + 1))
+            if [ "$cc_n" = 1 ]; then
+                case "${cc_arg##*/}" in
+                    python|python3|python3.*) ;;
+                    *) break ;;
+                esac
+            elif [ "$cc_n" = 2 ] && [ "$cc_arg" = "$1" ]; then
+                cc_treffer=1
+            fi
+        done <<CC_ARGUMENTE
+$(tr '\0' '\n' < "$cc_d/cmdline" 2>/dev/null)
+CC_ARGUMENTE
+        if [ "$cc_treffer" = 1 ] && [ "$cc_n" = 2 ]; then
+            echo "${cc_d#/proc/}"
+        fi
+    done
+}
+
 # Fail loud statt still. Ein Waechter, der schweigend nichts tut, ist
 # schlimmer als keiner.
 if [ ! -x "$DIENST" ]; then
@@ -52,20 +135,37 @@ if [ ! -x "$DIENST" ]; then
     exit 1
 fi
 
-# Laeuft er schon? Punktgenau ueber die PID-Datei, und die eingetragene
-# Nummer wird gegen /proc/<pid>/cmdline gehalten. Nicht ueber
-# "pgrep -f chromecast4lox_ng-server": das traefe auch einen offenen Editor
-# oder ein Sicherungsskript, das gerade den Ordner durchsucht.
+# Laeuft er schon? Argumentweise gesucht, nicht ueber
+# "pgrep -f chromecast4lox_ng-server": das traefe auch einen offenen Editor,
+# ein Sicherungsskript - und den Dienst eines zweiten Plugin-Ordners.
+#
+# Die PID-Datei bleibt die erste Frage, aber sie reicht nicht: beim Upgrade
+# loescht purge_installation sie mit data/plugins/<ordner>/. Ein Dienst, der
+# das Update ueberlebt hatte, war danach unsichtbar, und dieser Waechter
+# startete einen zweiten - zwei Dienste auf demselben UDP-Port (in WSL
+# gemessen 17.09.2026, Fall q3: nach dem Waechterlauf zwei statt einem).
+CC_UID=$(id -u loxberry 2>/dev/null)
+[ -n "$CC_UID" ] || CC_UID=$(id -u 2>/dev/null)
+CC_LAEUFT=$(cc_dienste_finden "$DIENST" "$CC_UID")
 if [ -f "$PIDDATEI" ]; then
     P=$(cat "$PIDDATEI" 2>/dev/null)
     case "$P" in
         ''|*[!0-9]*) P="" ;;
     esac
-    if [ -n "$P" ] && kill -0 "$P" 2>/dev/null \
-       && tr '\0' '\n' < "/proc/$P/cmdline" 2>/dev/null \
-          | sed 's#.*/##' | grep -qx "chromecast4lox_ng-server.py"; then
+    if [ -n "$P" ] && echo "$CC_LAEUFT" | grep -qx "$P"; then
         exit 0
     fi
+fi
+if [ -n "$CC_LAEUFT" ]; then
+    # Er laeuft, nur ohne (gueltige) PID-Datei. Nachtragen statt nachstarten,
+    # damit die Oberflaeche und der naechste Lauf ihn wiederfinden.
+    CC_ERSTE=$(echo "$CC_LAEUFT" | head -1)
+    CC_ANZAHL=$(echo "$CC_LAEUFT" | grep -c .)
+    mkdir -p "$(dirname "$PIDDATEI")" 2>/dev/null
+    echo "$CC_ERSTE" > "$PIDDATEI"
+    MELDUNG="Chromecast 4 Lox NG: der Dienst lief ohne gueltige PID-Datei ($CC_ANZAHL Prozess(e), PID $CC_ERSTE). Die PID-Datei wurde nachgetragen; es wurde kein zweiter gestartet."
+    command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+    exit 0
 fi
 
 # Er laeuft nicht. Nachstarten.
@@ -85,6 +185,14 @@ fi
 # fuer den Fall, dass wirklich root aufruft - Handprobe oder ein fremder
 # Cron. Dann, und nur dann, stimmt er.
 mkdir -p "$(dirname "$PIDDATEI")" 2>/dev/null
+# Laeuft dieses Skript ausnahmsweise als root - Handprobe oder ein fremder
+# Cron -, gehoert der eben angelegte Ordner root, und der Dienst koennte
+# nicht mehr hineinschreiben. Deshalb gleich uebergeben; als loxberry ist der
+# Block wirkungslos und wird uebersprungen.
+if [ "$(id -u 2>/dev/null)" = "0" ]; then
+    chown loxberry:loxberry "$(dirname "$PIDDATEI")" 2>/dev/null
+    chown loxberry:loxberry "$(dirname "$LOG")" 2>/dev/null
+fi
 WER=$(id -un 2>/dev/null)
 if [ "$WER" = "loxberry" ]; then
     # 'echo $!' unmittelbar nach dem Abzweigen: das ist die Nummer des

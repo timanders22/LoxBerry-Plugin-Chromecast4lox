@@ -91,7 +91,8 @@ zurueck() {
 SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
 
 zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
-zurueck "$SICHER/log" "$LBHOMEDIR/log/plugins/$PDIR" "Protokoll"
+# Das Protokoll nicht: es uebersteht das Upgrade an Ort und Stelle (siehe
+# preupgrade.sh). Zurueckkopiert ueberschrieb es die neuen Zeilen.
 zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
 
 # 1.3.0: zwei Schluessel heissen anders - themenpraefix -> mqtt_topic,
@@ -117,15 +118,20 @@ if [ -f "$CCCFG" ]; then
     done
 fi
 
-# Eigentuemer richtigstellen. Dieses Skript laeuft als root; die
-# zurueckgespielten Dateien gehoerten sonst root, und die Oberflaeche laeuft
-# als loxberry - sie koennte die Konfiguration danach nicht mehr schreiben.
-if id loxberry >/dev/null 2>&1; then
-    for d in "$LBHOMEDIR/config/plugins/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" \
-             "$LBHOMEDIR/data/plugins/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files"; do
-        [ -d "$d" ] && chown -R loxberry:loxberry "$d" 2>/dev/null
-    done
-    echo "<OK> Eigentuemer auf loxberry gesetzt."
+# Eigentuemer nur nachsehen und sagen. Dieses Skript laeuft als Benutzer
+# loxberry, NICHT als root: plugininstall.pl ruft es mit
+# "sudo -n -u loxberry" auf (Regeln/06). Bis 1.3.9 stand hier ein
+# "chown -R loxberry:loxberry" mit dem Kommentar "laeuft als root" - als
+# loxberry aendert das keinen Eigentuemer, und die Meldung "Eigentuemer
+# auf loxberry gesetzt" kam trotzdem.
+CC_WER_UID=$(id -u 2>/dev/null)
+CC_FREMD=$(find "$LBHOMEDIR/config/plugins/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" \
+                "$LBHOMEDIR/data/plugins/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" \
+                ! -uid "$CC_WER_UID" 2>/dev/null | head -3)
+if [ -n "$CC_FREMD" ]; then
+    echo "<INFO> Diese Dateien gehoeren nicht $(id -un 2>/dev/null):"
+    echo "$CC_FREMD" | sed 's/^/<INFO>   /'
+    echo "<INFO> Der Dienst und die Oberflaeche laufen als loxberry und koennten sie nicht schreiben."
 fi
 
 echo "<INFO> Remove backup folder"

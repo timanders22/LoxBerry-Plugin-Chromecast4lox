@@ -38,14 +38,28 @@ function cc_test_ausfuehren($was, $geraet = '')
                 $t .= "Ohne Geraet in den Einstellungen tut der Dienst nichts.\n"
                     . "Mit \"Chromecasts im Netz suchen\" die genauen Namen ermitteln.\n\n";
             }
-            // pgrep statt 'ps -C python3': der Parameter -C bindet an den
+            // Zuerst die EIGENEN Prozesse, argumentweise erkannt
+            // (cc_dienst_pids() in cc_lib.php). Bis 1.3.10 stand hier nur die
+            // Suche nach der Zeichenkette, ohne Ueberschrift - sie laeuft ueber
+            // das ganze System und trifft auch einen Editor, ein 'tail' und
+            // den Dienst eines zweiten Plugin-Ordners. Was sie zeigte, las sich
+            // wie "das ist dein Dienst". Sie bleibt stehen, weil sie beim
+            // Suchen hilft, aber sie steht jetzt unter ihrer eigenen
+            // Ueberschrift und an zweiter Stelle.
+            //
+            // 'ps -C python3' waere kein Ersatz: der Parameter -C bindet an den
             // genauen Namen der ausfuehrbaren Datei. Startet LoxBerry den
-            // Dienst unter python3.11 - oder laeuft er ueber das Shebang der
-            // Datei selbst -, bleibt die Ausgabe leer, und im Reiter Test
-            // stuende nichts, obwohl der Dienst laeuft.
+            // Dienst unter python3.11, bleibt die Ausgabe leer.
+            $cc_eigene = cc_dienst_pids();
+            $t .= "Eigene Prozesse:    "
+                . ($cc_eigene ? implode(', ', $cc_eigene) : 'keine') . "\n";
+            foreach ($cc_eigene as $cc_einzeln) {
+                $t .= cc_sh('ps -o pid,etime,rss,args -p '
+                    . (int) $cc_einzeln . ' 2>/dev/null') . "\n";
+            }
+            $t .= "\nAlle Prozesse im System, deren Befehlszeile den Dienstnamen\n"
+                . "enthaelt - darunter koennen fremde sein:\n";
             $t .= cc_sh('pgrep -a -f "[c]hromecast4lox_ng-server" 2>/dev/null');
-            $t .= "\n" . cc_sh('ps -o pid,etime,rss,args -p '
-                . (int) cc_dienst_pid() . ' 2>/dev/null');
             return array('Zustand des Dienstes', trim($t) !== '' ? $t : 'Keine Angaben.');
 
         case 'suchen':
@@ -140,6 +154,16 @@ function cc_test_ausfuehren($was, $geraet = '')
             return array('MQTT-Gateway', $t);
 
         case 'restart':
+            // Waehrend einer Aktualisierung wird nichts angefasst. Die
+            // Konfiguration ist in dieser Zeit die mitgelieferte Vorgabe; ein
+            // hier gestarteter Dienst liefe mit falschem Themenpraefix und
+            // falschem UDP-Port, und der Schalter, den die naechste Zeile
+            // setzt, wuerde vom Installer ueberschrieben. Die Oberflaeche
+            // haelt schon am Eingang an - dies ist die zweite Tuer, weil
+            // diese Datei auch von anderswoher eingebunden werden kann.
+            if (cc_upgrade_laeuft()) {
+                return array('Dienst neu starten', cc_t('UPGRADE.T_AKTION'));
+            }
             // Den Schalter mitziehen: wer neu startet, will den Dienst
             // laufen sehen - auch nach dem naechsten Waechterlauf.
             cc_dienst_schalter(true);
@@ -151,6 +175,9 @@ function cc_test_ausfuehren($was, $geraet = '')
             return array('Dienst neu starten', $t);
 
         case 'stop':
+            if (cc_upgrade_laeuft()) {
+                return array('Dienst anhalten', cc_t('UPGRADE.T_AKTION'));
+            }
             // Erst den Schalter, dann anhalten. Andersherum koennte der
             // Waechter dazwischen anlaufen und den Dienst sofort wieder
             // starten.
