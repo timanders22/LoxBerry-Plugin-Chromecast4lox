@@ -401,6 +401,11 @@ if ($cc_frame) {
 .sm-tbl { border-collapse: collapse; margin: 8px 0; width: 100%; }
 .sm-tbl th, .sm-tbl td { border: 1px solid #ddd; padding: 6px 10px; text-align: left; font-size: 0.9em; vertical-align: top; }
 .sm-tbl th { background: #f0f0f0; }
+/* Wortgetreu aus VORLAGE_hausstandard.css.html (B54, 17.09.2026): jede Tabelle
+   mit Eingabefeldern kommt in .sm-breit. lb-content schneidet seitlich ab; an
+   BatterieBMS waren so zwei Spalten im Browser nicht erreichbar. */
+.sm-breit { overflow-x: auto; -webkit-overflow-scrolling: touch; margin: 10px 0; }
+.sm-breit .sm-tbl { margin: 0; min-width: 760px; }
 
 /* --- Einheitliches Kachel-Raster im Reiter Test (Hausstandard) --- */
 .sm-h3 { color: #4f7d17; font-size: 1.0em; font-weight: 700; margin: 16px 0 2px; }
@@ -507,6 +512,7 @@ if ($cc_frame) {
 <?php if (!$cc_gefunden) { ?>
 <div class="sm-alert sm-info"><?php echo cc_t('SUCHE.H_NICHTS'); ?></div>
 <?php } else { ?>
+<div class="sm-breit">
 <table class="sm-tbl">
 <tr><th style="width:6%;"></th><th><?php echo cc_t('TEXT.T015'); ?></th><th><?php echo cc_t('SUCHE.SP_MODELL'); ?></th><th><?php echo cc_t('SUCHE.SP_ADRESSE'); ?></th><th><?php echo cc_t('MQTT.SP_ART'); ?></th></tr>
 <?php foreach ($cc_gefunden as $cc_gf) {
@@ -516,6 +522,7 @@ if ($cc_frame) {
 <td><span class="sm-mono"><?= cc_e($cc_gf['adresse']) ?></span></td><td><?= cc_e($cc_gf['art']) ?></td></tr>
 <?php } ?>
 </table>
+</div>
 <div class="sm-knopfreihe">
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="uebernehmen" value="1"><?php echo cc_t('SUCHE.K_UEBERNEHMEN'); ?></button>
 </div>

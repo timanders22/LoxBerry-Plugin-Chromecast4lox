@@ -34,6 +34,30 @@ import threading
 import time
 import unicodedata
 import urllib.parse
+
+
+# Grund einer abgewiesenen MQTT-Anmeldung in Worten. paho 1.x liefert die
+# CONNACK-Codes aus MQTT 3.1.1 (1-5), paho 2.x fuer dieselben Faelle die
+# Ursachencodes aus MQTT 5 (132-136) - je nach installierter Fassung kommt
+# also die eine ODER die andere Zahl an (Regeln/07). Nachgetragen 17.09.2026.
+MQTT_ANMELDUNG_TEXT = {
+    1: "der Broker lehnt die Protokollfassung ab",
+    2: "der Broker lehnt die Kennung des Clients ab",
+    3: "der Broker ist nicht verfuegbar",
+    4: "Benutzer oder Kennwort des Brokers sind falsch (System -> MQTT Gateway)",
+    5: "nicht berechtigt - Benutzer und Kennwort des Brokers pruefen (System -> MQTT Gateway)",
+}
+for _alt, _neu in ((1, 132), (2, 133), (3, 136), (4, 134), (5, 135)):
+    MQTT_ANMELDUNG_TEXT[_neu] = MQTT_ANMELDUNG_TEXT[_alt]
+
+
+def mqtt_anmeldegrund(rc):
+    """'Code 135: nicht berechtigt - ...' aus einer Zahl oder einem ReasonCode."""
+    try:
+        code = int(getattr(rc, "value", rc))
+    except (TypeError, ValueError):
+        return "Code %s" % rc
+    return "Code %d: %s" % (code, MQTT_ANMELDUNG_TEXT.get(code, "unbekannter Grund"))
 from configparser import ConfigParser
 
 
@@ -784,7 +808,7 @@ class MqttAnbindung:
     def _on_connect(self, client, userdata, *rest):
         rc = self._grund(rest)
         if rc != 0:
-            log.error("MQTT-Anmeldung abgelehnt, Code %s", rc)
+            log.error("MQTT-Anmeldung abgelehnt (%s).", mqtt_anmeldegrund(rc))
             return
         self.verbunden = True
         self.neumeldung_faellig = True
@@ -815,9 +839,15 @@ class MqttAnbindung:
     def senden(self, unterthema, wert, retain=True):
         if not self.client:
             return False
+        text = str(wert)
+        # Ein LEERER Wert geht nie retained hinaus: eine leere Nutzlast mit
+        # retain loescht das zurueckbehaltene Thema im Broker (Regeln/07, am
+        # Broker belegt 14.09.2026). app, title, artist, album ("" ohne
+        # laufende Wiedergabe) und last_error ("" ohne Fehler) verschwanden bis
+        # 1.3.8 damit aus dem Broker, obwohl die Themenliste sie retained fuehrt.
         try:
             erg = self.client.publish(self.praefix + "/" + unterthema,
-                                      str(wert), qos=0, retain=bool(retain))
+                                      text, qos=0, retain=bool(retain) and text != "")
         except Exception as fehler:  # noqa: BLE001
             log.error("MQTT-Veroeffentlichung fehlgeschlagen: %s", fehler)
             return False
@@ -830,6 +860,19 @@ class MqttAnbindung:
             if self.verluste in (1, 10, 100) or self.verluste % 1000 == 0:
                 log.warning("MQTT: %d Nachricht(en) nicht abgesetzt (letzter Code %s). "
                             "Laeuft das MQTT-Gateway?", self.verluste, rc)
+            return False
+        return True
+
+    def abraeumen(self, unterthema):
+        """Ein zurueckbehaltenes Thema im Broker loeschen (leere Nutzlast,
+        retain). Fuer Themen, die frueher retained gingen und es nicht mehr
+        tun - sonst liegt ihr alter Wert dort weiter (Regeln/07)."""
+        if not self.client:
+            return False
+        try:
+            self.client.publish(self.praefix + "/" + unterthema, "", qos=0, retain=True)
+        except Exception as fehler:  # noqa: BLE001
+            log.error("MQTT-Abraeumen fehlgeschlagen: %s", fehler)
             return False
         return True
 
@@ -1886,6 +1929,13 @@ class Dienst:
                 self.mqtt.neumeldung_faellig = False
                 for geraet in self.geraete.values():
                     geraet.letzter_stand.clear()
+                    # Themen OHNE retain einmal je Verbindung abraeumen: bis
+                    # 1.3.7 gingen app/title/artist/album/last_error retained
+                    # hinaus, und ihr letzter Wert liegt noch im Broker. Der
+                    # frische Wert folgt im selben Durchgang (erzwingen).
+                    for eintrag in THEMEN.get("geraet", []):
+                        if not eintrag.get("retain", True):
+                            self.mqtt.abraeumen(geraet.thema + "/" + eintrag["schluessel"])
                 log.info("MQTT neu verbunden - alle Zustaende werden erneut gemeldet")
 
             for geraet in list(self.geraete.values()):

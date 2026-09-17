@@ -64,8 +64,8 @@ function cc_test_ausfuehren($was, $geraet = '')
             if (!$geraete) {
                 return array('MQTT-Themen', 'Es ist kein Geraet konfiguriert.');
             }
-            $t = "Zustaende - kommen retained an, der Miniserver hat den Stand\n"
-               . "also sofort nach einem Neustart wieder:\n\n";
+            $t = "Themen je Geraet - welche retained ankommen, steht in der\n"
+               . "Spalte retain im Reiter MQTT (bin/cc_themen.json):\n\n";
             $t .= "  $praefix/server/online\n";
             foreach ($geraete as $g) {
                 $th = cc_thema($g);

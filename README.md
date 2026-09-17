@@ -4,6 +4,13 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.8
+
+- **Tabellen mit Eingabefeldern rollen seitlich, statt abgeschnitten zu werden.**
+  Die Oberfläche von LoxBerry schneidet breite Inhalte ab, ohne dass die Seite
+  seitlich rollt; an BatterieBMS waren so zwei Einstellungen je Speicher nicht
+  erreichbar. Diese Tabellen stehen jetzt im Rollbehälter der Hausform.
+
 ## Fassung 1.3.7 — der Wächter startet den Dienst wirklich nach
 
 Ein Befund, am Gerät gemessen, kein neues Merkmal.
