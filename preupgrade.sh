@@ -129,6 +129,34 @@ cc_dienste_beenden() {
     done
 }
 
+# ---------- Hat eine Einstellungsdatei Inhalt? ----------
+# "Inhalt" heisst: lesbar, mit Abschnitt [CONFIG] und einem Aktionstoken, und
+# die Datei endet mit einem Zeilenende. cc_config_write() (cc_lib.php)
+# schreibt aktionstoken als LETZTEN Schluessel (Reihenfolge aus
+# bin/cc_vorgaben.json) und jede Zeile mit "\n"; eine abgeschnittene Datei
+# verliert damit zuerst genau diese Zeile oder ihr Ende. Die Groesse sagt
+# darueber nichts: eine abgeschnittene Datei und die mitgelieferte Vorgabe
+# sind nicht leer (in WSL gemessen 18.09.2026,
+# Pruefung-Chromecast4lox-1.3.11, Faelle c1-c3).
+cc_cfg_inhalt() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    grep -q '^\[CONFIG\]' "$1" 2>/dev/null || return 1
+    grep -Eq "^[[:space:]]*aktionstoken[[:space:]]*=[[:space:]]*[\"']?[^[:space:]\"']" "$1" 2>/dev/null || return 1
+    [ "$(tail -c 1 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0a" ]
+}
+
+# ---------- Steht alles in der Kopie? ----------
+# Nennt jede Datei aus $1, die in $2 fehlt oder byteweise abweicht; leer
+# heisst: alles da und gleich. Ein fehlendes $1 hat nichts, was fehlen
+# koennte. Die Wirkung wird geprueft, nicht der Rueckgabewert allein
+# (CLAUDE.md, Abschnitt 2; Bauart GardenaSmartSystem 1.2.10 preupgrade.sh).
+cc_abweichend() {
+    [ -d "$1" ] || return 0
+    ( cd "$1" && find . -type f | while IFS= read -r cc_f; do
+          cmp -s "$cc_f" "$2/$cc_f" || printf '%s ' "${cc_f#./}"
+      done ) 2>/dev/null || echo "(nicht lesbar: $1)"
+}
+
 # ---------- Marke "Aktualisierung laeuft" ----------
 # Als Erstes, vor jedem anderen Schritt. Der Installer legt die Cron-Datei
 # neu an, lange bevor postroot.sh den Dienst startet (am Geraet an der
@@ -200,13 +228,40 @@ rm -f "$CC_BASE/data/plugins/$CC_PFOLDER/dienst.pid" 2>/dev/null
 # "rm -rf .../<x>/" trifft den Nachbarn "<x>.upgrade_sicherung" nicht.
 SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
 
+# Die neue Sicherung entsteht NEBEN der alten und ersetzt sie erst, wenn sie
+# vollstaendig steht. Bis 1.3.10 stand hier "rm -rf $SICHER" VOR dem
+# Kopieren: brach ein Update nach purge_installation ab und wurde erneut
+# angestossen, gab es nichts mehr zu sichern, und die einzige Abschrift war
+# schon geloescht (Bestand-2026-09-18/klasse-D: 11 von 12 Dateien; in WSL
+# nachgemessen 18.09.2026, Pruefung-Chromecast4lox-1.3.11, Fall d1: 14 von
+# 14, Fall d2: Abbruch beim Schreiben). Reihenfolge wie GardenaSmartSystem
+# 1.2.10: in $SICHER.neu bauen -> jede Datei byteweise pruefen -> die alte
+# nach $SICHER.alt -> die neue an ihren Platz -> die alte wegwerfen.
+# "mv -T" schiebt nie IN ein vorhandenes Verzeichnis hinein.
+CC_NEU="$SICHER.neu"
+CC_QCFG="$LBHOMEDIR/config/plugins/$PDIR"
+CC_QFILES="$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files"
+
 echo "<INFO> Creating backup folder for upgrading $SICHER"
-rm -rf "$SICHER" 2>/dev/null
-mkdir -p "$SICHER/config" "$SICHER/files"
-chmod 0700 "$SICHER" 2>/dev/null
+rm -rf "$CC_NEU" 2>/dev/null
+mkdir -p "$CC_NEU/config" "$CC_NEU/files" 2>/dev/null
+chmod 0700 "$CC_NEU" 2>/dev/null
+CC_OK=1
+CC_GRUND=""
 
 echo "<INFO> Backing up existing config files"
-cp -a "$LBHOMEDIR/config/plugins/$PDIR/." "$SICHER/config/" 2>/dev/null
+# Ohne Konfigordner gibt es nichts, was eine vorhandene Sicherung ersetzen
+# duerfte: so sieht der zweite Versuch nach einem abgebrochenen Update aus
+# (purge_installation hat den Ordner schon entfernt, Fall d1).
+if [ -d "$CC_QCFG" ]; then
+    cp -a "$CC_QCFG/." "$CC_NEU/config/" 2>/dev/null \
+        || { CC_OK=0; CC_GRUND="$CC_GRUND Konfiguration: cp Rueckgabewert $?;"; }
+else
+    CC_OK=0
+    CC_GRUND="$CC_GRUND keine Konfiguration unter $CC_QCFG;"
+fi
+CC_ABW=$(cc_abweichend "$CC_QCFG" "$CC_NEU/config")
+[ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
 
 # Das Protokoll wird nicht gesichert: purge_installation loescht
 # log/plugins/<ordner>/ beim Upgrade nicht, nur beim Deinstallieren
@@ -215,7 +270,45 @@ cp -a "$LBHOMEDIR/config/plugins/$PDIR/." "$SICHER/config/" 2>/dev/null
 # WSL nachgestellt am 17.09.2026).
 
 echo "<INFO> Backing up existing backup archives"
-cp -a "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/." "$SICHER/files/" 2>/dev/null
+if [ -d "$CC_QFILES" ]; then
+    cp -a "$CC_QFILES/." "$CC_NEU/files/" 2>/dev/null \
+        || { CC_OK=0; CC_GRUND="$CC_GRUND Sicherungsarchive: cp Rueckgabewert $?;"; }
+fi
+CC_ABW=$(cc_abweichend "$CC_QFILES" "$CC_NEU/files")
+[ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
+
+# Eine Sicherung MIT Aktionstoken wird nie durch eine OHNE ersetzt. Nach
+# purge_installation kopiert der Installer die mitgelieferte Vorgabe nach
+# config/plugins/<ordner>/; bricht er danach ab, ist ihre Kopie vollstaendig
+# und heil - und traegt nichts mehr vom Anwender (Fall d3).
+if [ "$CC_OK" = 1 ] && ! cc_cfg_inhalt "$CC_NEU/config/chromecast-4lox-ng.cfg" \
+   && cc_cfg_inhalt "$SICHER/config/chromecast-4lox-ng.cfg"; then
+    CC_OK=0
+    CC_GRUND="$CC_GRUND die Einstellungen tragen kein vollstaendiges Aktionstoken, die vorhandene Sicherung schon;"
+fi
+
+if [ "$CC_OK" = 1 ]; then
+    rm -rf "$SICHER.alt" 2>/dev/null
+    if [ -e "$SICHER" ] && ! mv -T "$SICHER" "$SICHER.alt" 2>/dev/null; then
+        rm -rf "$CC_NEU" 2>/dev/null
+        echo "<WARNING> Die bisherige Sicherung liess sich nicht beiseitelegen; sie bleibt"
+        echo "<WARNING> unangetastet: $SICHER"
+    elif mv -T "$CC_NEU" "$SICHER" 2>/dev/null; then
+        rm -rf "$SICHER.alt" 2>/dev/null
+        echo "<OK> Einstellungen und Sicherungsarchive gesichert: $SICHER"
+    else
+        [ -e "$SICHER.alt" ] && mv -T "$SICHER.alt" "$SICHER" 2>/dev/null
+        rm -rf "$CC_NEU" 2>/dev/null
+        echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen."
+        echo "<WARNING> Platz und Rechte in $LBHOMEDIR/data/plugins pruefen."
+    fi
+else
+    rm -rf "$CC_NEU" 2>/dev/null
+    echo "<WARNING> Die Einstellungen wurden NICHT neu gesichert:$CC_GRUND"
+    if [ -d "$SICHER" ]; then
+        echo "<WARNING> Die bisherige Sicherung bleibt unangetastet: $SICHER"
+    fi
+fi
 
 # Exit with Status 0
 
@@ -230,10 +323,30 @@ cp -a "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files/." "$SICHER/files/" 2>/de
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-chromecast-4lox-ng}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
-if [ -s "$NETZ_CFG/chromecast-4lox-ng.cfg" ]; then
-    cp -p "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.chromecast-4lox-ng.cfg" 2>/dev/null \
-        && chmod 0600 "$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.chromecast-4lox-ng.cfg" 2>/dev/null
+NETZ_ZWEIT="$NETZ_BASE/config/plugins/$NETZ_PDIR.backup.chromecast-4lox-ng.cfg"
+# Nach INHALT entscheiden, nicht nach Groesse (cc_cfg_inhalt oben). Bis
+# 1.3.10 stand hier "[ -s ]": eine abgeschnittene Datei und die
+# mitgelieferte Vorgabe verdraengten die heile Zweitschrift (Faelle c1-c3),
+# und die Erfolgsmeldung kam auch ohne Kopie.
+if cc_cfg_inhalt "$NETZ_CFG/chromecast-4lox-ng.cfg"; then
+    # Erst eine Nebendatei, dann umbenennen: "cp -p" auf die Zweitschrift
+    # kappte sie, bevor die neue stand (Fall c5: nach einem Abbruch beim
+    # Schreiben blieb eine Zweitschrift mit 0 Byte).
+    if cp -p "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_ZWEIT.neu" 2>/dev/null \
+       && chmod 0600 "$NETZ_ZWEIT.neu" 2>/dev/null \
+       && cmp -s "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_ZWEIT.neu" \
+       && mv -f "$NETZ_ZWEIT.neu" "$NETZ_ZWEIT" 2>/dev/null; then
+        echo "<INFO> Zweitschrift der Einstellungen angelegt."
+    else
+        rm -f "$NETZ_ZWEIT.neu" 2>/dev/null
+        echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen;"
+        echo "<WARNING> eine vorhandene bleibt unveraendert: $NETZ_ZWEIT"
+    fi
+elif [ -f "$NETZ_ZWEIT" ]; then
+    echo "<WARNING> Die Einstellungen fehlen oder tragen kein vollstaendiges Aktionstoken -"
+    echo "<WARNING> die vorhandene Zweitschrift bleibt unveraendert: $NETZ_ZWEIT"
+else
+    echo "<INFO> Keine Einstellungen mit Aktionstoken vorhanden - keine Zweitschrift angelegt."
 fi
-echo "<INFO> Zweitschrift der Einstellungen angelegt."
 
 exit 0

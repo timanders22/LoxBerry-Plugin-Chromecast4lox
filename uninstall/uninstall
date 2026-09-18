@@ -161,6 +161,12 @@ if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; t
     if [ -e "$CC_ZWEIT" ]; then
         echo "<WARNING> Die Zweitschrift $CC_ZWEIT liess sich nicht entfernen."
     fi
+    # Reste eines abgebrochenen preupgrade.sh: die halb gebaute neue und die
+    # beiseitegelegte alte Sicherung, die Nebendatei der Zweitschrift. Sie
+    # koennen das Aktionstoken tragen wie die Sicherung selbst.
+    rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.neu" \
+           "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" \
+           "$CC_ZWEIT.neu" 2>/dev/null
     # Die Marke aus preupgrade.sh, falls eine Aktualisierung abbrach.
     rm -f "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_laeuft" 2>/dev/null
 fi

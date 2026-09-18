@@ -60,6 +60,18 @@ PBIN=$LBPBIN/$PDIR
 ARGV6=$6 # Full path to temporary installation folder
 
 
+# ---------- Steht alles in der Kopie? ----------
+# Nennt jede Datei aus $1, die in $2 fehlt oder byteweise abweicht; leer
+# heisst: alles da und gleich. Ein fehlendes $1 hat nichts, was fehlen
+# koennte. Die Wirkung wird geprueft, nicht der Rueckgabewert allein
+# (CLAUDE.md, Abschnitt 2; Bauart GardenaSmartSystem 1.2.10 preupgrade.sh).
+cc_abweichend() {
+    [ -d "$1" ] || return 0
+    ( cd "$1" && find . -type f | while IFS= read -r cc_f; do
+          cmp -s "$cc_f" "$2/$cc_f" || printf '%s ' "${cc_f#./}"
+      done ) 2>/dev/null || echo "(nicht lesbar: $1)"
+}
+
 # Zurueckspielen - aber nur, wenn im Quellordner ueberhaupt etwas liegt.
 #
 # 'cp -r ordner/*' bei leerem Ordner laesst die Shell das Sternchen woertlich
@@ -67,6 +79,9 @@ ARGV6=$6 # Full path to temporary installation folder
 # Das bricht das Skript zwar nicht ab (kein set -e), aber im
 # Installationsprotokoll steht eine Fehlermeldung, die niemand deuten kann -
 # und die den Blick auf echte Fehler verstellt.
+#
+# Rueckgabewert 0 heisst: nichts zu tun, oder jede Datei steht byteweise am
+# Ziel. Davon haengt ab, ob die Sicherung unten weggeraeumt wird.
 zurueck() {
     quelle=$1
     ziel=$2
@@ -80,7 +95,12 @@ zurueck() {
         return 0
     fi
     mkdir -p "$ziel" 2>/dev/null
-    cp -v -r "$quelle"/. "$ziel"/ && echo "<OK> $zweck zurueckgespielt."
+    if cp -v -r "$quelle"/. "$ziel"/ && [ -z "$(cc_abweichend "$quelle" "$ziel")" ]; then
+        echo "<OK> $zweck zurueckgespielt."
+        return 0
+    fi
+    echo "<WARNING> $zweck liess sich nicht vollstaendig zurueckspielen."
+    return 1
 }
 
 # Die Sicherung liegt seit dem 10.08.2026 unter data/ statt unter /tmp.
@@ -90,10 +110,11 @@ zurueck() {
 # preupgrade mit 'cp -a quelle/. ziel/' den Inhalt - ohne die Zwischenebene.
 SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
 
-zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration"
+CC_ZURUECK_OK=1
+zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration" || CC_ZURUECK_OK=0
 # Das Protokoll nicht: es uebersteht das Upgrade an Ort und Stelle (siehe
 # preupgrade.sh). Zurueckkopiert ueberschrieb es die neuen Zeilen.
-zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive"
+zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive" || CC_ZURUECK_OK=0
 
 # 1.3.0: zwei Schluessel heissen anders - themenpraefix -> mqtt_topic,
 # mqtt -> mqtt_ein. Die zurueckgespielte Konfiguration traegt noch die alten
@@ -134,8 +155,22 @@ if [ -n "$CC_FREMD" ]; then
     echo "<INFO> Der Dienst und die Oberflaeche laufen als loxberry und koennten sie nicht schreiben."
 fi
 
-echo "<INFO> Remove backup folder"
-rm -rf "$SICHER"
+# Weggeraeumt wird die Sicherung erst, wenn beides nachweislich zurueck ist.
+# Bis 1.3.10 fiel sie ohne Bedingung - auch wenn das Zurueckspielen
+# gescheitert war (in WSL gemessen 18.09.2026, Fall p1: volle Platte beim
+# Zurueckspielen, danach war die Sicherung weg und die Einstellungen die
+# Vorgabe). Bleibt sie liegen, haelt preupgrade.sh sie beim naechsten Update
+# fest (die Vorgabe traegt kein Aktionstoken), und postupgrade.sh spielt sie
+# dann zurueck.
+if [ "$CC_ZURUECK_OK" = 1 ]; then
+    echo "<INFO> Remove backup folder"
+    rm -rf "$SICHER"
+else
+    echo "<WARNING> Die Sicherung bleibt liegen, weil nicht alles zurueckgespielt wurde:"
+    echo "<WARNING>   $SICHER"
+    echo "<WARNING> Die Einstellungen lassen sich von dort von Hand zurueckkopieren;"
+    echo "<WARNING> ein erneutes Update spielt sie ebenfalls zurueck."
+fi
 
 # --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.

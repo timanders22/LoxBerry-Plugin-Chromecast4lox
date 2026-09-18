@@ -4,6 +4,31 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.11
+
+- **Ein abgebrochenes Update kostet die Sicherung nicht mehr.**
+  `preupgrade.sh` löschte die vorhandene Sicherung
+  (`data/plugins/<ordner>.upgrade_sicherung`), bevor die neue stand. Brach
+  ein Update nach dem Abräumen des Plugins ab und wurde erneut angestoßen,
+  gab es nichts mehr zu sichern — die Einstellungen und die
+  Sicherungsarchive waren fort (in WSL nachgestellt, nicht am Gerät: 14 von
+  14 Dateien). Jetzt entsteht die neue Sicherung daneben, wird Datei für
+  Datei geprüft und ersetzt die alte erst dann. Eine Sicherung mit
+  Aktionstoken wird nie durch eine ohne ersetzt.
+- **Die Zweitschrift der Einstellungen wird nach Inhalt beurteilt.**
+  Bisher genügte, dass die Datei nicht leer war: eine abgeschnittene
+  Einstellungsdatei und die mitgelieferte Vorgabe überschrieben die heile
+  Zweitschrift. Jetzt zählt eine Datei nur, wenn sie `[CONFIG]` und ein
+  vollständiges Aktionstoken trägt. Geschrieben wird die Zweitschrift über
+  eine Nebendatei, damit ein Abbruch beim Schreiben sie nicht leert.
+- **`postinstall.sh` holt die Einstellungen auch aus einer abgeschnittenen
+  Datei zurück**, wenn die Zweitschrift ein Aktionstoken trägt und die
+  Datei nicht. Der verdrängte Stand bleibt als `….cfg.kaputt` (nur für
+  loxberry lesbar) liegen.
+- **`postupgrade.sh` räumt die Sicherung erst weg, wenn alles
+  zurückgespielt ist.** Scheiterte das Zurückspielen (etwa bei voller
+  Karte), war die Sicherung bisher trotzdem fort.
+
 ## Neu in 1.3.10
 
 - **Nach einem Update läuft genau ein Dienst.** Bis 1.3.9 lief der alte

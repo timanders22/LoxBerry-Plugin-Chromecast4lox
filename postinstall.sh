@@ -109,6 +109,23 @@ echo "<INFO> dann die gefundenen Namen im Reiter Einstellungen eintragen."
 NETZ_BASE="${5:-$LBHOMEDIR}"
 NETZ_PDIR="${3:-chromecast-4lox-ng}"
 NETZ_CFG="$NETZ_BASE/config/plugins/$NETZ_PDIR"
+
+# ---------- Hat eine Einstellungsdatei Inhalt? ----------
+# "Inhalt" heisst: lesbar, mit Abschnitt [CONFIG] und einem Aktionstoken, und
+# die Datei endet mit einem Zeilenende. cc_config_write() (cc_lib.php)
+# schreibt aktionstoken als LETZTEN Schluessel (Reihenfolge aus
+# bin/cc_vorgaben.json) und jede Zeile mit "\n"; eine abgeschnittene Datei
+# verliert damit zuerst genau diese Zeile oder ihr Ende. Die Groesse sagt
+# darueber nichts: eine abgeschnittene Datei und die mitgelieferte Vorgabe
+# sind nicht leer (in WSL gemessen 18.09.2026,
+# Pruefung-Chromecast4lox-1.3.11, Faelle c1-c3).
+cc_cfg_inhalt() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    grep -q '^\[CONFIG\]' "$1" 2>/dev/null || return 1
+    grep -Eq "^[[:space:]]*aktionstoken[[:space:]]*=[[:space:]]*[\"']?[^[:space:]\"']" "$1" 2>/dev/null || return 1
+    [ "$(tail -c 1 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0a" ]
+}
+
 netz_zurueck() {
     datei=$1; soll=$2
     ziel="$NETZ_CFG/$datei"
@@ -121,7 +138,26 @@ netz_zurueck() {
         ist=$(sha256sum "$ziel" 2>/dev/null | cut -d" " -f1)
         [ -n "$ist" ] && [ "$ist" = "$soll" ] && verloren=1
     fi
-    if [ "$verloren" = "1" ]; then
+    # Der vierte Fall: die Datei ist da, nicht leer, nicht die Vorgabe - und
+    # traegt trotzdem kein vollstaendiges Aktionstoken, waehrend die
+    # Zweitschrift eines traegt. Bis 1.3.10 blieb eine abgeschnittene Datei
+    # dann stehen, weil sie nicht leer war (Fall c6). Geholt wird nur aus
+    # einer Zweitschrift MIT Inhalt (Fall c9), und der verdraengte Stand
+    # bleibt als .kaputt liegen (0600, er kann das Token tragen).
+    if [ "$verloren" = 0 ] && ! cc_cfg_inhalt "$ziel" && cc_cfg_inhalt "$zweit"; then
+        verloren=2
+        if cp -p "$ziel" "$ziel.kaputt" 2>/dev/null && chmod 0600 "$ziel.kaputt" 2>/dev/null \
+           && cmp -s "$ziel" "$ziel.kaputt"; then
+            echo "<WARNING> $datei traegt kein vollstaendiges Aktionstoken. Der bisherige"
+            echo "<WARNING> Inhalt liegt unter $ziel.kaputt"
+        else
+            echo "<WARNING> $datei traegt kein vollstaendiges Aktionstoken, laesst sich aber"
+            echo "<WARNING> nicht beiseitelegen - es wird nichts zurueckgespielt. Die"
+            echo "<WARNING> Zweitschrift liegt unter $zweit"
+            return 0
+        fi
+    fi
+    if [ "$verloren" != "0" ]; then
         if cp -p "$zweit" "$ziel" 2>/dev/null; then
             echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
         else
