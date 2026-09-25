@@ -70,7 +70,17 @@ function cc_test_ausfuehren($was, $geraet = '')
             $t = "Es wird 10 Sekunden im Netz gesucht. Chromecasts melden sich per\n"
                . "mDNS; Geraete im Ruhezustand brauchen manchmal einen Moment.\n\n";
             $args = cc_cfg($cfg, 'gruppen', '1') === '1' ? '' : ' --ohne-gruppen';
-            $t .= cc_sh('timeout 25 python3 ' . escapeshellarg($skript) . $args);
+            // "-k 5" wie in cc_suche(), und die Zeitueberschreitung wird
+            // gesagt statt verschwiegen (Muster 13 der Nachlese).
+            $cc_aus = array();
+            $cc_rc = 0;
+            @exec('timeout -k 5 25 python3 ' . escapeshellarg($skript) . $args . ' 2>&1',
+                  $cc_aus, $cc_rc);
+            $t .= implode("\n", $cc_aus);
+            if ($cc_rc === 124 || $cc_rc === 137) {
+                $t .= "\n\nZeitueberschreitung: die Suche wurde nach 25 s abgebrochen"
+                    . " (Rueckgabe $cc_rc).";
+            }
             return array('Chromecasts im Netz', $t);
 
         case 'themen':
@@ -390,7 +400,7 @@ function cc_selbstpruefung()
     } elseif (!is_file($skript)) {
         cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_KEIN_SKRIPT'));
     } else {
-        $roh = cc_sh('timeout 20 python3 ' . escapeshellarg($skript) . ' --themen');
+        $roh = cc_sh('timeout -k 5 20 python3 ' . escapeshellarg($skript) . ' --themen');
         $d = json_decode(trim($roh), true);
         if (!is_array($d) || !isset($d['geraet'])) {
             cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_NICHT_MESSBAR'));

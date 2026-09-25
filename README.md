@@ -4,6 +4,50 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.12
+
+Nachlese nach den Hausregeln vom 18./19.09.2026 (MQTT-Retain) und den
+Prüfmustern vom 24./25.09.2026. Gemessen in WSL, nicht am Gerät
+(`Pruefung-Chromecast4lox-1.3.12`, 41 Fälle).
+
+- **Was der Dienst über sich selbst sagt, bleibt nicht mehr im Broker
+  stehen.** `<gerät>/online` (aus dem eigenen Verbindungsversuch),
+  `server/geraete` und `server/verluste` gehen flüchtig hinaus. Stirbt der
+  Dienst, stand bisher weiter `online 1` im Broker. Der alte Wert wird beim
+  Verbinden einmal abgeräumt, wie seit 1.3.9 für `ts` und `zaehler`. Ob der
+  Dienst lebt, sagt `server/online`: retained, mit Letztem Willen `0` auf
+  demselben Thema — auch nach einer Neuverbindung geht `1` wieder hinaus.
+- **Ein nicht erreichbares Gerät überschreibt seinen letzten Stand nicht
+  mehr.** `state OFFLINE` und `playing 0` gehen dann flüchtig hinaus: Loxone
+  sieht sie wie bisher, im Broker bleibt der letzte Stand des Geräts.
+  Meldet sich das Gerät zurück, geht sein Stand retained hinaus, auch wenn
+  er gleich lautet wie der Platzhalter.
+- **Die Deinstallation räumt die zurückbehaltenen Themen ab** —
+  `server/online` samt der übrigen retained Themen dieser Linie, auch die
+  eines Geräts, das nicht mehr in den Einstellungen steht — und liest beim
+  Broker nach, ob sie wirklich weg sind. Befehlsthemen (`<gerät>/cmd/…`)
+  und fremde Themen unter demselben Präfix bleiben. Verweigert der Broker
+  die Anmeldung oder das Lesen, steht das im Installationsprotokoll, statt
+  „nichts gefunden". Hängt der Schritt, bricht er nach 60 s ab und sagt es.
+- **Ein geändertes Themenpräfix** räumt das alte Präfix ebenso ab. Grenze:
+  was unter einem Präfix liegt, das vor 1.3.12 gewechselt wurde, räumt
+  niemand mehr ab — im MQTT Finder des Gateways von Hand löschen.
+- **Aus einem ausgepackten Archiv** arbeitet weder der Dienst noch die
+  Oberfläche mit der Anlage, es sei denn, `LBHOMEDIR` und `LBPPLUGINDIR`
+  sind beide gesetzt. Bisher nahm ein Archiv unterhalb einer Installation
+  deren Konfiguration und Broker, und „Dienst neu starten" startete den
+  Dienst der Anlage. Ohne gefundene Wurzel fragt die Oberfläche keine Pfade
+  ab `/` mehr ab.
+- **Die Installationsskripte prüfen die LoxBerry-Wurzel**
+  (`config/system/general.json`) und tun ohne sie nichts, statt gegen
+  Pfade ab `/` zu laufen und Erfolg zu melden.
+- **Kleinere Punkte:** Die Upgrade-Marke gilt auch mit einem Zeitpunkt bis
+  300 s in der Zukunft (nachgestellte Uhr). Die Gerätesuche bricht ein
+  hängendes Python nach 30 s wirklich ab und sagt es. `postinstall.sh`
+  spielt eine Zweitschrift ohne Aktionstoken nicht mehr zurück. Die
+  Anleitung zur Ersteinrichtung erscheint nur noch, wenn keine Geräte
+  eingerichtet sind.
+
 ## Neu in 1.3.11
 
 - **Ein abgebrochenes Update kostet die Sicherung nicht mehr.**

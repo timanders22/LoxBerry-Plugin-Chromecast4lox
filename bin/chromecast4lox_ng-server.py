@@ -61,57 +61,69 @@ def mqtt_anmeldegrund(rc):
 from configparser import ConfigParser
 
 
-def lb_wurzel_ermitteln():
-    """Den LoxBerry-Wurzelordner ohne festen Systempfad bestimmen.
-
-    Vom eigenen Ablageort aufwaerts, bis ein Verzeichnis gefunden ist, das
-    config/plugins UND webfrontend enthaelt. Trifft die uebliche
-    Installation genauso wie eine an einem anderen Ort.
-    """
-    d = os.path.dirname(os.path.abspath(__file__))
-    for _ in range(8):
-        if os.path.isdir(os.path.join(d, "config", "plugins")) \
-                and os.path.isdir(os.path.join(d, "webfrontend")):
-            return d
-        eltern = os.path.dirname(d)
-        if eltern == d:
-            break
-        d = eltern
-    return ""
-
-
 # ---------------------------------------------------------------------------
-# Pfade - LoxBerry ersetzt die REPLACE-Marken bei der Installation
+# Pfade - LoxBerry ersetzt die Platzhalter bei der Installation
 # ---------------------------------------------------------------------------
+#
+# Installiert hat LoxBerry jeden Platzhalter durch den Pfad der Anlage
+# ersetzt; dann gelten genau diese Pfade. Steht er noch da, laeuft die Datei
+# aus einem ausgepackten Archiv oder einem Pruefordner. Bis 1.3.11 suchte sie
+# dann vom eigenen Ablageort aufwaerts das erste Verzeichnis mit
+# config/plugins und webfrontend und nahm es als Wurzel: ein Archiv unterhalb
+# einer echten Installation arbeitete damit auf deren Konfiguration, Daten
+# und Broker, ein Archiv unter einem fremden Baum ohne general.json schrieb
+# dorthin, und mit LBHOMEDIR allein - so steht es am Geraet in
+# /etc/environment - lagen die Datenpfade trotzdem ab "/" (in WSL gemessen
+# 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Faelle P1 bis P3).
+#
+# Aus dem Archiv gilt jetzt nur, was der Aufrufer ausdruecklich nennt:
+# LBHOMEDIR UND LBPPLUGINDIR, und unter LBHOMEDIR liegt
+# config/system/general.json (so arbeiten die Pruefwerkzeuge mit ihrer
+# Attrappe). Sonst gibt es keine Wurzel: die Pfade bleiben leer, und main()
+# steigt aus, bevor etwas gelesen, gesendet oder geschrieben wird. Bauart
+# Spotpreis-Tibber 0.9.19 (tb_paths), Muster 1 bis 3 der Nachlese.
 
 PLUGIN_NAME = "REPLACELBPPLUGINDIR"
 if PLUGIN_NAME.startswith("REPLACE"):
-    PLUGIN_NAME = "chromecast-4lox-ng"
+    _lbp = os.path.basename(os.environ.get("LBPPLUGINDIR", "").rstrip("/"))
+    _home = os.environ.get("LBHOMEDIR", "").rstrip("/")
+    if _lbp not in ("", ".", "bin", "plugins") and _home != "" \
+            and os.path.isfile(os.path.join(_home, "config", "system", "general.json")):
+        HOME_DIR = _home
+        PLUGIN_NAME = _lbp
+    else:
+        HOME_DIR = ""
+        PLUGIN_NAME = "chromecast-4lox-ng"
+else:
+    HOME_DIR = "REPLACELBHOMEDIR"
+
+
+def _anlage(*teile):
+    """Ein Pfad der Anlage - oder "", wenn es keine Wurzel gibt."""
+    return os.path.join(HOME_DIR, *teile) if HOME_DIR else ""
+
 
 CONFIG_DIR = "REPLACELBPCONFIGDIR"
 if CONFIG_DIR.startswith("REPLACE"):
-    CONFIG_DIR = lb_wurzel_ermitteln() + "/config/plugins/" + PLUGIN_NAME
+    CONFIG_DIR = _anlage("config", "plugins", PLUGIN_NAME)
 
 LOG_DIR = "REPLACELBPLOGDIR"
 if LOG_DIR.startswith("REPLACE"):
-    LOG_DIR = lb_wurzel_ermitteln() + "/log/plugins/" + PLUGIN_NAME
+    LOG_DIR = _anlage("log", "plugins", PLUGIN_NAME)
 
 # Das Datenverzeichnis liegt NICHT auf der Ramdisk - anders als log/.
 # Dorthin schreibt der Dienst sein Lebenszeichen, und das soll einen
 # Neustart des Rechners ueberstehen.
 DATA_DIR = "REPLACELBPDATADIR"
 if DATA_DIR.startswith("REPLACE"):
-    DATA_DIR = lb_wurzel_ermitteln() + "/data/plugins/" + PLUGIN_NAME
+    DATA_DIR = _anlage("data", "plugins", PLUGIN_NAME)
 
 # Der unangemeldete html-Ordner. Dorthin legt die oertliche Ansage ihre
 # Datei - der Chromecast holt sie ueber HTTP ab und bringt dafuer keine
 # Zugangsdaten mit.
 HTML_DIR = "REPLACELBPHTMLDIR"
 if HTML_DIR.startswith("REPLACE"):
-    HTML_DIR = (lb_wurzel_ermitteln()
-                + "/webfrontend/html/plugins/" + PLUGIN_NAME)
-
-HOME_DIR = os.environ.get("LBHOMEDIR") or lb_wurzel_ermitteln()
+    HTML_DIR = _anlage("webfrontend", "html", "plugins", PLUGIN_NAME)
 CONFIG_FILE = os.path.join(CONFIG_DIR, PLUGIN_NAME + ".cfg")
 ZUSTAND_FILE = os.path.join(DATA_DIR, "zustand.json")
 THEMEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -896,6 +908,220 @@ class MqttAnbindung:
 
 
 # ---------------------------------------------------------------------------
+# Zurueckbehaltene Themen am Broker loeschen - UND NACHLESEN (seit 1.3.12)
+# ---------------------------------------------------------------------------
+#
+# Zwei Aufrufer: uninstall/uninstall ("--mqtt-leeren") und der Dienst selbst
+# bei einem Praefixwechsel (Dienst.verbindungen_nachziehen). Entschieden am
+# 18.09.2026 (Regeln/07, Abschnitt 3): der Letzte Wille server/online darf
+# retained sein, wenn die Deinstallation das Thema abraeumt - sonst bliebe
+# die 0 eines entfernten Plugins fuer immer im Broker. Bis 1.3.11 raeumte
+# uninstall nichts ab (klasse-E/Dienstzustand-retained_2026-09-19.md).
+#
+# Geloescht wird mit leerer Nutzlast und Retain, QoS 1; danach ein neues
+# Abonnement: was dann noch zurueckbehalten ankommt, ist stehengeblieben
+# (der Rueckgabewert von publish() sagt nur, dass etwas abging - Regeln/07,
+# Nachtrag 19.09.2026). Ein Abonnement gilt erst mit seinem SUBACK; 0x80
+# heisst, der Broker verweigert das Lesen - dann ist er "nicht zu fragen",
+# nie "nichts zurueckbehalten". Ebenso eine abgewiesene Anmeldung (Muster 11
+# der Nachlese; Bauart Bewaesserung 0.9.34 _broker_leeren(),
+# Beschattungswaechter 0.9.21).
+#
+# Zur Linie gehoert <praefix>/server/<dienstthema> und
+# <praefix>/<geraet>/<geraetethema> nach bin/cc_themen.json - auch fuer ein
+# Geraet, das nicht mehr in den Einstellungen steht. Befehle
+# (<geraet>/cmd/...) sendet der Miniserver, nicht diese Linie; sie bleiben
+# stehen, ebenso jedes fremde Thema unter demselben Praefix.
+
+def eigenes_thema(praefix, thema):
+    """Gehoert dieses Thema zu dieser Linie?"""
+    if not thema.startswith(praefix + "/"):
+        return False
+    teile = thema[len(praefix) + 1:].split("/")
+    if len(teile) != 2 or teile[0] == "":
+        return False
+    bereich = "dienst" if teile[0] == "server" else "geraet"
+    return thema_info(bereich, teile[1]) is not None
+
+
+def broker_leeren(praefix, warten=2.0):
+    """Rueckgabe (code, geleert, rest, grund): code 0 = nichts (mehr)
+    zurueckbehalten, 1 = nach dem Loeschen steht noch etwas, 2 = nicht zu
+    fragen (keine Bibliothek, kein Broker, Anmeldung abgewiesen, Lesen
+    verweigert)."""
+    praefix = str(praefix or "").strip("/")
+    if praefix == "" or "#" in praefix or "+" in praefix:
+        return 2, [], [], "das Themenpraefix '%s' taugt nicht fuer ein Abonnement" % praefix
+    try:
+        import paho.mqtt.client as mqtt
+    except ImportError:
+        return 2, [], [], "paho-mqtt fehlt"
+    zugang = mqtt_zugangsdaten()
+    if not zugang:
+        return 2, [], [], "kein MQTT-Broker in general.json"
+    wo = "%s:%s" % (zugang["host"], zugang["port"])
+    gesehen = set()
+    antwort = {"code": None}
+    subacks = {}
+
+    def bei_verbindung(_k, _d, *rest):
+        rc = MqttAnbindung._grund(rest)
+        try:
+            antwort["code"] = int(getattr(rc, "value", rc))
+        except (TypeError, ValueError):
+            antwort["code"] = -1
+
+    def bei_nachricht(_k, _d, nachricht):
+        # Nur ZURUECKBEHALTENES mit Inhalt: ein leeres Thema ist schon weg.
+        if nachricht.retain and nachricht.payload \
+                and eigenes_thema(praefix, nachricht.topic):
+            gesehen.add(nachricht.topic)
+
+    def bei_abo(_k, _d, mid, codes, *_rest):
+        # paho 1.x und VERSION1: Zahlen; VERSION2: ReasonCode mit .value.
+        werte = []
+        try:
+            for c in (codes or ()):
+                werte.append(int(getattr(c, "value", c)))
+        except (TypeError, ValueError):
+            werte = [0x80]
+        subacks[mid] = werte or [0x80]
+
+    # Jede Ausnahme bis zum Anmelden heisst "nicht zu fragen" - nie ein
+    # Absturz des Aufrufers: der Dienst ruft das beim Praefixwechsel mitten im
+    # Betrieb (mit einer paho-Attrappe gemessen 25.09.2026, Rueckschritt
+    # Pruefung-Chromecast4lox-1.3.10 k7: ohne diese Klammer endete der Dienst).
+    try:
+        try:
+            k = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+        except (AttributeError, TypeError, ValueError):
+            k = mqtt.Client()
+        if zugang["user"]:
+            k.username_pw_set(zugang["user"], zugang["pass"] or "")
+        k.on_connect = bei_verbindung
+        k.on_message = bei_nachricht
+        k.on_subscribe = bei_abo
+    except Exception as fehler:  # noqa: BLE001
+        return 2, [], [], "paho-mqtt laesst sich nicht einrichten (%s)" % fehler
+
+    def abonnieren():
+        erg = k.subscribe(praefix + "/#")
+        try:
+            rc_sub, mid = int(erg[0]), erg[1]
+        except (TypeError, ValueError, IndexError):
+            return "das Abonnement liess sich nicht absenden (%r)" % (erg,)
+        if rc_sub != 0:
+            return "das Abonnement liess sich nicht absenden (rc %d)" % rc_sub
+        ende = time.time() + 10
+        while mid not in subacks and time.time() < ende:
+            time.sleep(0.05)
+        if mid not in subacks:
+            return "der Broker %s hat das Abonnement nicht bestaetigt (kein SUBACK)" % wo
+        schlecht = [w for w in subacks[mid] if w >= 0x80]
+        if schlecht:
+            return ("der Broker %s verweigert das Lesen von '%s/#' (SUBACK 0x%02X)"
+                    % (wo, praefix, schlecht[0]))
+        return ""
+
+    try:
+        k.connect(zugang["host"], zugang["port"], 30)
+        k.loop_start()
+    except Exception as fehler:  # noqa: BLE001
+        return 2, [], [], "der Broker %s ist nicht erreichbar (%s)" % (wo, fehler)
+    geleert = []
+    rest = []
+    try:
+        ende = time.time() + 10
+        while antwort["code"] is None and time.time() < ende:
+            time.sleep(0.05)
+        if antwort["code"] is None:
+            return 2, [], [], "der Broker %s hat auf die Anmeldung nicht geantwortet" % wo
+        if antwort["code"] != 0:
+            return 2, [], [], ("der Broker %s hat die Anmeldung abgewiesen (CONNACK %d: %s)"
+                               % (wo, antwort["code"], MQTT_ANMELDUNG_TEXT.get(
+                                   antwort["code"], "unbekannter Grund")))
+        grund = abonnieren()
+        if grund:
+            return 2, [], [], grund
+        time.sleep(warten)
+        k.unsubscribe(praefix + "/#")
+        geleert = sorted(gesehen)
+        for thema in geleert:
+            info = k.publish(thema, b"", qos=1, retain=True)
+            try:
+                info.wait_for_publish(5)
+            except TypeError:           # paho 1.x vor 1.6 kennt keine Frist
+                info.wait_for_publish()
+        # NACHLESEN: ein neues Abonnement bekommt alles, was noch steht.
+        gesehen.clear()
+        grund = abonnieren()
+        if grund:
+            return 2, geleert, [], "Nachlesen nicht moeglich - " + grund
+        time.sleep(warten)
+        rest = sorted(gesehen)
+    except Exception as fehler:  # noqa: BLE001
+        return 2, geleert, [], "das Loeschen am Broker %s scheiterte (%s)" % (wo, fehler)
+    finally:
+        try:
+            k.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            k.loop_stop()
+        except Exception:  # noqa: BLE001
+            pass
+    return (1 if rest else 0), geleert, rest, ""
+
+
+def praefix_lesen():
+    """Das Themenpraefix aus der Konfiguration - NUR lesen.
+
+    konfiguration_lesen() vervollstaendigt die Datei und schriebe damit
+    waehrend der Deinstallation in eine Konfiguration, die gleich geloescht
+    wird."""
+    vorgabe = VORGABEN.get("mqtt_topic") or "chromecast4lox"
+    parser = ConfigParser(interpolation=None)
+    parser.optionxform = str
+    try:
+        with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
+            parser.read_string(fh.read())
+    except Exception:  # noqa: BLE001
+        return vorgabe
+    for abschnitt in parser.sections():
+        for schluessel, wert in parser.items(abschnitt):
+            if schluessel.strip().lower() == "mqtt_topic":
+                return wert.strip().strip('"').strip("'") or vorgabe
+    return vorgabe
+
+
+def mqtt_leeren():
+    """Fuer uninstall/uninstall. Ausgabe in der Form der
+    Installationsmeldungen; Rueckgabe 0 erledigt, 1 Reste, 2 nicht moeglich."""
+    if not HOME_DIR:
+        print("<WARNING> MQTT: keine LoxBerry-Wurzel - zurueckbehaltene Themen "
+              "wurden nicht geloescht.")
+        return 2
+    praefix = praefix_lesen()
+    code, geleert, rest, grund = broker_leeren(praefix)
+    if code == 2:
+        print("<WARNING> MQTT: zurueckbehaltene Themen unter {0}/ nicht geleert - "
+              "{1}. Sie sind von Hand zu loeschen (MQTT Finder des Gateways)."
+              .format(praefix, grund))
+        return 2
+    if rest:
+        print("<WARNING> MQTT: {0} zurueckbehaltene Themen stehen nach dem "
+              "Loeschen noch im Broker: {1}".format(len(rest), ", ".join(rest)))
+        return 1
+    if geleert:
+        print("<OK> MQTT: {0} zurueckbehaltene Themen unter {1}/ geloescht und "
+              "nachgelesen ({2}).".format(len(geleert), praefix, ", ".join(geleert)))
+    else:
+        print("<OK> MQTT: unter {0}/ stand nichts zurueckbehalten (nachgelesen)."
+              .format(praefix))
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Chromecast
 # ---------------------------------------------------------------------------
 
@@ -1319,24 +1545,38 @@ class Geraet:
 
     # -- Zustand melden -----------------------------------------------------
 
-    def _senden(self, schluessel, wert, erzwingen=False):
+    def _senden(self, schluessel, wert, erzwingen=False, platzhalter=False):
         """Nur senden, wenn sich der Wert geaendert hat. Sonst laeuft der
         Broker bei kurzem Intervall unnoetig voll.
 
         Ob retained gesendet wird, entscheidet die Themenliste je Thema -
         nicht dieser Code und schon gar nicht pauschal.
+
+        Ein PLATZHALTER geht nie retained hinaus (seit 1.3.12): state
+        OFFLINE und playing 0 sagt nicht das Geraet, sondern der Dienst aus
+        seinem eigenen Fehlschlag. Loxone sieht sie wie bisher; der Broker
+        behaelt den letzten Stand des Geraets (Muster 12 der Nachlese,
+        Bauart KODI-NG 1.2.10 und Robonect 1.1.12). Bis 1.3.11 gingen sie
+        retained und ueberschrieben ihn (in WSL gemessen 25.09.2026,
+        Pruefung-Chromecast4lox-1.3.12, Fall M1c). Gemerkt wird ein
+        Platzhalter ALS Platzhalter: der erste echte Wert danach geht auch
+        dann retained hinaus, wenn er gleich lautet - sonst stuende nach
+        "playing 0" als Platzhalter und "playing 0" vom Geraet weiter die
+        alte 1 im Broker (Fall M4).
         """
         wert = "" if wert is None else str(wert)
-        if not erzwingen and self.letzter_stand.get(schluessel) == wert:
+        merk = ("\0platzhalter:" + wert) if platzhalter else wert
+        if not erzwingen and self.letzter_stand.get(schluessel) == merk:
             return
-        self.letzter_stand[schluessel] = wert
+        self.letzter_stand[schluessel] = merk
         self.mqtt.senden(self.thema + "/" + schluessel, wert,
-                         thema_retain("geraet", schluessel))
+                         thema_retain("geraet", schluessel) and not platzhalter)
 
     def melden_offline(self):
-        self._senden("online", "0")
-        self._senden("state", "OFFLINE")
-        self._senden("playing", "0")
+        """Das Geraet ist nicht erreichbar - Platzhalter, fluechtig."""
+        self._senden("online", "0", platzhalter=True)
+        self._senden("state", "OFFLINE", platzhalter=True)
+        self._senden("playing", "0", platzhalter=True)
 
     def melden(self, erzwingen=False):
         """Aktuellen Zustand einsammeln und veroeffentlichen.
@@ -1810,6 +2050,29 @@ class Dienst:
             self.mqtt.stop()
             self.mqtt.client = None
             self.mqtt.verbunden = False
+            if praefix != self.praefix:
+                # Das alte Praefix abraeumen und nachlesen (seit 1.3.12).
+                # Bis 1.3.11 blieb dort alles Zurueckbehaltene stehen, darunter
+                # server/online 0 - und uninstall raeumt nur das aktuelle
+                # Praefix ab. Die 0 eines Praefixes, unter dem niemand mehr
+                # sendet, bliebe damit fuer immer im Broker (Regeln/07,
+                # Letzter Wille (c); in WSL gemessen 25.09.2026, Fall M5).
+                # Ein Aufraeumschritt haelt den Dienst nie an.
+                alt = self.praefix
+                try:
+                    code, geleert, rest, grund = broker_leeren(alt)
+                except Exception as fehler:  # noqa: BLE001
+                    code, geleert, rest, grund = 2, [], [], str(fehler)
+                if code == 0:
+                    log.info("MQTT: altes Praefix %s abgeraeumt und nachgelesen "
+                             "(%d Themen)", alt, len(geleert))
+                elif code == 1:
+                    log.warning("MQTT: unter dem alten Praefix %s stehen noch %d "
+                                "zurueckbehaltene Themen: %s", alt, len(rest),
+                                ", ".join(rest[:5]))
+                else:
+                    log.warning("MQTT: altes Praefix %s nicht abgeraeumt - %s",
+                                alt, grund)
             self.praefix = praefix
             self.mqtt.praefix = praefix
             if mqtt_ein:
@@ -2075,6 +2338,27 @@ def main():
             "retain_unbekannt": thema_retain("dienst", "_kein_eintrag_"),
         }))
         return
+
+    # "--mqtt-leeren" fuer die Deinstallation (seit 1.3.12). Mit drei
+    # Argumenten gilt der Aufruf fuer jede Diensterkennung dieses Plugins als
+    # Einmallauf, nicht als Dienst. Jeder andere Schalter wird abgewiesen:
+    # bis 1.3.11 startete ein Aufruf mit unbekanntem Schalter den Dienst.
+    if sys.argv[1:] == ["--mqtt-leeren"]:
+        sys.exit(mqtt_leeren())
+    if sys.argv[1:]:
+        sys.stderr.write("Unbekannter Schalter: %s - dieses Skript kennt "
+                         "--themen und --mqtt-leeren.\n" % " ".join(sys.argv[1:]))
+        sys.exit(2)
+
+    # Ohne Wurzel steigt der Dienst aus (siehe "Pfade" oben) - nichts
+    # gelesen, nichts gesendet, nichts geschrieben.
+    if not HOME_DIR:
+        sys.stderr.write(
+            "Diese Datei liegt nicht in einer LoxBerry-Installation "
+            "(ausgepacktes Archiv oder Pruefordner), und LBHOMEDIR und "
+            "LBPPLUGINDIR sind nicht beide gesetzt. Damit nichts in eine "
+            "Anlage kommt, wurde nichts gestartet.\n")
+        sys.exit(1)
 
     dienst = Dienst()
     try:

@@ -145,12 +145,54 @@ else
 fi
 rm -f "$PIDDATEI"
 
+# ---------- Zurueckbehaltene MQTT-Themen abraeumen (seit 1.3.12) ----------
+# Entschieden am 18.09.2026 (Regeln/07, Abschnitt 3): der Letzte Wille
+# server/online darf retained sein, wenn die Deinstallation das Thema
+# abraeumt - sonst bliebe die 0 eines entfernten Plugins fuer immer im
+# Broker. Bis 1.3.11 stand hier kein MQTT-Aufruf. Mit abgeraeumt werden die
+# uebrigen retained Themen der Linie, auch die eines Geraets, das nicht mehr
+# in den Einstellungen steht; Befehle (<geraet>/cmd/...) und fremde Themen
+# bleiben. Der Dienst liest am Broker nach und meldet, was wirklich geschah.
+#
+# NACH dem Anhalten, sonst schriebe der Dienst gleich wieder hinein; die
+# Konfiguration mit dem Praefix und bin/plugins/<ordner> loescht der
+# Installer erst nach diesem Skript (Regeln/06). Als loxberry, nicht als
+# root. "-k 5": ein Einmallauf, der SIGTERM nicht beachtet, hielte die
+# Deinstallation sonst beliebig lange auf (Muster 13 der Nachlese; bei der
+# Sprachsteuerung 8 h). 124 und 137 heissen Zeitueberschreitung.
+CC_SKRIPT="$BASE/bin/plugins/$PDIR/chromecast4lox_ng-server.py"
+if [ -f "$CC_SKRIPT" ] && command -v python3 >/dev/null 2>&1; then
+    if [ "$(id -u)" = "0" ] && [ -n "$CC_UID" ]; then
+        CC_Q=$(printf '%s' "$CC_SKRIPT" | sed "s/'/'\\\\''/g")
+        su -s /bin/sh loxberry -c "PYTHONDONTWRITEBYTECODE=1 timeout -k 5 60 python3 '$CC_Q' --mqtt-leeren" 2>&1
+        CC_RC=$?
+    else
+        PYTHONDONTWRITEBYTECODE=1 timeout -k 5 60 python3 "$CC_SKRIPT" --mqtt-leeren 2>&1
+        CC_RC=$?
+    fi
+    case "$CC_RC" in
+        0|1|2) ;;
+        124|137)
+            echo "<WARNING> MQTT: das Abraeumen am Broker wurde nach 60 s abgebrochen (Rueckgabe $CC_RC)."
+            echo "<WARNING> Zurueckbehaltene Themen unter dem Praefix bitte im MQTT Finder des Gateways pruefen." ;;
+        *)
+            echo "<WARNING> MQTT: das Abraeumen am Broker endete mit Rueckgabe $CC_RC."
+            echo "<WARNING> Zurueckbehaltene Themen unter dem Praefix bitte im MQTT Finder des Gateways pruefen." ;;
+    esac
+else
+    echo "<WARNING> MQTT: $CC_SKRIPT oder python3 fehlt - zurueckbehaltene Themen (server/online u. a.) wurden nicht geloescht."
+fi
+
 # ---------- Den Nachbarn der Sicherung wegraeumen ----------
 # data/plugins/<ordner>.upgrade_sicherung liegt AUSSERHALB des Ordners, den
 # LoxBerry beim Deinstallieren loescht - genau deshalb uebersteht er ein
 # Update. Wer ihn hier nicht abraeumt, laesst Zugangsdaten liegen.
-UN_FOLDER="${3:-}"
-UN_BASE="${5:-$LBHOMEDIR}"
+# Ueber die GEPRUEFTE Wurzel oben und den Ordner, nicht erneut ueber $5 und
+# LBHOMEDIR: fehlten beide und kam die Wurzel aus der Suche, blieben bis
+# 1.3.11 Sicherung und Zweitschrift mit dem Aktionstoken liegen (in WSL
+# gemessen 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Fall U6).
+UN_FOLDER="$PDIR"
+UN_BASE="$BASE"
 if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; then
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung" 2>/dev/null
     # Die Zweitschrift der Einstellungen aus preupgrade.sh. Sie traegt das

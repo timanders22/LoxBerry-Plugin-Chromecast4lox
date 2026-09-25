@@ -99,7 +99,13 @@ if [ "${CC_START_TROTZ_MARKE:-0}" != "1" ] && [ -f "$marke" ]; then
         exit 0
     fi
     alter=$(( jetzt - seit ))
-    if [ "$alter" -ge 0 ] && [ "$alter" -lt 3600 ]; then
+    # Bis 300 s "Zukunft" gilt die Marke: eine nachgestellte Uhr ist keine
+    # Luege (Muster 8 der Nachlese, Bauart Sprachsteuerung 0.11.9; die
+    # Oberflaeche rechnet in cc_upgrade_laeuft() schon so). Bis 1.3.11 fiel
+    # eine Marke mit einem Zeitpunkt knapp in der Zukunft hier durch, und der
+    # Dienst startete mitten in der Aktualisierung (in WSL gemessen
+    # 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Faelle Z1/Z2).
+    if [ "$alter" -ge -300 ] && [ "$alter" -lt 3600 ]; then
         cc_melden "Start uebersprungen: eine Aktualisierung dieses Plugins laeuft."
         exit 0
     fi

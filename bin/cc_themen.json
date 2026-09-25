@@ -39,12 +39,19 @@
     "         Zurueckbehalten stuende nach dem Tod des Dienstes ein Zaehler",
     "         im Broker, der wie Betrieb aussieht. Ein Thema ohne Eintrag",
     "         geht nicht retained hinaus.",
+    "         <geraet>/online, server/geraete und server/verluste sind seit",
+    "         1.3.12 false: das sagt der Dienst ueber sich selbst - aus dem",
+    "         eigenen Verbindungsversuch bzw. als Zaehler eigener",
+    "         Fehlschlaege (Regeln/07, entschieden 19.09.2026). Stirbt der",
+    "         Dienst, stuende zurueckbehalten weiter online=1. Ob der Dienst",
+    "         lebt, sagt server/online: retained, mit Letztem Willen auf",
+    "         demselben Thema. Der Altwert faellt beim Verbinden.",
     "         Der Sender schickt einen leeren Wert ohnehin nie retained."
   ],
   "fassung": 1,
 
   "geraet": [
-    { "schluessel": "online",     "art": "digital", "einheit": "",  "min": 0, "max": 1,     "retain": true  },
+    { "schluessel": "online",     "art": "digital", "einheit": "",  "min": 0, "max": 1,     "retain": false },
     { "schluessel": "state",      "art": "text",    "einheit": "",  "min": null, "max": null, "retain": true  },
     { "schluessel": "playing",    "art": "digital", "einheit": "",  "min": 0, "max": 1,     "retain": true  },
     { "schluessel": "volume",     "art": "analog",  "einheit": "%", "min": 0, "max": 100,   "retain": true  },
@@ -66,8 +73,8 @@
     { "schluessel": "online",   "art": "digital", "einheit": "",  "min": 0, "max": 1,          "retain": true  },
     { "schluessel": "ts",       "art": "analog",  "einheit": "s", "min": 1704067200, "max": 2145916800, "retain": false },
     { "schluessel": "zaehler",  "art": "analog",  "einheit": "",  "min": -1, "max": 999,       "retain": false },
-    { "schluessel": "geraete",  "art": "analog",  "einheit": "",  "min": 0, "max": 99,         "retain": true  },
-    { "schluessel": "verluste", "art": "analog",  "einheit": "",  "min": 0, "max": 999999,     "retain": true  },
+    { "schluessel": "geraete",  "art": "analog",  "einheit": "",  "min": 0, "max": 99,         "retain": false },
+    { "schluessel": "verluste", "art": "analog",  "einheit": "",  "min": 0, "max": 999999,     "retain": false },
     { "schluessel": "fassung",  "art": "text",    "einheit": "",  "min": null, "max": null,    "retain": true  }
   ],
 

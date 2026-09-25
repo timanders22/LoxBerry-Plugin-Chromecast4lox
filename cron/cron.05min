@@ -89,7 +89,13 @@ if [ -f "$MARKE" ]; then
         exit 0
     fi
     ALTER=$(( JETZT - SEIT ))
-    if [ "$ALTER" -ge 0 ] && [ "$ALTER" -lt 3600 ]; then
+    # Bis 300 s "Zukunft" gilt die Marke: eine nachgestellte Uhr ist keine
+    # Luege (Muster 8 der Nachlese, Bauart Sprachsteuerung 0.11.9; die
+    # Oberflaeche rechnet in cc_upgrade_laeuft() schon so). Bis 1.3.11 fiel
+    # eine Marke mit einem Zeitpunkt knapp in der Zukunft hier durch, und der
+    # Dienst startete mitten in der Aktualisierung (in WSL gemessen
+    # 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Faelle Z1/Z2).
+    if [ "$ALTER" -ge -300 ] && [ "$ALTER" -lt 3600 ]; then
         exit 0
     fi
 fi

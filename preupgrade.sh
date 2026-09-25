@@ -60,8 +60,44 @@ PBIN=$LBPBIN/$PDIR
 
 # Wurzel und Ordner fuer die Bloecke unten - aus den Argumenten des
 # Installers, die Umgebung nur als Rueckfall.
-CC_BASE="${5:-$LBHOMEDIR}"
+# ---------- Die LoxBerry-Wurzel, geprueft (seit 1.3.12) ----------
+# Aus dem fuenften Argument des Installers, sonst LBHOMEDIR, sonst vom
+# eigenen Ablageort aufwaerts - und nur, wenn dort config/plugins,
+# data/plugins UND config/system/general.json liegen (Regeln/06, Muster 1
+# der Nachlese). Bis 1.3.11 lief dieses Skript ohne beides gegen Pfade ab
+# "/" und meldete am Ende Erfolg; mit $5 auf einem fremden Baum legte
+# preupgrade.sh dort Marke und Sicherung an (in WSL gemessen 25.09.2026,
+# Pruefung-Chromecast4lox-1.3.12, Faelle S1 bis S5). Ohne Wurzel: <WARNING>,
+# nichts tun, Rueckgabe 1.
+cc_wurzel_suchen() {
+    cc_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    cc_i=0
+    while [ -n "$cc_v" ] && [ "$cc_v" != "/" ] && [ "$cc_i" -lt 8 ]; do
+        if [ -d "$cc_v/config/plugins" ] && [ -d "$cc_v/data/plugins" ] \
+           && [ -f "$cc_v/config/system/general.json" ]; then
+            echo "$cc_v"
+            return 0
+        fi
+        cc_v=$(dirname "$cc_v")
+        cc_i=$((cc_i + 1))
+    done
+    return 1
+}
+CC_BASE="${5:-}"
+[ -n "$CC_BASE" ] || CC_BASE="${LBHOMEDIR:-}"
+[ -n "$CC_BASE" ] || CC_BASE=$(cc_wurzel_suchen) || CC_BASE=""
+if [ -z "$CC_BASE" ] || [ ! -d "$CC_BASE/config/plugins" ] \
+   || [ ! -d "$CC_BASE/data/plugins" ] \
+   || [ ! -f "$CC_BASE/config/system/general.json" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel erkannt: '${CC_BASE:-leer}' traegt nicht"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> $(basename "$0") hat nichts getan."
+    exit 1
+fi
+LBHOMEDIR="$CC_BASE"
 CC_PFOLDER="${3:-chromecast-4lox-ng}"
+PDIR="$CC_PFOLDER"
+PBIN="$CC_BASE/bin/plugins/$CC_PFOLDER"
 
 # ---------- Prozesse des Dienstes finden und beenden ----------
 # Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den

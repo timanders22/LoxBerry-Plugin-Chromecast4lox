@@ -44,12 +44,15 @@ if (!function_exists('lb_wurzel_ermitteln')) {
     {
         $d = __DIR__;
         for ($i = 0; $i < 8; $i++) {
+            // Die Laufwerkswurzel selbst ist nie das Heimverzeichnis eines
+            // LoxBerry; bis 1.3.11 fragte die Suche dort "//config/plugins"
+            // (seit 1.3.12; in WSL gemessen 25.09.2026, Fall H4).
+            $eltern = dirname($d);
+            if ($eltern === $d) { break; }
             if (is_dir($d . '/config/plugins') && is_dir($d . '/webfrontend')
                 && is_file($d . '/config/system/general.json')) {
                 return $d;
             }
-            $eltern = dirname($d);
-            if ($eltern === $d) { break; }
             $d = $eltern;
         }
         return '';
@@ -62,41 +65,49 @@ function cc_paths()
     if ($p !== null) {
         return $p;
     }
-    $home = getenv('LBHOMEDIR');
-    if (!$home) {
+    /* Die Pfade DER ANLAGE gelten nur, wenn diese Bibliothek dort installiert
+     * liegt (<Wurzel>/webfrontend/htmlauth/plugins/<ordner>, physisch
+     * verglichen) oder der Aufrufer Wurzel UND Ordner ausdruecklich nennt
+     * ($LBHOMEDIR und $LBPPLUGINDIR - so arbeiten die Pruefwerkzeuge mit
+     * ihrer Attrappe). Sonst ist das ein ausgepacktes Archiv oder ein
+     * Pruefordner: alles bleibt in dessen eigenem Ordner, und cc_dienst()
+     * startet und beendet nichts (Muster 3 der Nachlese; Bauart
+     * Spotpreis-Tibber 0.9.19 tb_paths()).
+     *
+     * Bis 1.3.11 nahm ein Archiv unterhalb einer echten Wurzel - mit
+     * $LBHOMEDIR allein, wie es am Geraet in /etc/environment steht - deren
+     * Konfiguration unter dem festen Namen chromecast-4lox-ng, und
+     * "Dienst neu starten" startete den Dienst DER ANLAGE (in WSL gemessen
+     * 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Faelle H1/H2). Der Ordner
+     * einer Installation ist der Name des eigenen Ablageorts; die fruehere
+     * Ableitung zwei Ebenen hoeher traf dort "htmlauth" und fiel auf den
+     * festen Namen zurueck. */
+    $home = rtrim((string) getenv('LBHOMEDIR'), '/');
+    if ($home !== '' && !is_file($home . '/config/system/general.json')) {
+        $home = '';
+    }
+    if ($home === '') {
         $home = lb_wurzel_ermitteln();
     }
-    $dir = getenv('LBPPLUGINDIR');
-    if (!$dir) {
-        $dir = basename(dirname(dirname(__DIR__)));
-    }
-    if ($home && !is_dir($home . '/config/plugins/' . $dir)) {
-        // Der Rueckfall auf den vorgesehenen Ordnernamen wird NUR genommen,
-        // wenn dort noch nichts liegt oder schon die EIGENE
-        // Konfigurationsdatei steht.
-        //
-        // Grund: zwei Plugins duerfen denselben FOLDER beanspruchen. LoxBerry
-        // bildet die Kennung aus Autorenname, E-Mail und Plugin-Name und
-        // haelt sie dann fuer verschiedene Plugins - der zweite bekommt "01"
-        // an den Ordner. Ein harter Rueckfall zeigte dann in das Verzeichnis
-        // des FREMDEN Plugins und legte dort eine Konfiguration an, die
-        // niemand liest.
-        foreach (array(basename(dirname(__DIR__)), 'chromecast-4lox-ng') as $cand) {
-            $ort = $home . '/config/plugins/' . $cand;
-            if (!is_dir($ort)) {
-                continue;
-            }
-            $eigene = $ort . '/' . $cand . '.cfg';
-            $inhalt = @scandir($ort);
-            $leer = !is_array($inhalt)
-                || count(array_diff($inhalt, array('.', '..'))) === 0;
-            if ($leer || is_file($eigene)) {
-                $dir = $cand;
-                break;
-            }
+    $lbp = basename(rtrim((string) getenv('LBPPLUGINDIR'), '/'));
+    $lbp_gilt = ($lbp !== '' && !in_array($lbp,
+        array('.', '/', 'bin', 'html', 'htmlauth', 'plugins', 'webfrontend'), true));
+    $gefunden = $home;
+    $dir = '';
+    if ($home !== '') {
+        $soll = @realpath($home . '/webfrontend/htmlauth/plugins/' . basename(__DIR__));
+        $ist = @realpath(__DIR__);
+        $installiert = ($soll !== false && $ist !== false && $soll === $ist);
+        $ausdruecklich = $lbp_gilt && $home === rtrim((string) getenv('LBHOMEDIR'), '/');
+        if ($installiert) {
+            $dir = basename(__DIR__);
+        } elseif ($ausdruecklich) {
+            $dir = $lbp;
+        } else {
+            $home = '';
         }
     }
-    if ($home) {
+    if ($home !== '') {
         $p = array(
             'home'   => $home,
             'plugin' => $dir,
@@ -104,16 +115,21 @@ function cc_paths()
             'bindir'  => $home . '/bin/plugins/' . $dir,
             'logdir'  => $home . '/log/plugins/' . $dir,
             'datadir' => $home . '/data/plugins/' . $dir,
+            'archiv'  => '',
         );
     } else {
+        // Neben dem Plugin arbeiten, nie in /tmp: dort raeumte cc_dienst_pid()
+        // bis 1.3.11 eine fremde /tmp/dienst.pid weg.
         $base = dirname(dirname(__DIR__));
         $p = array(
             'home'   => '',
-            'plugin' => $dir,
+            'plugin' => $lbp_gilt ? $lbp : 'chromecast-4lox-ng',
             'config' => $base . '/config/chromecast-4lox-ng.cfg',
             'bindir'  => $base . '/bin',
-            'logdir'  => sys_get_temp_dir(),
-            'datadir' => sys_get_temp_dir(),
+            'logdir'  => $base . '/log',
+            'datadir' => $base . '/data',
+            // Die gefundene Wurzel, wenn diese Datei NICHT darin liegt.
+            'archiv'  => $gefunden,
         );
     }
     return $p;
@@ -599,6 +615,10 @@ function cc_befehl_analog($schluessel)
 /** UDP-Eingangsport des MQTT-Gateways (Relay-Weg). Beide Schreibweisen. */
 function cc_mqtt_udpinport()
 {
+    // Ohne Wurzel gibt es nichts zu lesen - nicht "/config/system/..." fragen.
+    if (cc_paths()['home'] === '') {
+        return 0;
+    }
     $f = cc_paths()['home'] . '/config/system/general.json';
     if (!is_file($f)) {
         return 0;
@@ -676,6 +696,9 @@ function cc_gateway_fassung()
 /** Adresse des MQTT-Brokers, nur zur Anzeige, ohne Kennwort. */
 function cc_mqtt_broker()
 {
+    if (cc_paths()['home'] === '') {
+        return '';
+    }
     $f = cc_paths()['home'] . '/config/system/general.json';
     if (!is_file($f)) {
         return '';
@@ -916,6 +939,11 @@ function cc_dienst_schalter($an)
 function cc_dienst($aktion)
 {
     $p = cc_paths();
+    // Aus einem Archiv wird nichts gestartet und nichts beendet (Muster 3).
+    if ($p['home'] === '') {
+        return 'Diese Seite laeuft nicht aus der Installation (ausgepacktes Archiv '
+            . 'oder Pruefordner) - es wurde kein Dienst gestartet oder beendet.';
+    }
     $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
     $meldungen = array();
 
@@ -988,9 +1016,16 @@ function cc_suche($ohne_gruppen = false)
     }
     $roh = array();
     $rc = 0;
-    @exec('timeout 30 python3 ' . escapeshellarg($skript) . ' --json'
+    // "-k 5": ein Python, das SIGTERM nicht beachtet, hielt die Seite sonst
+    // beliebig lange fest (Muster 13 der Nachlese; in WSL gemessen
+    // 25.09.2026, Fall H5: bis zum aeusseren Abbruch nach 85 s).
+    @exec('timeout -k 5 30 python3 ' . escapeshellarg($skript) . ' --json'
           . ($ohne_gruppen ? ' --ohne-gruppen' : '') . ' 2>&1', $roh, $rc);
     $text = trim(implode("\n", $roh));
+    if ($rc === 124 || $rc === 137) {
+        return array(array(), 'Zeitueberschreitung: die Suche wurde nach 30 s abgebrochen '
+            . '(Rueckgabe ' . $rc . ').' . ($text !== '' ? "\n" . $text : ''));
+    }
     // Den Rueckgabewert auswerten, nicht nur die Ausgabe: eine leere
     // Ausgabe bei einem Abbruch ist kein "nichts gefunden", sondern das
     // Gegenteil.
@@ -1286,15 +1321,15 @@ function cc_t($schluessel)
         // Installiert liegen die Dateien unter
         // <home>/templates/plugins/<ordner>/lang/ - der Ordnername ergibt
         // sich aus dem Ablageort dieser Datei.
-        $home = getenv('LBHOMEDIR');
-        if (!$home || !is_dir($home)) {
-            foreach (array(lb_wurzel_ermitteln(), '/home/loxberry/loxberry') as $k) {
-                if (is_dir($k)) { $home = $k; break; }
-            }
-        }
-        $ordner = basename(dirname(__FILE__));
-        $pfad = $home . '/templates/plugins/' . $ordner . '/lang';
-        if (!is_dir($pfad)) {
+        //
+        // Die Wurzel kommt aus cc_paths() (seit 1.3.12). Bis 1.3.11 stand hier
+        // ein fester Systempfad als Rueckfall, und ohne Wurzel wurde
+        // "/templates/plugins/..." gefragt - ein Pfad ab "/" (Muster 1 und 2
+        // der Nachlese; in WSL gemessen 25.09.2026, Fall H4).
+        $cc_w = cc_paths();
+        $pfad = $cc_w['home'] !== ''
+            ? $cc_w['home'] . '/templates/plugins/' . $cc_w['plugin'] . '/lang' : '';
+        if ($pfad === '' || !is_dir($pfad)) {
             // Nicht installiert (Entwicklung): neben dem Plugin nachsehen.
             $pfad = dirname(dirname(dirname(__FILE__))) . '/templates/lang';
         }

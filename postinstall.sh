@@ -57,6 +57,45 @@ PCONFIG=$LBPCONFIG/$PDIR
 PSBIN=$LBPSBIN/$PDIR
 PBIN=$LBPBIN/$PDIR
 
+# ---------- Die LoxBerry-Wurzel, geprueft (seit 1.3.12) ----------
+# Aus dem fuenften Argument des Installers, sonst LBHOMEDIR, sonst vom
+# eigenen Ablageort aufwaerts - und nur, wenn dort config/plugins,
+# data/plugins UND config/system/general.json liegen (Regeln/06, Muster 1
+# der Nachlese). Bis 1.3.11 lief dieses Skript ohne beides gegen Pfade ab
+# "/" und meldete am Ende Erfolg; mit $5 auf einem fremden Baum legte
+# preupgrade.sh dort Marke und Sicherung an (in WSL gemessen 25.09.2026,
+# Pruefung-Chromecast4lox-1.3.12, Faelle S1 bis S5). Ohne Wurzel: <WARNING>,
+# nichts tun, Rueckgabe 1.
+cc_wurzel_suchen() {
+    cc_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    cc_i=0
+    while [ -n "$cc_v" ] && [ "$cc_v" != "/" ] && [ "$cc_i" -lt 8 ]; do
+        if [ -d "$cc_v/config/plugins" ] && [ -d "$cc_v/data/plugins" ] \
+           && [ -f "$cc_v/config/system/general.json" ]; then
+            echo "$cc_v"
+            return 0
+        fi
+        cc_v=$(dirname "$cc_v")
+        cc_i=$((cc_i + 1))
+    done
+    return 1
+}
+CC_BASE="${5:-}"
+[ -n "$CC_BASE" ] || CC_BASE="${LBHOMEDIR:-}"
+[ -n "$CC_BASE" ] || CC_BASE=$(cc_wurzel_suchen) || CC_BASE=""
+if [ -z "$CC_BASE" ] || [ ! -d "$CC_BASE/config/plugins" ] \
+   || [ ! -d "$CC_BASE/data/plugins" ] \
+   || [ ! -f "$CC_BASE/config/system/general.json" ]; then
+    echo "<WARNING> Keine LoxBerry-Wurzel erkannt: '${CC_BASE:-leer}' traegt nicht"
+    echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
+    echo "<WARNING> $(basename "$0") hat nichts getan."
+    exit 1
+fi
+LBHOMEDIR="$CC_BASE"
+CC_PFOLDER="${3:-chromecast-4lox-ng}"
+PDIR="$CC_PFOLDER"
+PBIN="$CC_BASE/bin/plugins/$CC_PFOLDER"
+
 echo "<INFO> Command is: $COMMAND"
 echo "<INFO> Temporary folder is: $PTEMPDIR"
 echo "<INFO> (Short) Name is: $PSHNAME"
@@ -92,8 +131,8 @@ else
     echo "<WARNING>   sudo apt-get install -y python3-paho-mqtt"
 fi
 
-echo "<INFO> Naechster Schritt: Reiter Test -> Chromecasts im Netz suchen,"
-echo "<INFO> dann die gefundenen Namen im Reiter Einstellungen eintragen."
+# Die Erstanleitung steht seit 1.3.12 am Ende: erst nach der Rueckholung ist
+# bekannt, ob schon Geraete eingerichtet sind.
 
 # Exit with Status 0
 
@@ -157,8 +196,20 @@ netz_zurueck() {
             return 0
         fi
     fi
+    # Geholt wird nur aus einer Zweitschrift MIT Inhalt, auch wenn die Datei
+    # fehlt oder die Vorgabe ist (seit 1.3.12, Muster 9 der Nachlese). Bis
+    # 1.3.11 kam in diesem Fall jede Zweitschrift zurueck, auch eine ohne
+    # Aktionstoken aus einer Vorfassung, und die Meldung sagte
+    # "wiederhergestellt" (in WSL gemessen 25.09.2026, Fall I1). Die Wirkung
+    # wird mit cmp geprueft, nicht am Rueckgabewert von cp.
+    if [ "$verloren" = 1 ] && ! cc_cfg_inhalt "$zweit"; then
+        echo "<WARNING> Die Zweitschrift $zweit traegt kein vollstaendiges"
+        echo "<WARNING> Aktionstoken und wird nicht zurueckgespielt. Bitte die"
+        echo "<WARNING> Einstellungen im Reiter Einstellungen pruefen."
+        return 0
+    fi
     if [ "$verloren" != "0" ]; then
-        if cp -p "$zweit" "$ziel" 2>/dev/null; then
+        if cp -p "$zweit" "$ziel" 2>/dev/null && cmp -s "$zweit" "$ziel"; then
             echo "<OK> $datei aus der Zweitschrift wiederhergestellt."
         else
             echo "<WARNING> $datei liess sich nicht zurueckspielen. Die Sicherung"
@@ -167,5 +218,18 @@ netz_zurueck() {
     fi
 }
 netz_zurueck "chromecast-4lox-ng.cfg" "38721bf14497fc6806acf45bcf539a0aa7f9ee47a603f374902a5b14e155c1af"
+
+# ---------- Erstanleitung nur ohne eingerichtete Geraete (seit 1.3.12) ----------
+# Entschieden am 24.09.2026 (AUFTRAG_postinstall-hinweis): die Anleitung zur
+# Ersteinrichtung nur, wenn nach dem Zurueckspielen keine eingerichtete
+# Konfiguration vorliegt - entschieden nach Inhalt, hier: stehen Geraete in
+# den Einstellungen? Bis 1.3.11 riet jede Aktualisierung zur Geraetesuche
+# (in WSL gemessen 25.09.2026, Faelle I3/I5).
+if grep -Eq '^[[:space:]]*geraete[[:space:]]*=[[:space:]]*[^[:space:]]' "$NETZ_CFG/chromecast-4lox-ng.cfg" 2>/dev/null; then
+    echo "<OK> Einstellungen uebernommen - es sind Geraete eingerichtet."
+else
+    echo "<INFO> Naechster Schritt: Reiter Test -> Chromecasts im Netz suchen,"
+    echo "<INFO> dann die gefundenen Namen im Reiter Einstellungen eintragen."
+fi
 
 exit 0
