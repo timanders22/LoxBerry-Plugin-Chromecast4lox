@@ -209,7 +209,20 @@ if [ -n "$UN_FOLDER" ] && [ -n "$UN_BASE" ] && [ -d "$UN_BASE/data/plugins" ]; t
     rm -rf "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.neu" \
            "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_sicherung.alt" \
            "$CC_ZWEIT.neu" 2>/dev/null
+    # Die von preinstall.sh bei einer Neuinstallation beiseitegelegte
+    # Zweitschrift (seit 1.3.13, I4; Entscheidung 1). Sie kann das
+    # Aktionstoken einer frueheren Installation tragen.
+    rm -f "$CC_ZWEIT.alt" 2>/dev/null
+    if [ -e "$CC_ZWEIT.alt" ]; then
+        echo "<WARNING> Die beiseitegelegte Zweitschrift $CC_ZWEIT.alt liess sich nicht entfernen."
+    fi
     # Die Marke aus preupgrade.sh, falls eine Aktualisierung abbrach.
     rm -f "$UN_BASE/data/plugins/$UN_FOLDER.upgrade_laeuft" 2>/dev/null
+    # Die Startsperre von daemon und Waechter (seit 1.3.13, C7) und der
+    # Merker des zuletzt benutzten MQTT-Praefixes (seit 1.3.13, M8) - beide
+    # neben dem Datenordner. Das Praefix darin hat --mqtt-leeren oben schon
+    # mit abgeraeumt.
+    rm -f "$UN_BASE/data/plugins/$UN_FOLDER.startsperre" \
+          "$UN_BASE/data/plugins/$UN_FOLDER.mqtt_praefix" 2>/dev/null
 fi
 exit 0

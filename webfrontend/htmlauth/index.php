@@ -60,8 +60,17 @@ if (cc_upgrade_laeuft()) {
 }
 
 $cc_saved = false;
-$cc_error = '';
+/* Beanstandungen als LISTE (seit 1.3.13, O6). Bis 1.3.12 war $cc_error ein
+ * einzelner Wert: ruhe_von und ruhe_bis ueberschrieben einander, und eine
+ * Beanstandung verdeckte die andere (gemessen 30.09.2026, Oberflaechen-Befund
+ * 6). Jeder Eintrag ist fertiges HTML; eingesetzte Namen sind maskiert. */
+$cc_fehler = array();
 $cc_hinweis = '';
+$cc_gefunden = array();
+$cc_suchfehler = '';
+$cc_gesucht = false;
+$cc_test_titel = '';
+$cc_test_text = '';
 /* Aktiver Reiter. Die Positivliste muss Zeichen fuer Zeichen zu den vier
  * id-Werten der Bereiche weiter unten passen - sonst springt die Seite nach
  * jedem Absenden auf Einstellungen zurueck, obwohl der Reiter sichtbar ist.
@@ -73,6 +82,22 @@ if (isset($_GET['tab']) && in_array('tab-' . (string) $_GET['tab'], $cc_tabliste
 }
 if (isset($_POST['activetab']) && in_array((string) $_POST['activetab'], $cc_tabliste, true)) {
     $cc_tab = (string) $_POST['activetab'];
+}
+
+/* Die Einmalmeldung der vorigen Anfrage - NUR beim GET (seit 1.3.13, O4;
+ * Regeln/04 "Die Einmalmeldung wird NUR beim GET gelesen"). */
+if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+    $cc_einmal = cc_einmal_lesen();
+    if ($cc_einmal !== null) {
+        $cc_saved = $cc_einmal['saved'];
+        $cc_hinweis = $cc_einmal['hinweis'];
+        $cc_fehler = $cc_einmal['fehler'];
+        $cc_test_titel = $cc_einmal['test_titel'];
+        $cc_test_text = $cc_einmal['test_text'];
+        $cc_gefunden = $cc_einmal['gefunden'];
+        $cc_suchfehler = $cc_einmal['suchfehler'];
+        $cc_gesucht = $cc_einmal['gesucht'];
+    }
 }
 
 /* ============ Wachposten gegen fremde Absender ============
@@ -94,7 +119,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Melden, nicht wortlos nichts tun: ein Formular, das schweigend
         // nichts bewirkt, schickt den Anwender auf die Suche nach einem
         // Fehler, den es nicht gibt. Die harmlose Ursache steht mit dabei.
-        $cc_error = cc_t($cc_fmt === '' ? 'FEHLER.KEIN_MERKMAL' : 'FEHLER.MERKMAL');
+        $cc_fehler[] = cc_t($cc_fmt === '' ? 'FEHLER.KEIN_MERKMAL' : 'FEHLER.MERKMAL');
         // $_POST leeren, damit danach KEIN Handler mehr anlaeuft, ohne dass
         // jeder einzelne davon wissen muesste. Den offenen Reiter behalten -
         // der Anwender soll die Meldung dort sehen, wo er war.
@@ -128,12 +153,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
     $cfg = cc_config_read();
     $geraete = cc_geraete($cfg);
     if (!$geraete) {
-        $cc_error = 'Es ist kein Ger&auml;t eingetragen &mdash; die Vorlage w&auml;re leer.';
+        $cc_fehler[] = cc_t('TEXT.T083');
         $cc_tab = 'tab-loxone';
     } else {
         list($name, $inhalt) = cc_vorlage((string) $_POST['download'], $cfg, $geraete);
         if ($name === '') {
-            $cc_error = 'Unbekannte Vorlagenart.';
+            $cc_fehler[] = cc_t('TEXT.F_VORLAGENART');
             $cc_tab = 'tab-loxone';
         } else {
             // Ausgabepuffer leeren, BEVOR die Kopfzeilen gehen.
@@ -156,8 +181,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
 }
 
 /* ============ Test-Aktionen ============ */
-$cc_test_titel = '';
-$cc_test_text = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['test'])) {
     require_once __DIR__ . '/cc_test.php';
     list($cc_test_titel, $cc_test_text) = cc_test_ausfuehren(
@@ -173,12 +196,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['test'])) {
  * Oberflaeche. Ihn abtippen zu lassen war die haeufigste Fehlerursache
  * dieses Plugins.
  */
-$cc_gefunden = array();
-$cc_suchfehler = '';
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['suche_geraete'])) {
     $cc_c = cc_config_read();
     list($cc_gefunden, $cc_suchfehler) =
         cc_suche(cc_cfg($cc_c, 'gruppen', '1') !== '1');
+    $cc_gesucht = true;
     $cc_tab = 'tab-settings';
 }
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['uebernehmen'])) {
@@ -208,15 +230,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['uebernehmen'])) {
         $cc_c['geraete'] = implode(';', array_merge($cc_vorhanden, $cc_neu_dazu));
         if (cc_config_write($cc_c)) {
             $cc_saved = true;
+            // Die Namen MASKIERT (seit 1.3.13, O7): ein Anzeigename aus dem
+            // Netz oder aus einem Formular lief bis 1.3.12 roh als HTML in
+            // die angemeldete Seite (gemessen 30.09.2026, Oberflaechen-Befund
+            // 7: "<img src=x onerror=...>" stand wirksam in der Meldung).
             $cc_hinweis = sprintf(cc_t('SUCHE.H_UEBERNOMMEN'),
                                   count($cc_neu_dazu),
-                                  implode(', ', $cc_neu_dazu));
+                                  cc_e(implode(', ', $cc_neu_dazu)));
             require_once __DIR__ . '/cc_test.php';
-            if (cc_cfg($cc_c, 'enabled', '1') === '1') {
-                cc_dienst('restart');
-            }
+            // Und sagen, was mit dem Dienst geschah (O8).
+            $cc_hinweis .= ' ' . cc_dienst_nachziehen($cc_c);
         } else {
-            $cc_error = cc_t('TEXT.T002') . ' ' . cc_e($cc_p['config']);
+            $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
         }
     }
     $cc_tab = 'tab-settings';
@@ -231,21 +256,28 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['uebernehmen'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
     $cc_m = cc_config_read();
     $cc_m['mqtt_ein'] = isset($_POST['mqtt_ein']) ? '1' : '0';
-    $cc_pr = cc_thema(preg_replace('/[\x00-\x1F\x7F"\']+/u', '',
-                                  trim((string) ($_POST['mqtt_topic'] ?? ''))));
-    $cc_m['mqtt_topic'] = $cc_pr !== '' ? $cc_pr : 'chromecast4lox';
+    /* Abweisen statt umschreiben (seit 1.3.13, O5). Bis 1.3.12 machte
+     * cc_thema() aus "haus/cast" still "haus_cast", aus "Küche/Wohnzimmer"
+     * "Kueche_Wohnzimmer" und aus einem leeren Feld "geraet" - der Rueckfall
+     * auf chromecast4lox griff nie (gemessen 30.09.2026, Oberflaechen-Befund
+     * 5e). Leer heisst weiter: Rueckfall chromecast4lox. */
+    $cc_pr = trim(is_string($_POST['mqtt_topic'] ?? null) ? $_POST['mqtt_topic'] : '');
+    if ($cc_pr === '') {
+        $cc_m['mqtt_topic'] = 'chromecast4lox';
+    } else {
+        list($cc_pr_gut, $cc_pr_fehler) = cc_wert_pruefen('mqtt_topic', $cc_pr, $cc_m);
+        if ($cc_pr_fehler === '') {
+            $cc_m['mqtt_topic'] = $cc_pr_gut;
+        } else {
+            $cc_fehler[] = $cc_pr_fehler;
+        }
+    }
     if (cc_config_write($cc_m)) {
         $cc_saved = true;
         require_once __DIR__ . '/cc_test.php';
-        if (cc_cfg($cc_m, 'enabled', '1') === '1') {
-            cc_dienst('restart');
-            $cc_hinweis = cc_t(cc_dienst_pid() ? 'TEXT.H_NEUGESTARTET'
-                                               : 'TEXT.H_LAEUFT_NICHT');
-        } else {
-            $cc_hinweis = cc_t('TEXT.H_ANGEHALTEN');
-        }
+        $cc_hinweis = cc_dienst_nachziehen($cc_m);
     } else {
-        $cc_error = cc_t('TEXT.T002') . ' ' . cc_e($cc_p['config']);
+        $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
     }
     $cc_tab = 'tab-mqtt';
 }
@@ -253,29 +285,64 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
 /* ============ Speichern ============ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu = cc_config_read();
+    $cc_bisher = $neu;
 
     // Eingaben nie hart filtern - nur Steuerzeichen und Anfuehrungszeichen raus.
     $saeubern = function ($s) {
         $s = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F"\']+/u', '', (string) $s);
-        return trim($s);
+        return trim((string) $s);
     };
-    $zahl = function ($wert, $vorgabe, $min, $max) {
-        $n = (int) $wert;
-        return ($n >= $min && $n <= $max) ? (string) $n : (string) $vorgabe;
+    /* Zahlen und Auswahlwerte: ABWEISEN und melden, nie einsetzen (seit
+     * 1.3.13, O5). Bis 1.3.12 wurde ein geleertes Pflichtfeld still zu 0
+     * ((int) '' liegt im Bereich 0 bis 100: Lautstaerkegrenze 0), "100.4" zu
+     * 100, "abc" im Feld Ansagelautstaerke zu 0 - jedes Mal mit "Gespeichert."
+     * (gemessen 30.09.2026 unter 7.4 und 8.5, Oberflaechen-Befund 5). Ein
+     * abgewiesenes Feld behaelt seinen bisherigen Wert; die uebrigen werden
+     * gespeichert (Regeln/05 "Beanstandungen melden, nicht das ganze Speichern
+     * verhindern"). Dieselbe Pruefung nimmt das Zurueckspielen. */
+    $pruefen = function ($k, $roh) use (&$neu, &$cc_fehler, $cc_bisher) {
+        $roh = is_string($roh) ? trim($roh) : $roh;
+        if ($roh === '' && array_key_exists($k, cc_zahlfelder())) {
+            $cc_fehler[] = sprintf(cc_t('PRUEF.LEER'), cc_e($k));
+            return;
+        }
+        list($gut, $fehler) = cc_wert_pruefen($k, $roh, $cc_bisher);
+        if ($fehler === '') {
+            $neu[$k] = $gut;
+        } else {
+            $cc_fehler[] = $fehler;
+        }
     };
 
     $neu['enabled']       = isset($_POST['enabled']) ? '1' : '0';
-    $neu['geraete']       = $saeubern($_POST['geraete'] ?? '');
+    /* Geraetenamen zeichengenau, auch mit ' und " (seit 1.3.13, O5): heraus
+     * kommen nur Steuerzeichen. Bis 1.3.12 wurde aus "Anna's Box" "Annas Box",
+     * und der Lautsprecher wurde nicht mehr gefunden. Ein Semikolon trennt in
+     * der Datei - ein Name mit Semikolon wird abgewiesen. */
+    $cc_gl = preg_replace('/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]+/', '',
+                          is_string($_POST['geraete'] ?? null) ? $_POST['geraete'] : '');
+    $cc_namen = array();
+    foreach (cc_zeilen((string) $cc_gl) as $cc_zn) {
+        $cc_zn = trim($cc_zn);
+        if ($cc_zn !== '') {
+            $cc_namen[] = $cc_zn;
+        }
+    }
+    $cc_mit_semikolon = array_filter($cc_namen, function ($n) { return strpos($n, ';') !== false; });
+    if ($cc_mit_semikolon) {
+        $cc_fehler[] = sprintf(cc_t('PRUEF.SEMIKOLON'), cc_e(implode(', ', $cc_mit_semikolon)));
+    } else {
+        $neu['geraete'] = implode("\n", $cc_namen);
+    }
     // MQTT und Themenpraefix stehen im Reiter MQTT und werden hier NICHT
     // angefasst. $neu kommt aus cc_config_read(), die Werte ueberleben
     // damit unveraendert. Stuende hier weiter isset($_POST['mqtt_ein']),
     // schaltete jedes Speichern der Einstellungen MQTT stillschweigend ab -
     // das Formular schickt den Haken ja gar nicht mit.
     $neu['udp']           = isset($_POST['udp']) ? '1' : '0';
-    $neu['udp_port']      = $zahl($_POST['udp_port'] ?? '', 7090, 1, 65535);
-    $neu['intervall']     = $zahl($_POST['intervall'] ?? '', 10, 2, 3600);
-    $neu['aktualisierung'] = $zahl($_POST['aktualisierung'] ?? '', 60, 5, 86400);
-    $neu['lautstaerke_schritt'] = $zahl($_POST['lautstaerke_schritt'] ?? '', 5, 1, 50);
+    foreach (array('udp_port', 'intervall', 'aktualisierung', 'lautstaerke_schritt') as $cc_zk) {
+        $pruefen($cc_zk, $_POST[$cc_zk] ?? '');
+    }
     // Die Favoritenliste wird NICHT hart gefiltert: eine Adresse darf
     // alles enthalten, was eine Adresse enthaelt. Heraus kommen nur
     // Steuerzeichen und das Anfuehrungszeichen, das die Konfigurations-
@@ -284,54 +351,47 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
                                          '', (string) ($_POST['favoriten'] ?? ''));
 
     // --- Ansage (TTS) ---
-    $cc_modus = (string) ($_POST['tts_modus'] ?? 'chromecast');
-    $neu['tts_modus']       = array_key_exists($cc_modus, cc_tts_modi()) ? $cc_modus : 'chromecast';
+    $pruefen('tts_modus', $_POST['tts_modus'] ?? 'chromecast');
     $neu['tts_ip']          = $saeubern($_POST['tts_ip'] ?? '');
-    $neu['tts_port']        = $zahl($_POST['tts_port'] ?? '', 7091, 1, 65535);
+    $pruefen('tts_port', $_POST['tts_port'] ?? '');
     $neu['tts_zonen']       = $saeubern($_POST['tts_zonen'] ?? '1');
-    $neu['tts_lautstaerke'] = $zahl($_POST['tts_lautstaerke'] ?? '', 8, 1, 100);
-    $cc_spr = strtolower(preg_replace('/[^A-Za-z-]/', '', (string) ($_POST['tts_sprache'] ?? 'de')));
-    $neu['tts_sprache']     = $cc_spr !== '' ? $cc_spr : 'de';
+    $pruefen('tts_lautstaerke', $_POST['tts_lautstaerke'] ?? '');
+    // Sprache: abgewiesen, nicht beschnitten - bis 1.3.12 wurde aus "de_DE"
+    // still "dede" (O5). Leer heisst wie bisher: de.
+    $cc_spr = is_string($_POST['tts_sprache'] ?? null) ? trim($_POST['tts_sprache']) : '';
+    $pruefen('tts_sprache', $cc_spr !== '' ? $cc_spr : 'de');
     $neu['tts_vorlage']     = $saeubern($_POST['tts_vorlage'] ?? '');
     // Leer heisst: die aktuelle Lautstaerke beibehalten. Deshalb NICHT auf
     // eine Vorgabe zwingen - das waere eine Entscheidung, die niemand
-    // getroffen hat.
-    $cc_pegel = trim((string) ($_POST['tts_pegel'] ?? ''));
-    $neu['tts_pegel']       = $cc_pegel === '' ? '' : $zahl($cc_pegel, 40, 0, 100);
+    // getroffen hat. Sonst eine Zahl von 0 bis 100 - "abc" wird abgewiesen,
+    // nicht zu 0 (O5).
+    $pruefen('tts_pegel', $_POST['tts_pegel'] ?? '');
     $neu['tts_fortsetzen']  = isset($_POST['tts_fortsetzen']) ? '1' : '0';
     $neu['tts_gong']        = $saeubern($_POST['tts_gong'] ?? '');
     $neu['tts_lokal_basis'] = $saeubern($_POST['tts_lokal_basis'] ?? '');
-    $neu['lautstaerke_max'] = $zahl($_POST['lautstaerke_max'] ?? '', 100, 0, 100);
-    $neu['ruhe_max']        = $zahl($_POST['ruhe_max'] ?? '', 30, 0, 100);
+    $pruefen('lautstaerke_max', $_POST['lautstaerke_max'] ?? '');
+    $pruefen('ruhe_max', $_POST['ruhe_max'] ?? '');
     // Uhrzeiten werden ABGEWIESEN, wenn sie keine sind - nicht
-    // zurechtgebogen. Leer heisst: Ruhezeit aus.
+    // zurechtgebogen. Leer heisst: Ruhezeit aus. Jede Beanstandung steht
+    // fuer sich (O6).
     foreach (array('ruhe_von', 'ruhe_bis') as $cc_rf) {
-        $cc_rv = trim((string) ($_POST[$cc_rf] ?? ''));
-        if ($cc_rv === '' || preg_match('/^([01]?\d|2[0-3]):[0-5]\d$/', $cc_rv)) {
-            $neu[$cc_rf] = $cc_rv;
-        } else {
-            $cc_error = cc_t('RUHE.FEHLER');
-        }
+        $pruefen($cc_rf, $_POST[$cc_rf] ?? '');
     }
     $neu['gruppen']         = isset($_POST['gruppen']) ? '1' : '0';
     $neu['beschleunigung']  = isset($_POST['beschleunigung']) ? '1' : '0';
 
     if (cc_config_write($neu)) {
+        // "Gespeichert" nur, wenn gespeichert wurde - und mit Beanstandungen
+        // ausdruecklich als Teil (O6).
         $cc_saved = true;
         require_once __DIR__ . '/cc_test.php';
-        // Der Haken entscheidet, was nach dem Speichern passiert. Ein
-        // Neustart bei abgeschaltetem Dienst waere das Gegenteil dessen,
-        // was der Anwender gerade eingestellt hat.
-        if ($neu['enabled'] === '1') {
-            cc_dienst('restart');
-            $cc_hinweis = cc_t(cc_dienst_pid() ? 'TEXT.H_NEUGESTARTET'
-                                               : 'TEXT.H_LAEUFT_NICHT');
-        } else {
-            cc_dienst('stop');
-            $cc_hinweis = cc_t('TEXT.H_ANGEHALTEN');
-        }
+        // Der Haken entscheidet, was nach dem Speichern passiert, und die
+        // Meldung sagt, was mit dem Dienst WIRKLICH geschah (O8) - bis 1.3.12
+        // stand "angehalten" auch, wenn gar keiner lief.
+        $cc_hinweis = ($cc_fehler ? cc_t('TEXT.H_TEILWEISE') . ' ' : '')
+                    . cc_dienst_nachziehen($neu);
     } else {
-        $cc_error = 'Die Konfigurationsdatei konnte nicht geschrieben werden: ' . cc_e($cc_p['config']);
+        $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
     }
 }
 
@@ -354,12 +414,14 @@ $cc_frame = class_exists('LBWeb', false);
 
 /* ---------------- Einstellungen sichern ----------------
  *
- * Ausgegeben wird die VOLLE Konfiguration - samt Aktionstoken. Ohne ihn
- * stuenden nach dem Zurueckspielen alle Felder richtig, und das Plugin
- * kaeme trotzdem nicht an die Anlage; die Datei waere wertlos. Damit
- * traegt sie ein Geheimnis, und der Hinweis am Knopf sagt das. */
+ * Ausgegeben wird die VOLLE Konfiguration samt Aktionstoken, dazu ein
+ * lesbarer Kopf aus _-Schluesseln (cc_sicherung_bauen(), seit 1.3.13, C1).
+ * Das Token ist das Merkwort der Oberflaeche; ohne es stuende nach dem
+ * Zurueckspielen auf einem zweiten LoxBerry ein neues, und der Hinweis am
+ * Knopf sagt, dass die Datei es traegt. Bis 1.3.12 stand hier cc_cfg() ohne
+ * Argumente - der Knopf lieferte einen PHP-Fehler statt einer Datei. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
-    $cc_js = json_encode(cc_cfg(),
+    $cc_js = json_encode(cc_sicherung_bauen(),
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($cc_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -368,7 +430,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
         echo $cc_js;
         exit;
     }
-    $cc_error = cc_t('TEXT.SICH_SCHREIBFEHLER');
+    $cc_fehler[] = cc_t('TEXT.SICH_SCHREIBFEHLER');
 }
 
 /* ---------------- Einstellungen zurueckspielen ----------------
@@ -380,22 +442,55 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_zurueck'])) {
     if (!isset($_FILES['cc_sicherung']) || !is_array($_FILES['cc_sicherung'])
         || !isset($_FILES['cc_sicherung']['tmp_name'])
         || !@is_uploaded_file($_FILES['cc_sicherung']['tmp_name'])) {
-        $cc_error = cc_t('TEXT.SICH_KEINE_DATEI');
+        $cc_fehler[] = cc_t('TEXT.SICH_KEINE_DATEI');
     } elseif ((int) $_FILES['cc_sicherung']['size'] > 262144) {
-        $cc_error = cc_t('TEXT.SICH_ZU_GROSS');
+        $cc_fehler[] = cc_t('TEXT.SICH_ZU_GROSS');
     } else {
         list($cc_neu, $cc_mangel, $cc_n) = cc_sicherung_lesen(
             (string) @file_get_contents($_FILES['cc_sicherung']['tmp_name']));
         if ($cc_neu === null) {
             /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
              * nichts. */
-            $cc_error = cc_t('TEXT.SICH_ABGELEHNT') . ' '
-                            . implode(' ', $cc_mangel);
+            $cc_fehler[] = cc_t('TEXT.SICH_ABGELEHNT');
+            foreach ($cc_mangel as $cc_mz) {
+                $cc_fehler[] = $cc_mz;
+            }
         } elseif (cc_config_write($cc_neu)) {
-            $cc_saved = true; $cc_hinweis = sprintf(cc_t('TEXT.SICH_UEBERNOMMEN'), $cc_n);
+            $cc_saved = true;
+            require_once __DIR__ . '/cc_test.php';
+            // Den Dienst nachziehen und sagen, was mit ihm geschah (seit
+            // 1.3.13, O3; Regeln/05 Punkt 7). Bis 1.3.12 wirkten geaenderte
+            // Geraete, Port oder Praefix erst beim naechsten Neustart, und
+            // enabled=0 aus der Sicherung liess den Dienst weiterlaufen.
+            $cc_hinweis = sprintf(cc_t('TEXT.SICH_UEBERNOMMEN'), $cc_n) . ' '
+                        . cc_dienst_nachziehen($cc_neu);
         } else {
-            $cc_error = cc_t('TEXT.SICH_SCHREIBFEHLER');
+            $cc_fehler[] = cc_t('TEXT.SICH_SCHREIBFEHLER');
         }
+    }
+}
+
+/* ================= Nach jedem POST: umleiten (seit 1.3.13, O4) =================
+ *
+ * Regeln/04: "Jeder POST-Handler endet mit einer Umleitung; das Ergebnis
+ * reist als Einmalmeldung." Bis 1.3.12 antworteten Speichern, Zurueckspielen
+ * und alle Testknoepfe mit HTTP 200 ohne Location: F5 auf "Geraet ansprechen"
+ * schickte ein zweites UDP-Paket, und "Dienst neu starten" oder Speichern mit
+ * Haken startete bei jedem F5 neu (gemessen 30.09.2026, Oberflaechen-Befund
+ * 4). Die Downloads (Vorlage, Sicherung) haben oben schon geliefert und mit
+ * exit geendet. Scheitert das Schreiben der Einmalmeldung, wird wie bisher
+ * direkt gerendert - lieber ohne Umleitung als ohne Meldung. Auch die
+ * Abweisung durch den Wachposten reist hier mit. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    $cc_einmal_neu = array(
+        'saved' => $cc_saved, 'hinweis' => $cc_hinweis, 'fehler' => $cc_fehler,
+        'test_titel' => $cc_test_titel, 'test_text' => $cc_test_text,
+        'gefunden' => is_array($cc_gefunden) ? $cc_gefunden : array(),
+        'suchfehler' => (string) $cc_suchfehler, 'gesucht' => $cc_gesucht,
+    );
+    if (cc_einmal_schreiben($cc_einmal_neu)) {
+        header('Location: index.php?tab=' . rawurlencode(substr($cc_tab, 4)), true, 303);
+        exit;
     }
 }
 
@@ -506,18 +601,20 @@ if ($cc_frame) {
 
 <?php if ($cc_saved) { ?>
 <div class="sm-alert sm-ok"><b><?php echo cc_t('TEXT.T001'); ?></b> <?= $cc_hinweis ?></div>
+<?php } elseif ($cc_hinweis !== '') { ?>
+<div class="sm-alert sm-info"><?= $cc_hinweis ?></div>
 <?php } ?>
-<?php if ($cc_error !== '') { ?><div class="sm-alert sm-err"><b><?php echo cc_t('TEXT.T002'); ?></b> <?= $cc_error ?></div><?php } ?>
-<?php if ($cc_konfig_zustand === 'unlesbar' || $cc_konfig_zustand === 'leer') { ?>
+<?php if ($cc_fehler) { ?><div class="sm-alert sm-err"><b><?php echo cc_t('TEXT.T002'); ?></b><?php foreach ($cc_fehler as $cc_fz) { ?><br><?= $cc_fz ?><?php } ?></div><?php } ?>
+<?php if (in_array($cc_konfig_zustand, array('unlesbar', 'leer', 'gekuerzt'), true)) { ?>
 <div class="sm-alert sm-warn"><b><?php echo cc_t('TEXT.T002'); ?></b>
 <?php echo cc_t('TEXT.W_KONFIG'); ?> <span class="sm-mono"><?= cc_e($cc_p['config']) ?></span></div>
 <?php } ?>
 
 <div class="sm-alert sm-info">
-<?php echo cc_t('TEXT.T003'); ?> <b><?= $cc_pid ? 'l&auml;uft' : 'l&auml;uft nicht' ?></b><?= $cc_pid ? ' (PID ' . $cc_pid . ') ' : ' ' ?>
+<?php echo cc_t('TEXT.T003'); ?> <b><?= $cc_pid ? cc_t('TEXT.S_LAEUFT') : cc_t('TEXT.S_LAEUFT_NICHT') ?></b><?= $cc_pid ? ' (PID ' . $cc_pid . ') ' : ' ' ?>
 <?php echo cc_t('TEXT.T004'); ?> <b><?= count($cc_geraete) ?></b>
-<?php echo cc_t('TEXT.T005'); ?> <b><?= cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? 'ein' : 'aus' ?></b>
-<?php echo cc_t('TEXT.T006'); ?> <b><?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? 'Port ' . cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) : 'aus' ?></b>
+<?php echo cc_t('TEXT.T005'); ?> <b><?= cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS') ?></b>
+<?php echo cc_t('TEXT.T006'); ?> <b><?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? cc_t('TEXT.S_PORT') . ' ' . cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) : cc_t('TEXT.S_AUS') ?></b>
 <?php echo cc_t('TEXT.T007'); ?> <span class="sm-mono"><?= cc_e($cc_ip) ?></span>
 </div>
 
@@ -543,7 +640,7 @@ if ($cc_frame) {
 <div class="sm-small"><?php echo cc_t('SUCHE.H_SUCHEN'); ?></div>
 <?php if ($cc_suchfehler !== '') { ?>
 <div class="sm-alert sm-err"><b><?php echo cc_t('TEXT.T002'); ?></b> <?= cc_e($cc_suchfehler) ?></div>
-<?php } elseif (isset($_POST['suche_geraete'])) { ?>
+<?php } elseif ($cc_gesucht) { ?>
 <?php if (!$cc_gefunden) { ?>
 <div class="sm-alert sm-info"><?php echo cc_t('SUCHE.H_NICHTS'); ?></div>
 <?php } else { ?>
@@ -591,7 +688,7 @@ if ($cc_frame) {
 
 <h2><?php echo cc_t('MQTT.H_UDP'); ?></h2>
 <label class="sm-check"><input data-role="none" type="checkbox" name="udp" value="1"<?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? ' checked' : '' ?>> <?php echo cc_t('TEXT.T021'); ?></label>
-<div class="sm-small"><?php echo cc_t('TEXT.T022'); ?></div>
+<div class="sm-small"><?php echo cc_t('TEXT.T022'); ?> <?php echo cc_t('TEXT.S_UDP_ABSENDER'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
@@ -735,7 +832,7 @@ if ($cc_frame) {
 </label>
 <div class="sm-small"><?php echo cc_t('TTS.H_GRUPPEN_TEXT'); ?></div>
 
-<button data-role="none" class="sm-btn" type="submit" name="save" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
 <div class="sm-small"><?php echo cc_t('TEXT.T036'); ?></div>
 </form>
 
@@ -766,6 +863,9 @@ if ($cc_frame) {
 
 <form method="post" action="index.php">
 <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo cc_t('LEGENDE.AKTION'); ?></span>
+</div>
 <h2><?php echo cc_t('MQTT.H_WEG'); ?></h2>
 <label class="sm-check"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? ' checked' : '' ?>> <b><?php echo cc_t('TEXT.T018'); ?></b> <?php echo cc_t('TEXT.T019'); ?></label>
 <div class="sm-small"><?php echo cc_t('TEXT.T020'); ?></div>
@@ -777,7 +877,7 @@ if ($cc_frame) {
 <div class="sm-small"><?php echo cc_t('TEXT.T025'); ?></div>
 </div>
 </div>
-<button data-role="none" class="sm-btn" type="submit" name="save_mqtt" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_mqtt" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
 </form>
 
 <h2><?php echo cc_t('MQTT.H_GATEWAY'); ?></h2>
@@ -899,8 +999,18 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <?php if (!$cc_geraete) { ?>
 <div class="sm-alert sm-err"><?php echo cc_t('TEXT.T083'); ?></div>
 <?php } else { ?>
-<div class="sm-small"><?php echo cc_t('TEXT.T084'); ?> <b><?= count($cc_geraete) ?></b> <?php echo cc_t('TEXT.T085'); ?>
-<?= cc_e(implode(', ', $cc_geraete)) ?><?php echo cc_t('TEXT.T086'); ?> <?= count(cc_status_themen()) ?> <?php echo cc_t('TEXT.T087'); ?> <?= count(cc_befehle()) ?> <?php echo cc_t('TEXT.T088'); ?></div>
+<?php /* Die Zahlen aus dem Code, der die Vorlage baut (seit 1.3.13, O14).
+        Bis 1.3.12 stand hier die Zahl aller Zustaende (16) - die Vorlage legt
+        je Geraet 9 an, die Textthemen bleiben draussen (gemessen 30.09.2026,
+        Oberflaechen-Befund 14). Und das Leerzeichen hinter "Geraet(e):" steht
+        ausgeschrieben: PHP verschluckt einen Zeilenumbruch nach dem
+        schliessenden Zeichenpaar (Regeln/04). */
+      list($cc_vz_ein, $cc_vz_aus, $cc_vz_text, $cc_vz_dienst) = cc_vorlage_zahlen(); ?>
+<div class="sm-small"><?php echo cc_t('TEXT.T084'); ?> <b><?= count($cc_geraete) ?></b> <?php echo cc_t('TEXT.T085') . ' '; ?><?= cc_e(implode(', ', $cc_geraete)) ?><?php echo cc_t('TEXT.T086'); ?> <?= (int) $cc_vz_ein ?> <?php echo cc_t('TEXT.T087'); ?> <?= (int) $cc_vz_aus ?> <?php echo cc_t('TEXT.T088') . ' '
+    . cc_e(sprintf(cc_t('TEXT.S_DIENST_EINGAENGE'), $cc_vz_dienst)) . ' '
+    . sprintf(cc_t('TEXT.S_TEXTTHEMEN'), '<span class="sm-mono">' . cc_e(implode(', ', $cc_vz_text)) . '</span>') . ' '
+    . cc_t('TEXT.S_IMPORT_NEU') . ' '
+    . cc_e(sprintf(cc_t('TEXT.S_SCHRITT_VORLAGE'), cc_cfg($cc_cfg, 'lautstaerke_schritt', '5'))); ?></div>
 <?php } ?>
 
 <form method="post" action="index.php">
@@ -926,22 +1036,31 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo cc_t('TEXT.T111'); ?></th><th><?php echo cc_t('TEXT.T112'); ?></th><th><?php echo cc_t('TEXT.T113'); ?></th><th><?php echo cc_t('TEXT.T114'); ?></th></tr>
 <tr><td>1</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T116'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T118'); ?></td></tr>
-<tr><td>2</td><td>Virtueller Eingang</td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T119'); ?></td><td>digital</td><td><?php echo cc_t('TEXT.T120'); ?></td></tr>
-<tr><td>3</td><td>Virtueller Eingang</td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T121'); ?></td><td><?php echo cc_t('TEXT.T122'); ?></td><td>&mdash;</td></tr>
-<tr><td>4</td><td>Virtueller Eingang</td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T123'); ?></td><td>digital</td><td>&mdash;</td></tr>
+<tr><td>2</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T119'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T120'); ?></td></tr>
+<tr><td>3</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T121'); ?></td><td><?php echo cc_t('TEXT.T122'); ?></td><td>&mdash;</td></tr>
+<tr><td>4</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T123'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td>&mdash;</td></tr>
 <tr><td>5</td><td><?php echo cc_t('TEXT.T124'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T125'); ?></td><td><?php echo cc_t('TEXT.T126'); ?></td><td>&mdash;</td></tr>
 <tr><td>6</td><td><?php echo cc_t('TEXT.T127'); ?></td><td>Chromecast</td><td><?php echo cc_t('TEXT.T129'); ?> <span class="sm-mono">/dev/udp/<?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span><?php echo cc_t('TEXT.T130'); ?></td><td><?php echo cc_t('TEXT.T131'); ?></td></tr>
 <tr><td>7</td><td><?php echo cc_t('TEXT.T132'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('TEXT.T135'); ?></td></tr>
 <tr><td>8</td><td><?php echo cc_t('TEXT.T136'); ?></td><td><?php echo cc_t('TEXT.T137'); ?></td><td>&mdash;</td><td><?php echo cc_t('TEXT.T138'); ?> <span class="sm-mono">play</span></td></tr>
-<tr><td>9</td><td><?php echo cc_t('TEXT.T140'); ?></td><td><?php echo cc_t('TEXT.T141'); ?></td><td>&mdash;</td><td>Eingang = #7 <?php echo cc_t('TEXT.S_ZU_9'); ?></td></tr>
-<tr><td>10</td><td><?php echo cc_t('TEXT.T143'); ?></td><td><?php echo cc_t('TEXT.T144'); ?></td><td>Visualisierung EIN</td><td>&rarr; Ausgangsbefehl <span class="sm-mono">volume_up</span></td></tr>
-<tr><td>11</td><td>Taster</td><td><?php echo cc_t('TEXT.T146'); ?></td><td>Visualisierung EIN</td><td>&rarr; Ausgangsbefehl <span class="sm-mono">volume_down</span></td></tr>
-<tr><td>12</td><td><?php echo cc_t('TEXT.T147'); ?></td><td><?php echo cc_t('TEXT.T148'); ?></td><td>&mdash;</td><td><?php echo cc_t('TEXT.T149'); ?></td></tr>
-<tr><td>13</td><td><?php echo cc_t('TEXT.T150'); ?></td><td><?php echo cc_t('TEXT.T151'); ?></td><td><?php echo cc_t('TEXT.T152'); ?></td><td><?php echo cc_t('TEXT.T153'); ?></td></tr>
-<tr><td>14</td><td>Status</td><td>Musik &lt;G&gt;</td><td><?php echo cc_t('TEXT.T154'); ?></td><td>v1 = #5, v2 = #3</td></tr>
+<tr><td>9</td><td><?php echo cc_t('TEXT.T140'); ?></td><td><?php echo cc_t('TEXT.T141'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?> <?php echo cc_t('TEXT.S_ZU_9'); ?></td></tr>
+<tr><td>10</td><td><?php echo cc_t('TEXT.T143'); ?></td><td><?php echo cc_t('TEXT.T144'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_up</span></td></tr>
+<tr><td>11</td><td><?php echo cc_t('TEXT.T143'); ?></td><td><?php echo cc_t('TEXT.T146'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_down</span></td></tr>
+<?php /* Ausfallerkennung ueber den DIENST (seit 1.3.13, O15): server/online
+        kommt retained mit Letztem Willen, server/zaehler aendert sich in jedem
+        Takt. Bis 1.3.12 hing #12/#13 an <G>_online - das Thema ist fluechtig,
+        und stirbt der Dienst, behaelt der virtuelle Eingang seine letzte 1:
+        #13 meldete nie etwas (Oberflaechen-Befund 15). */
+      $cc_aender = max(60, 3 * (int) cc_cfg($cc_cfg, 'intervall', '10')); ?>
+<tr><td>12</td><td><?php echo cc_t('TEXT.T147'); ?></td><td><?php echo cc_t('BAUSTEIN.N12'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.E12'); ?></td></tr>
+<tr><td>13</td><td><?php echo cc_t('TEXT.T150'); ?></td><td><?php echo cc_t('TEXT.T151'); ?></td><td><?php echo cc_t('BAUSTEIN.P13'); ?></td><td><?php echo cc_t('TEXT.T153'); ?></td></tr>
+<tr><td>14</td><td><?php echo cc_t('BAUSTEIN.STATUS'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T154'); ?></td><td><?php echo cc_t('BAUSTEIN.V1V2'); ?></td></tr>
+<tr><td>15</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_online</td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T118'); ?></td></tr>
+<tr><td>16</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_zaehler</td><td><?php echo cc_t('BAUSTEIN.P16'); ?></td><td>&mdash;</td></tr>
+<tr><td>17</td><td><?php echo cc_t('BAUSTEIN.AENDER'); ?></td><td><?php echo cc_t('BAUSTEIN.N17'); ?></td><td><?= cc_e(sprintf(cc_t('BAUSTEIN.P17'), $cc_aender)) ?></td><td><?php echo cc_t('BAUSTEIN.E17'); ?></td></tr>
 </table>
 <div class="sm-alert sm-info">
-<b>Zu #6:</b> <?php echo cc_t('TEXT.S_ZU_6'); ?>
+<b><?php echo cc_t('BAUSTEIN.ZU_6'); ?></b> <?php echo cc_t('TEXT.S_ZU_6'); ?>
 </div>
 
 <div class="sm-small">

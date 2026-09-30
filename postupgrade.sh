@@ -111,6 +111,17 @@ cc_abweichend() {
       done ) 2>/dev/null || echo "(nicht lesbar: $1)"
 }
 
+# ---------- Hat eine Einstellungsdatei Inhalt? ----------
+# Dieselbe Funktion wie in preupgrade.sh und postinstall.sh (seit 1.3.13, I3):
+# lesbar, mit Abschnitt [CONFIG] und einem Aktionstoken, und die Datei endet
+# mit einem Zeilenende.
+cc_cfg_inhalt() {
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    grep -q '^\[CONFIG\]' "$1" 2>/dev/null || return 1
+    grep -Eq "^[[:space:]]*aktionstoken[[:space:]]*=[[:space:]]*[\"']?[^[:space:]\"']" "$1" 2>/dev/null || return 1
+    [ "$(tail -c 1 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')" = "0a" ]
+}
+
 # Zurueckspielen - aber nur, wenn im Quellordner ueberhaupt etwas liegt.
 #
 # 'cp -r ordner/*' bei leerem Ordner laesst die Shell das Sternchen woertlich
@@ -148,12 +159,42 @@ zurueck() {
 # weil 'cp -r quelle/ ziel' das Quellverzeichnis MIT anlegt. Jetzt sichert
 # preupgrade mit 'cp -a quelle/. ziel/' den Inhalt - ohne die Zwischenebene.
 SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
+CC_MARKE="$LBHOMEDIR/data/plugins/$PDIR.upgrade_laeuft"
+
+# Nur eine Sicherung aus DIESEM Vorgang wird eingespielt (seit 1.3.13, I6;
+# Entscheidung 1): ihre Datei "vorgang" traegt den Zeitpunkt aus der Marke,
+# die preupgrade.sh eben angelegt hat. Stimmt er nicht - oder fehlt eines von
+# beiden -, stammt sie aus einem frueheren Vorgang und geht nach .alt.
+if [ -d "$SICHER" ]; then
+    CC_V_SICH=$(head -c 32 "$SICHER/vorgang" 2>/dev/null)
+    CC_V_MARKE=$(head -c 32 "$CC_MARKE" 2>/dev/null)
+    if [ -z "$CC_V_SICH" ] || [ "$CC_V_SICH" != "$CC_V_MARKE" ]; then
+        rm -rf "${SICHER:?}.alt" 2>/dev/null
+        if mv -T "$SICHER" "$SICHER.alt" 2>/dev/null; then
+            echo "<WARNING> Die Sicherung $SICHER stammt nicht aus dieser Aktualisierung und wird"
+            echo "<WARNING> NICHT eingespielt; sie liegt jetzt unter $SICHER.alt."
+        else
+            echo "<WARNING> Die Sicherung $SICHER stammt nicht aus dieser Aktualisierung und wird"
+            echo "<WARNING> NICHT eingespielt; sie liess sich nicht beiseitelegen."
+        fi
+    fi
+fi
 
 CC_ZURUECK_OK=1
-zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration" || CC_ZURUECK_OK=0
+# Nur eine Konfiguration MIT Inhalt kommt zurueck (seit 1.3.13, I3). Bis
+# 1.3.12 kopierte dieser Schritt eine kaputte Sicherung ueber die eben aus der
+# Zweitschrift geheilte Konfiguration (in WSL gemessen 30.09.2026,
+# Installer-Befund 3: abgeschnitten, leer, fremd - danach kein Token).
+if [ -d "$SICHER/config" ] && ! cc_cfg_inhalt "$SICHER/config/chromecast-4lox-ng.cfg"; then
+    echo "<WARNING> Die gesicherte Konfiguration traegt kein vollstaendiges Aktionstoken und"
+    echo "<WARNING> wird NICHT zurueckgespielt; es bleibt der Stand aus postinstall.sh."
+else
+    zurueck "$SICHER/config" "$LBHOMEDIR/config/plugins/$PDIR" "Konfiguration" || CC_ZURUECK_OK=0
+fi
 # Das Protokoll nicht: es uebersteht das Upgrade an Ort und Stelle (siehe
-# preupgrade.sh). Zurueckkopiert ueberschrieb es die neuen Zeilen.
-zurueck "$SICHER/files" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" "Sicherungsarchive" || CC_ZURUECK_OK=0
+# preupgrade.sh). Zurueckkopiert ueberschrieb es die neuen Zeilen. Die
+# Sicherungsarchive (files) auch nicht mehr: der Ordner wird im Code nicht
+# benutzt (seit 1.3.13).
 
 # 1.3.0: zwei Schluessel heissen anders - themenpraefix -> mqtt_topic,
 # mqtt -> mqtt_ein. Die zurueckgespielte Konfiguration traegt noch die alten
@@ -186,7 +227,7 @@ fi
 # auf loxberry gesetzt" kam trotzdem.
 CC_WER_UID=$(id -u 2>/dev/null)
 CC_FREMD=$(find "$LBHOMEDIR/config/plugins/$PDIR" "$LBHOMEDIR/log/plugins/$PDIR" \
-                "$LBHOMEDIR/data/plugins/$PDIR" "$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files" \
+                "$LBHOMEDIR/data/plugins/$PDIR" \
                 ! -uid "$CC_WER_UID" 2>/dev/null | head -3)
 if [ -n "$CC_FREMD" ]; then
     echo "<INFO> Diese Dateien gehoeren nicht $(id -un 2>/dev/null):"
@@ -194,13 +235,12 @@ if [ -n "$CC_FREMD" ]; then
     echo "<INFO> Der Dienst und die Oberflaeche laufen als loxberry und koennten sie nicht schreiben."
 fi
 
-# Weggeraeumt wird die Sicherung erst, wenn beides nachweislich zurueck ist.
+# Weggeraeumt wird die Sicherung erst, wenn sie nachweislich zurueck ist.
 # Bis 1.3.10 fiel sie ohne Bedingung - auch wenn das Zurueckspielen
 # gescheitert war (in WSL gemessen 18.09.2026, Fall p1: volle Platte beim
 # Zurueckspielen, danach war die Sicherung weg und die Einstellungen die
-# Vorgabe). Bleibt sie liegen, haelt preupgrade.sh sie beim naechsten Update
-# fest (die Vorgabe traegt kein Aktionstoken), und postupgrade.sh spielt sie
-# dann zurueck.
+# Vorgabe). Bleibt sie liegen, legt preupgrade.sh sie beim naechsten Update
+# beiseite (.alt) - eingespielt wird sie dann nicht mehr (seit 1.3.13, I6).
 if [ "$CC_ZURUECK_OK" = 1 ]; then
     echo "<INFO> Remove backup folder"
     rm -rf "$SICHER"
@@ -208,7 +248,7 @@ else
     echo "<WARNING> Die Sicherung bleibt liegen, weil nicht alles zurueckgespielt wurde:"
     echo "<WARNING>   $SICHER"
     echo "<WARNING> Die Einstellungen lassen sich von dort von Hand zurueckkopieren;"
-    echo "<WARNING> ein erneutes Update spielt sie ebenfalls zurueck."
+    echo "<WARNING> ein erneutes Update legt sie beiseite und spielt sie nicht ein."
 fi
 
 # --- Chromecast 4 Lox NG ---------------------------------------------------

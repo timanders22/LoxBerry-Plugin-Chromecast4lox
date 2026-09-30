@@ -22,12 +22,16 @@ Getestet gegen pychromecast 9.4 (Debian) und 13.1 (pip). Wo sich die
 Schnittstelle zwischen beiden unterscheidet, sind beide Wege abgedeckt.
 """
 
+import errno
 import hashlib
 import json
 import logging
+import logging.handlers
+import math
 import os
 import queue
 import re
+import signal
 import socket
 import sys
 import threading
@@ -166,24 +170,53 @@ def version():
 # Protokoll
 # ---------------------------------------------------------------------------
 
-# NUR nach stdout schreiben, keinen eigenen FileHandler.
+# Beim EINBINDEN nach stderr, nicht nach stdout: auf stdout antworten
+# "--themen" (JSON fuer den Reiter Test) und "--mqtt-leeren" (Zeilen fuer das
+# Installationsprotokoll). Im Dienstbetrieb stellt main() auf die eigene
+# Datei um (log_datei_einrichten()).
 #
-# Bis 1.1.0 stand hier beides: ein FileHandler auf <plugin>.log UND ein
-# StreamHandler. Das Startskript leitet stdout und stderr aber ohnehin in
-# genau diese Datei um ('nohup ... >> $log 2>&1'). Zwei Schreiber auf einer
-# Datei, einer davon mit eigenem Dateizeiger - beim Rotieren durch LoxBerry
-# schreibt der eine dann in die weggeschobene Datei weiter, waehrend der
-# andere die neue benutzt.
-#
-# Wer das Skript von Hand aufruft, sieht die Ausgabe jetzt im Terminal -
-# und das ist auch das erwartete Verhalten.
+# Bis 1.3.12 schrieb der Dienst NUR nach stdout, und die drei Startwege
+# (daemon/daemon, cron/cron.05min, cc_dienst() in cc_lib.php) leiteten mit
+# "nohup ... >> <plugin>.log" in die Datei um. Der Deskriptor gehoerte damit
+# der Schale: wurde die Datei darunter entfernt (Ramdisk geleert,
+# trim_logcount, neu angelegte Protokollordner beim Einspielen eines anderen
+# Plugins), schrieb der Dienst in einen geloeschten Inode - bis zum naechsten
+# Neustart (Regeln/03, "Die dritte Protokollart"; am Geraet 07.09.2026
+# gemessen, in WSL 30.09.2026 nachgestellt: fd 1 auf "(deleted)").
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)-7s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stderr)],
 )
 log = logging.getLogger("chromecast4lox_ng")
+
+
+def log_datei_einrichten():
+    """Im Dienstbetrieb schreibt der Dienst sein Protokoll SELBST (seit 1.3.13).
+
+    Ein WatchedFileHandler prueft vor jeder Zeile Geraetenummer und Inode und
+    legt die Datei neu an, wenn sie fort ist (Regeln/03). Genau EIN Schreiber
+    auf <plugin>.log: die Startwege leiten nur noch in <plugin>_start.log um -
+    dort steht, was vor diesem Aufruf scheitert (Interpreter, Import).
+    Gerufen nur aus main() im Dienstbetrieb; "--themen" und "--mqtt-leeren"
+    schreiben nicht in das Dienstprotokoll. Bauart BLE-Scanner NG 1.3.20.
+    """
+    if not LOG_DIR:
+        return
+    wurzel = logging.getLogger()
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        datei = logging.handlers.WatchedFileHandler(
+            os.path.join(LOG_DIR, PLUGIN_NAME + ".log"))
+        datei.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S"))
+        for h in list(wurzel.handlers):
+            wurzel.removeHandler(h)
+        wurzel.addHandler(datei)
+    except OSError as fehler:
+        log.warning("Protokolldatei in %s nicht zu oeffnen (%s) - es bleibt bei "
+                    "stderr (%s_start.log).", LOG_DIR, fehler, PLUGIN_NAME)
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +256,49 @@ def _vorgaben_lesen():
 VORGABEN = _vorgaben_lesen()
 
 
-def konfiguration_vervollstaendigen(werte, vorhanden):
+# ---------------------------------------------------------------------------
+# Kodierung der Werte (seit 1.3.13, C3)
+# ---------------------------------------------------------------------------
+#
+# Die Datei ist zeilenorientiert; ein Wert darf keinen Zeilenumbruch tragen.
+# Bis 1.3.12 ersetzte cc_config_write() jeden Umbruch durch ";" - auch in den
+# Favoriten, die Oberflaeche und Dienst NUR am Umbruch trennen. Aus drei
+# Favoriten wurde einer mit kaputter Adresse (Pruefung 30.09.2026, Code-Befund
+# 3, gemessen PHP 7.4/8.5 und Dienst). Jetzt eine eigene Kodierung in beide
+# Richtungen, auf beiden Seiten gleich (cc_wert_kodieren()/cc_wert_dekodieren()
+# in cc_lib.php):
+#     "\"  -> "\\"      Zeilenumbruch -> "\n"
+# Andere Folgen hinter einem Rueckstrich bleiben beim Lesen stehen, wie sie
+# sind - eine alte Datei ohne Kodierung liest sich unveraendert.
+
+def wert_kodieren(text):
+    text = str(text).replace("\r\n", "\n").replace("\r", "\n")
+    return text.replace("\\", "\\\\").replace("\n", "\\n")
+
+
+def wert_dekodieren(text):
+    return re.sub(r"\\(.)", lambda m: "\n" if m.group(1) == "n"
+                  else ("\\" if m.group(1) == "\\" else m.group(0)),
+                  str(text), flags=re.S)
+
+
+def konfiguration_gekuerzt(roh):
+    """Ist die Datei mitten im Schreiben abgebrochen? (seit 1.3.13, C9)
+
+    Jeder Schreiber dieser Linie (cc_config_write(), das Vervollstaendigen
+    hier, die mitgelieferte Vorgabe) legt den Abschnitt [CONFIG] an und endet
+    mit einem Zeilenende. Fehlt eines davon, ist die Datei gekuerzt - sie zu
+    "vervollstaendigen" hiesse, fehlende Werte mit der Werkseinstellung zu
+    fuellen: Lautstaerkegrenze 100, Ruhezeit aus, Aktionstoken leer (in WSL
+    gemessen 30.09.2026, ulimit -f 1, Code-Befund 9)."""
+    if roh is None:
+        return False
+    if not roh.endswith("\n"):
+        return True
+    return re.search(r"^\s*\[CONFIG\]\s*$", roh, re.M) is None
+
+
+def konfiguration_vervollstaendigen(werte, vorhanden, roh=None):
     """Fehlende Schluessel EINMAL in die Konfigurationsdatei schreiben.
 
     Ergaenzen hiesse: beim Lesen tritt die Vorgabe ein, die Datei bleibt
@@ -242,22 +317,49 @@ def konfiguration_vervollstaendigen(werte, vorhanden):
     fehlen = [k for k in VORGABEN if k not in vorhanden]
     if not fehlen or not os.path.isfile(CONFIG_FILE):
         return fehlen
+    if konfiguration_gekuerzt(roh):
+        # Melden, nicht fuellen (C9). Die Zweitschrift neben dem Konfigordner
+        # und das Zurueckspielen in der Oberflaeche bleiben unberuehrt.
+        log.error("Konfiguration %s ist gekuerzt (Abschnitt [CONFIG] oder das "
+                  "Zeilenende am Schluss fehlt) - sie wird NICHT mit Vorgaben "
+                  "vervollstaendigt. Es fehlen: %s", CONFIG_FILE, ", ".join(fehlen))
+        return fehlen
     zeilen = ["; Chromecast 4 Lox NG",
               "; Wird von der Plugin-Oberflaeche geschrieben.", "", "[CONFIG]"]
     geschrieben = set()
     for k in VORGABEN:
-        zeilen.append("%s=%s" % (k, werte.get(k, VORGABEN[k])))
+        zeilen.append("%s=%s" % (k, wert_kodieren(werte.get(k, VORGABEN[k]))))
         geschrieben.add(k)
     for k in sorted(vorhanden - geschrieben):
-        zeilen.append("%s=%s" % (k, werte.get(k, "")))
+        zeilen.append("%s=%s" % (k, wert_kodieren(werte.get(k, ""))))
+    inhalt = ("\n".join(zeilen) + "\n").encode("utf-8")
+    # Nebendatei mit PID, Rechte 0600 VOR dem Inhalt, Laenge nachgemessen,
+    # dann umbenennen (Regeln/03 "Atomares Schreiben"; C9/C10). Bis 1.3.12:
+    # ".neu" ohne PID, Rechte nach umask (644) - die Datei traegt das
+    # Aktionstoken (in WSL gemessen 30.09.2026, Code-Befund 10).
+    vorlaeufig = "%s.neu.%d" % (CONFIG_FILE, os.getpid())
     try:
-        vorlaeufig = CONFIG_FILE + ".neu"
-        with open(vorlaeufig, "w", encoding="utf-8") as fh:
-            fh.write("\n".join(zeilen) + "\n")
+        fd = os.open(vorlaeufig, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            os.fchmod(fd, 0o600)
+            fertig = 0
+            while fertig < len(inhalt):
+                n = os.write(fd, inhalt[fertig:])
+                if n <= 0:
+                    raise OSError(errno.EIO, "kurz geschrieben")
+                fertig += n
+        finally:
+            os.close(fd)
+        if os.path.getsize(vorlaeufig) != len(inhalt):
+            raise OSError(errno.EIO, "Laenge weicht ab")
         os.replace(vorlaeufig, CONFIG_FILE)
         log.info("Konfiguration vervollstaendigt, es fehlten: %s",
                  ", ".join(fehlen))
     except OSError as fehler:
+        try:
+            os.remove(vorlaeufig)
+        except OSError:
+            pass
         log.warning("Konfiguration liess sich nicht vervollstaendigen: %s",
                     fehler)
     return fehlen
@@ -272,9 +374,11 @@ def konfiguration_lesen():
     gelesen = set()
     parser = ConfigParser(interpolation=None)
     parser.optionxform = str
+    roh = None
     try:
         with open(CONFIG_FILE, "r", encoding="utf-8") as fh:
-            parser.read_string(fh.read())
+            roh = fh.read()
+        parser.read_string(roh)
     except (OSError, Exception) as fehler:  # noqa: BLE001
         log.warning("Konfiguration %s nicht lesbar: %s", CONFIG_FILE, fehler)
         return werte
@@ -282,17 +386,28 @@ def konfiguration_lesen():
     for abschnitt in parser.sections():
         for schluessel, wert in parser.items(abschnitt):
             k = schluessel.strip().lower()
-            werte[k] = wert.strip().strip('"').strip("'")
+            w = wert.strip()
+            # Umschliessende Anfuehrungszeichen nur als PAAR entfernen - wie
+            # cc_config_roh() in PHP. Bis 1.3.12 nahm strip('"').strip("'")
+            # jedes einzelne am Rand weg; ein Geraetename auf ' endete hier
+            # anders als in der Oberflaeche (O5, seit 1.3.13).
+            if len(w) >= 2 and w[0] == w[-1] and w[0] in ("'", '"'):
+                w = w[1:-1]
+            werte[k] = wert_dekodieren(w)
             gelesen.add(k)
-    konfiguration_vervollstaendigen(werte, gelesen)
+    konfiguration_vervollstaendigen(werte, gelesen, roh)
     return werte
 
 
 def geraeteliste(cfg):
-    """Geraetenamen aus der Konfiguration. Semikolon, Komma oder Zeilenumbruch
-    trennen; leere Eintraege entfallen."""
+    """Geraetenamen aus der Konfiguration. Semikolon oder Zeilenumbruch
+    trennen; leere Eintraege entfallen.
+
+    Seit 1.3.13 trennt ein Komma NICHT mehr (O5): das Feld heisst "einer je
+    Zeile", und cc_geraete() in der Oberflaeche trennt gleich. Bis 1.3.12 wurde
+    "Bad, oben" zu zwei Geraeten."""
     roh = cfg.get("geraete", "") or ""
-    teile = re.split(r"[;,\n\r]+", roh)
+    teile = re.split(r"[;\n\r]+", roh)
     return [t.strip() for t in teile if t.strip()]
 
 
@@ -360,11 +475,43 @@ def zahl_oder(wert, vorgabe):
     text = str(wert).strip()
     if text == "":
         return vorgabe
+    # Nur endliche Zahlen (seit 1.3.13, C5/M2). int(float("inf")) wirft einen
+    # OverflowError, den bis 1.3.12 niemand fing: "volume inf" oder
+    # "seek 1e400" trennten die Verbindung zum Lautsprecher - genau das, was
+    # dieser Docstring ausschliessen will (gemessen 30.09.2026, Code-Befund 5).
     try:
-        return int(float(text))
-    except (TypeError, ValueError):
-        log.warning("'%s' ist keine Zahl - es gilt die Vorgabe %s", text, vorgabe)
+        zahl = float(text)
+        if not math.isfinite(zahl):
+            raise ValueError("nicht endlich")
+        return int(zahl)
+    except (TypeError, ValueError, OverflowError):
+        log.warning("'%s' ist keine endliche Zahl - es gilt die Vorgabe %s",
+                    text[:40], vorgabe)
         return vorgabe
+
+
+def befehlszahl(wert, vorgabe, unten, oben, name):
+    """Eine Zahl aus einer Befehlsnutzlast - oder eine Abweisung (seit 1.3.13).
+
+    Rueckgabe (zahl, None) oder (None, meldung). Leer heisst Vorgabe. Was
+    keine endliche Zahl ist oder ausserhalb von [unten, oben] liegt, wird
+    ABGEWIESEN und gemeldet, nicht still gekappt (CLAUDE.md Abschnitt 4; bis
+    1.3.12 wurde "volume 150" still zu 100 und "-5" zu 0, Pruefung MQTT M2).
+    Eine Abweisung trennt die Verbindung nicht."""
+    text = "" if wert is None else str(wert).strip()
+    if text == "":
+        return vorgabe, None
+    try:
+        zahl = float(text)
+        if not math.isfinite(zahl):
+            raise ValueError("nicht endlich")
+        ganz = int(round(zahl))
+    except (TypeError, ValueError, OverflowError):
+        return None, "{0}: '{1}' ist keine endliche Zahl - abgewiesen".format(name, text[:40])
+    if ganz < unten or ganz > oben:
+        return None, "{0}: {1} liegt ausserhalb {2} bis {3} - abgewiesen".format(
+            name, ganz, unten, oben)
+    return ganz, None
 
 
 # Namen, unter denen ein Befehl ALLE Geraete erreicht. Sie sind bewusst
@@ -669,6 +816,99 @@ def lautstaerke_grenze(cfg, jetzt=None):
 # MQTT
 # ---------------------------------------------------------------------------
 
+def praefix_taugt(praefix):
+    """Taugt das Themenpraefix fuer MQTT? (seit 1.3.13, M9)
+
+    Nicht leer, kein Platzhalter (# +), kein Leerraum oder Steuerzeichen,
+    kein Schraegstrich am Rand und keine leere Ebene. Bis 1.3.12 nahm der
+    Dienst jedes Praefix: mit "haus/#" starb der Netzfaden von paho, und MQTT
+    war still tot (gemessen 30.09.2026, Pruefung MQTT M9). Die Oberflaeche
+    prueft enger (nur Buchstaben, Ziffern, _ und -); der Dienst weist nur ab,
+    was MQTT bricht - ein altes Praefix mit Punkt laeuft weiter."""
+    p = str(praefix or "")
+    if p == "" or len(p) > 128:
+        return False
+    if "#" in p or "+" in p or re.search(r"[\s\x00-\x1f\x7f]", p):
+        return False
+    return not (p.startswith("/") or p.endswith("/") or "//" in p)
+
+
+def _merker_datei():
+    """Das zuletzt benutzte Praefix (seit 1.3.13, M8) - NEBEN dem Datenordner,
+    damit es ein Upgrade uebersteht; uninstall raeumt es ab."""
+    if not DATA_DIR:
+        return ""
+    return os.path.join(os.path.dirname(DATA_DIR.rstrip("/")),
+                        PLUGIN_NAME + ".mqtt_praefix")
+
+
+def praefix_merker_lesen():
+    datei = _merker_datei()
+    if not datei:
+        return ""
+    try:
+        with open(datei, "r", encoding="utf-8") as fh:
+            return fh.read(256).strip()
+    except OSError:
+        return ""
+
+
+def praefix_merker_schreiben(praefix):
+    datei = _merker_datei()
+    if not datei:
+        return False
+    vorlaeufig = "%s.neu.%d" % (datei, os.getpid())
+    try:
+        with open(vorlaeufig, "w", encoding="utf-8") as fh:
+            fh.write(str(praefix) + "\n")
+        os.replace(vorlaeufig, datei)
+        return True
+    except OSError as fehler:
+        try:
+            os.remove(vorlaeufig)
+        except OSError:
+            pass
+        log.warning("Merker des MQTT-Praefixes %s nicht schreibbar: %s", datei, fehler)
+        return False
+
+
+def miniserver_adressen():
+    """Die Adressen der Miniserver aus general.json (seit 1.3.13, M10).
+
+    Nur sie und 127.0.0.1 duerfen dem UDP-Eingang Befehle schicken. Ein
+    Name statt einer Adresse wird EINMAL aufgeloest; laesst er sich nicht
+    aufloesen, fehlt er in der Liste - dann nimmt der Eingang nur noch, was
+    von 127.0.0.1 kommt, und das steht im Protokoll."""
+    aus = set(["127.0.0.1"])
+    pfad = os.path.join(HOME_DIR, "config", "system", "general.json") if HOME_DIR else ""
+    try:
+        with open(pfad, "r", encoding="utf-8") as fh:
+            daten = json.load(fh)
+    except (OSError, ValueError) as fehler:
+        log.warning("general.json nicht lesbar (%s) - UDP-Befehle nur von 127.0.0.1", fehler)
+        return aus
+    for _nr, ms in (daten.get("Miniserver") or {}).items():
+        if not isinstance(ms, dict):
+            continue
+        adresse = str(ms.get("Ipaddress") or ms.get("IPAddress") or "").strip()
+        if adresse == "":
+            continue
+        try:
+            socket.inet_aton(adresse)
+            if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", adresse):
+                aus.add(adresse)
+                continue
+        except OSError:
+            pass
+        try:
+            for eintrag in socket.getaddrinfo(adresse, None, socket.AF_INET):
+                aus.add(eintrag[4][0])
+        except (OSError, UnicodeError) as fehler:
+            log.warning("Miniserver-Adresse '%s' laesst sich nicht aufloesen (%s) - "
+                        "von dort werden keine UDP-Befehle angenommen.", adresse, fehler)
+    return aus
+
+
 def mqtt_zugangsdaten():
     """Zugangsdaten des MQTT-Gateways aus general.json lesen.
     Gross- und Kleinschreibung der Schluessel ist dort uneinheitlich -
@@ -718,6 +958,13 @@ class MqttAnbindung:
         # werden: der Broker kann seine retained-Werte verloren haben.
         self.neumeldung_faellig = False
         self.verluste = 0
+        # Gezaehlt wird erst ab der ersten Anmeldung (seit 1.3.13). Bis 1.3.12
+        # zaehlte der erste Durchgang vor dem Verbinden mit, und server/verluste
+        # stand nach jedem Start auf einer Zahl ueber 0 - ein Fehlalarm fuer
+        # jeden, der in Loxone darauf prueft (Pruefung MQTT, Hinweis).
+        self.jemals_verbunden = False
+        # Verworfene retained Befehle, einmal je Thema und Verbindung gemeldet.
+        self.retained_gemeldet = set()
 
     def start(self):
         try:
@@ -827,7 +1074,9 @@ class MqttAnbindung:
             log.error("MQTT-Anmeldung abgelehnt (%s).", mqtt_anmeldegrund(rc))
             return
         self.verbunden = True
+        self.jemals_verbunden = True
         self.neumeldung_faellig = True
+        self.retained_gemeldet = set()
         thema = self.praefix + "/+/cmd/#"
         client.subscribe(thema)
         log.info("MQTT verbunden, Befehle abonniert: %s", thema)
@@ -846,6 +1095,18 @@ class MqttAnbindung:
                 return
             geraet = teile[-3]
             befehl = teile[-1]
+            # Ein RETAINED Befehl wird verworfen (seit 1.3.13, M1). Bis 1.3.12
+            # fuehrte der Dienst ihn bei jedem Verbinden erneut aus - eine
+            # Ansage, "volume 100" oder eine Adresse, nach jedem Neustart und
+            # jeder Neuverbindung (gemessen 30.09.2026, Pruefung MQTT M1).
+            # Befehle sind Ereignisse, keine Zustaende. uninstall und der
+            # Praefixwechsel raeumen solche Themen ab (eigenes_thema()).
+            if getattr(nachricht, "retain", False):
+                if nachricht.topic not in self.retained_gemeldet:
+                    self.retained_gemeldet.add(nachricht.topic)
+                    log.warning("Retained Befehl verworfen, nicht ausgefuehrt: %s "
+                                "(ein Befehl wird ohne Retain gesendet)", nachricht.topic)
+                return
             nutzlast = nachricht.payload.decode("utf-8", "replace").strip()
             log.info("MQTT-Befehl %s -> %s %s", geraet, befehl, nutzlast)
             self.befehl_rueckruf(geraet, befehl, nutzlast)
@@ -872,12 +1133,32 @@ class MqttAnbindung:
         # nicht verschwiegen.
         rc = getattr(erg, "rc", 0)
         if rc != 0:
+            if not self.jemals_verbunden:
+                return False
             self.verluste += 1
             if self.verluste in (1, 10, 100) or self.verluste % 1000 == 0:
                 log.warning("MQTT: %d Nachricht(en) nicht abgesetzt (letzter Code %s). "
                             "Laeuft das MQTT-Gateway?", self.verluste, rc)
             return False
         return True
+
+    def senden_und_warten(self, unterthema, wert, frist=2.0):
+        """Retained senden und auf die Uebergabe an den Broker warten
+        (seit 1.3.13, M4) - noetig, bevor ein zweiter Client dasselbe Thema
+        abraeumt und nachliest."""
+        if not self.client or not self.verbunden:
+            return False
+        try:
+            info = self.client.publish(self.praefix + "/" + unterthema, str(wert),
+                                       qos=1, retain=True)
+            try:
+                info.wait_for_publish(frist)
+            except TypeError:           # paho 1.x vor 1.6 kennt keine Frist
+                info.wait_for_publish()
+            return bool(getattr(info, "is_published", lambda: True)())
+        except Exception as fehler:  # noqa: BLE001
+            log.error("MQTT-Veroeffentlichung fehlgeschlagen: %s", fehler)
+            return False
 
     def abraeumen(self, unterthema):
         """Ein zurueckbehaltenes Thema im Broker loeschen (leere Nutzlast,
@@ -929,29 +1210,38 @@ class MqttAnbindung:
 #
 # Zur Linie gehoert <praefix>/server/<dienstthema> und
 # <praefix>/<geraet>/<geraetethema> nach bin/cc_themen.json - auch fuer ein
-# Geraet, das nicht mehr in den Einstellungen steht. Befehle
-# (<geraet>/cmd/...) sendet der Miniserver, nicht diese Linie; sie bleiben
-# stehen, ebenso jedes fremde Thema unter demselben Praefix.
+# Geraet, das nicht mehr in den Einstellungen steht. Seit 1.3.13 (M1) auch
+# ein RETAINED Befehl <praefix>/<geraet>/cmd/<befehl> aus der Befehlsliste:
+# der Dienst fuehrt ihn nicht mehr aus, und stehen bleiben soll er auch
+# nicht. Jedes fremde Thema unter demselben Praefix bleibt stehen.
 
 def eigenes_thema(praefix, thema):
     """Gehoert dieses Thema zu dieser Linie?"""
     if not thema.startswith(praefix + "/"):
         return False
     teile = thema[len(praefix) + 1:].split("/")
+    if len(teile) == 3 and teile[0] not in ("", "server") and teile[1] == "cmd":
+        return thema_info("befehle", teile[2]) is not None
     if len(teile) != 2 or teile[0] == "":
         return False
     bereich = "dienst" if teile[0] == "server" else "geraet"
     return thema_info(bereich, teile[1]) is not None
 
 
-def broker_leeren(praefix, warten=2.0):
+def broker_leeren(praefix, warten=2.0, nur=None):
     """Rueckgabe (code, geleert, rest, grund): code 0 = nichts (mehr)
     zurueckbehalten, 1 = nach dem Loeschen steht noch etwas, 2 = nicht zu
     fragen (keine Bibliothek, kein Broker, Anmeldung abgewiesen, Lesen
-    verweigert)."""
+    verweigert).
+
+    nur: ein Geraetethema - dann wird nur <praefix>/<nur>/... abgeraeumt
+    (seit 1.3.13, M4: ein entferntes Geraet)."""
     praefix = str(praefix or "").strip("/")
     if praefix == "" or "#" in praefix or "+" in praefix:
         return 2, [], [], "das Themenpraefix '%s' taugt nicht fuer ein Abonnement" % praefix
+    if nur is not None and (str(nur) in ("", "server") or re.search(r"[/#+]", str(nur))):
+        return 2, [], [], "das Geraetethema '%s' taugt nicht fuer ein Abonnement" % nur
+    filter_thema = praefix + ("/" + str(nur) if nur is not None else "") + "/#"
     try:
         import paho.mqtt.client as mqtt
     except ImportError:
@@ -974,7 +1264,8 @@ def broker_leeren(praefix, warten=2.0):
     def bei_nachricht(_k, _d, nachricht):
         # Nur ZURUECKBEHALTENES mit Inhalt: ein leeres Thema ist schon weg.
         if nachricht.retain and nachricht.payload \
-                and eigenes_thema(praefix, nachricht.topic):
+                and eigenes_thema(praefix, nachricht.topic) \
+                and (nur is None or nachricht.topic.startswith(praefix + "/" + str(nur) + "/")):
             gesehen.add(nachricht.topic)
 
     def bei_abo(_k, _d, mid, codes, *_rest):
@@ -1005,7 +1296,7 @@ def broker_leeren(praefix, warten=2.0):
         return 2, [], [], "paho-mqtt laesst sich nicht einrichten (%s)" % fehler
 
     def abonnieren():
-        erg = k.subscribe(praefix + "/#")
+        erg = k.subscribe(filter_thema)
         try:
             rc_sub, mid = int(erg[0]), erg[1]
         except (TypeError, ValueError, IndexError):
@@ -1019,8 +1310,8 @@ def broker_leeren(praefix, warten=2.0):
             return "der Broker %s hat das Abonnement nicht bestaetigt (kein SUBACK)" % wo
         schlecht = [w for w in subacks[mid] if w >= 0x80]
         if schlecht:
-            return ("der Broker %s verweigert das Lesen von '%s/#' (SUBACK 0x%02X)"
-                    % (wo, praefix, schlecht[0]))
+            return ("der Broker %s verweigert das Lesen von '%s' (SUBACK 0x%02X)"
+                    % (wo, filter_thema, schlecht[0]))
         return ""
 
     try:
@@ -1044,7 +1335,7 @@ def broker_leeren(praefix, warten=2.0):
         if grund:
             return 2, [], [], grund
         time.sleep(warten)
-        k.unsubscribe(praefix + "/#")
+        k.unsubscribe(filter_thema)
         geleert = sorted(gesehen)
         for thema in geleert:
             info = k.publish(thema, b"", qos=1, retain=True)
@@ -1101,7 +1392,21 @@ def mqtt_leeren():
         print("<WARNING> MQTT: keine LoxBerry-Wurzel - zurueckbehaltene Themen "
               "wurden nicht geloescht.")
         return 2
-    praefix = praefix_lesen()
+    # Das aktuelle Praefix UND das zuletzt benutzte (seit 1.3.13, M8): wurde
+    # das Praefix bei angehaltenem Dienst oder ueber "Einstellungen
+    # zurueckspielen" geaendert, blieb bis 1.3.12 unter dem alten alles
+    # stehen, darunter server/online 0 (gemessen 30.09.2026, Pruefung MQTT M8).
+    liste = [praefix_lesen()]
+    alt = praefix_merker_lesen()
+    if alt and alt not in liste and praefix_taugt(alt):
+        liste.append(alt)
+    schlimmster = 0
+    for praefix in liste:
+        schlimmster = max(schlimmster, _praefix_leeren_melden(praefix))
+    return schlimmster
+
+
+def _praefix_leeren_melden(praefix):
     code, geleert, rest, grund = broker_leeren(praefix)
     if code == 2:
         print("<WARNING> MQTT: zurueckbehaltene Themen unter {0}/ nicht geleert - "
@@ -1572,11 +1877,17 @@ class Geraet:
         self.mqtt.senden(self.thema + "/" + schluessel, wert,
                          thema_retain("geraet", schluessel) and not platzhalter)
 
-    def melden_offline(self):
-        """Das Geraet ist nicht erreichbar - Platzhalter, fluechtig."""
-        self._senden("online", "0", platzhalter=True)
-        self._senden("state", "OFFLINE", platzhalter=True)
-        self._senden("playing", "0", platzhalter=True)
+    def melden_offline(self, erzwingen=False):
+        """Das Geraet ist nicht erreichbar - Platzhalter, fluechtig.
+
+        Mit erzwingen gehen sie mit jeder Vollmeldung erneut hinaus (seit
+        1.3.13, M5; Frage 6/11 vom 29.09.2026). Bis 1.3.12 ging "online 0"
+        eines ausgefallenen Geraets genau einmal hinaus; startete danach das
+        Gateway oder der Miniserver neu, kam die 0 nie mehr an, der retained
+        Zustand aber schon (gemessen 30.09.2026, Pruefung MQTT M5)."""
+        self._senden("online", "0", erzwingen, platzhalter=True)
+        self._senden("state", "OFFLINE", erzwingen, platzhalter=True)
+        self._senden("playing", "0", erzwingen, platzhalter=True)
 
     def melden(self, erzwingen=False):
         """Aktuellen Zustand einsammeln und veroeffentlichen.
@@ -1589,7 +1900,7 @@ class Geraet:
 
     def _melden(self, erzwingen=False):
         if not self.verbunden():
-            self.melden_offline()
+            self.melden_offline(erzwingen)
             return
 
         try:
@@ -1597,7 +1908,7 @@ class Geraet:
             medien = self.cast.media_controller.status
         except Exception as fehler:  # noqa: BLE001
             log.warning("Zustand von '%s' nicht lesbar: %s", self.name, fehler)
-            self.melden_offline()
+            self.melden_offline(erzwingen)
             return
 
         self._senden("online", "1", erzwingen)
@@ -1868,25 +2179,46 @@ class Geraet:
                 mc.stop()
             elif befehl == "quit":
                 self.cast.quit_app()
+            # Zahlen aus MQTT und UDP (seit 1.3.13, C5/C8/M2): nur endliche
+            # Werte im Bereich, sonst abgewiesen und gemeldet - ohne die
+            # Verbindung zu trennen. Die Bereiche sind die der Befehlsliste
+            # (bin/cc_themen.json); fuer volume_up/volume_down ist der Wert
+            # eine Schrittweite 0 bis 100 (eigene Wahl, wie volume_step).
             elif befehl in ("volume", "set_volume"):
                 jetzt_proz = int(round((self.cast.status.volume_level or 0) * 100)) \
                     if self.cast.status else 0
-                pegel = max(0, min(100, zahl_oder(wert, jetzt_proz)))
+                pegel, fehlertext = befehlszahl(wert, jetzt_proz, 0, 100, befehl)
+                if fehlertext:
+                    return fehlertext
                 lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_step", "adjust_volume"):
-                delta = zahl_oder(wert, schrittweite)
+                delta, fehlertext = befehlszahl(wert, schrittweite, -100, 100, befehl)
+                if fehlertext:
+                    return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = max(0, min(100, int(round(jetzt * 100)) + delta))
                 lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_up", "lauter"):
-                delta = zahl_oder(wert, schrittweite)
+                # Ein negativer Schritt wird abgewiesen: "lauter -60" war bis
+                # 1.3.12 ein zweiter Weg, leiser zu werden.
+                delta, fehlertext = befehlszahl(wert, schrittweite, 0, 100, befehl)
+                if fehlertext:
+                    return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = int(round(min(1.0, jetzt + delta / 100.0) * 100))
                 lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl in ("volume_down", "leiser"):
-                delta = zahl_oder(wert, schrittweite)
+                # Ueber _gedeckelt() wie jeder andere Lautstaerkebefehl, und ein
+                # negativer Schritt wird abgewiesen (seit 1.3.13, C8). Bis 1.3.12
+                # umging "volume_down -60" bei Grenze 30 die Obergrenze und die
+                # Ruhezeit: 0,8 statt 0,3, mit -500 sogar 5,2 (gemessen
+                # 30.09.2026, Code-Befund 8).
+                delta, fehlertext = befehlszahl(wert, schrittweite, 0, 100, befehl)
+                if fehlertext:
+                    return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
-                lautstaerke_setzen(self.cast, max(0.0, jetzt - delta / 100.0))
+                pegel = max(0, int(round(jetzt * 100)) - delta)
+                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
             elif befehl == "mute":
                 stumm_setzen(self.cast, str(wert).strip() not in ("0", "", "false", "aus"))
             elif befehl == "next":
@@ -1894,10 +2226,15 @@ class Geraet:
             elif befehl in ("prev", "previous"):
                 mc.queue_prev()
             elif befehl == "seek":
-                mc.seek(max(0, zahl_oder(wert, 0)))
+                stelle, fehlertext = befehlszahl(wert, 0, 0, 86400, befehl)
+                if fehlertext:
+                    return fehlertext
+                mc.seek(stelle)
             elif befehl in ("play_favorit", "favorit"):
                 liste = favoriten(cfg or {})
-                nummer = zahl_oder(wert, 0)
+                nummer, fehlertext = befehlszahl(wert, 0, 0, 99, befehl)
+                if fehlertext:
+                    return fehlertext
                 if nummer <= 0:
                     # 0 tut nichts. Ein virtueller Ausgang in Loxone steht
                     # nach dem Neustart des Miniservers auf 0, und das darf
@@ -1951,15 +2288,35 @@ class UdpEmpfaenger(threading.Thread):
         self.dienst = dienst
         self.laeuft = True
         self.sock = None
+        # Abgewiesene Absender: Adresse -> [zuletzt gemeldet, seither verworfen]
+        self.fremde = {}
+
+    def fremd_melden(self, adresse):
+        """Ein fremder Absender, gebremst: die erste Nachricht sofort, danach
+        hoechstens einmal je Stunde mit der Zahl der verworfenen."""
+        jetzt = time.time()
+        eintrag = self.fremde.get(adresse)
+        if eintrag is None or jetzt - eintrag[0] >= 3600:
+            zusatz = "" if eintrag is None or not eintrag[1] else \
+                " (seit der letzten Meldung %d weitere verworfen)" % eintrag[1]
+            log.warning("UDP von %s verworfen: nur der Miniserver (general.json) und "
+                        "127.0.0.1 duerfen Befehle schicken%s", adresse, zusatz)
+            self.fremde[adresse] = [jetzt, 0]
+        else:
+            eintrag[1] += 1
 
     def run(self):
+        # Kein SO_REUSEADDR mehr (seit 1.3.13, C7): damit banden zwei Dienste
+        # denselben Port, und ein UDP-Befehl kam nur bei einem an (gemessen
+        # 30.09.2026, Code-Befund 7, T3). Jetzt scheitert ein zweiter sichtbar.
+        # OverflowError: ein Port ausserhalb 0-65535 (Code-Befund 6).
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.sock.bind(("0.0.0.0", self.port))
             self.sock.settimeout(1.0)
-            log.info("UDP-Befehle werden auf Port %s entgegengenommen", self.port)
-        except OSError as fehler:
+            log.info("UDP-Befehle werden auf Port %s entgegengenommen (Absender: %s)",
+                     self.port, ", ".join(sorted(self.dienst.udp_absender)))
+        except (OSError, OverflowError) as fehler:
             log.error("UDP-Port %s nicht belegbar: %s", self.port, fehler)
             return
 
@@ -1971,6 +2328,13 @@ class UdpEmpfaenger(threading.Thread):
             except OSError:
                 break
 
+            # Nur der Miniserver und dieser Rechner (seit 1.3.13, M10; Frage
+            # 18 vom 29.09.2026). Bis 1.3.12 konnte jedes Geraet im Heimnetz
+            # ab Werk alle Lautsprecher auf 100 % stellen und Adressen
+            # abspielen lassen (gemessen 30.09.2026, Pruefung MQTT M10).
+            if absender[0] not in self.dienst.udp_absender:
+                self.fremd_melden(absender[0])
+                continue
             text = daten.decode("utf-8", "replace").strip()
             log.info("UDP von %s: %s", absender[0], text)
             for teil in text.split(";"):
@@ -2006,6 +2370,10 @@ class Dienst:
         self.mqtt = MqttAnbindung(self.praefix, self.befehl_ausfuehren)
         self.udp = None
         self.laeuft = True
+        # Unterbrechbares Warten (seit 1.3.13, C11): SIGTERM beendet den Takt
+        # sofort, nicht erst nach bis zu "intervall" Sekunden.
+        self.halt = threading.Event()
+        self.udp_absender = miniserver_adressen()
         self.config_mtime = self._mtime()
         # Umlaufender Taktzaehler. Bleibt er stehen, arbeitet der Dienst
         # nicht mehr - das erkennt Loxone mit einer Aenderungsueberwachung,
@@ -2019,11 +2387,69 @@ class Dienst:
         except OSError:
             return 0
 
-    def _zahl(self, schluessel, vorgabe):
+    def _zahl(self, schluessel, vorgabe, unten=None, oben=None):
+        """Eine Zahl aus der Konfiguration - endlich und im Bereich (seit
+        1.3.13, C6). Sonst gilt die Vorgabe, und das steht im Protokoll.
+        Bis 1.3.12 liess "intervall=inf" den Dienst sofort an einem
+        OverflowError sterben, "1e9" ihn 31 Jahre schlafen, und
+        "udp_port=99999" den UDP-Faden sterben (gemessen 30.09.2026,
+        Code-Befund 6)."""
+        roh = self.cfg.get(schluessel, vorgabe)
         try:
-            return int(float(self.cfg.get(schluessel, vorgabe)))
-        except (TypeError, ValueError):
+            zahl = float(roh)
+            if not math.isfinite(zahl):
+                raise ValueError("nicht endlich")
+            wert = int(zahl)
+        except (TypeError, ValueError, OverflowError):
+            log.warning("Einstellung %s='%s' ist keine endliche Zahl - es gilt %s",
+                        schluessel, str(roh)[:40], vorgabe)
             return int(vorgabe)
+        if (unten is not None and wert < unten) or (oben is not None and wert > oben):
+            log.warning("Einstellung %s=%d liegt ausserhalb %s bis %s - es gilt %s",
+                        schluessel, wert, unten, oben, vorgabe)
+            return int(vorgabe)
+        return wert
+
+    def praefix_pruefen(self):
+        """Taugt das Praefix? Sonst bleibt MQTT aus, und das steht einmal im
+        Protokoll (seit 1.3.13, M9)."""
+        if praefix_taugt(self.praefix):
+            return True
+        log.error("MQTT bleibt aus: das Themenpraefix '%s' taugt nicht (leer, # oder +, "
+                  "Leerraum, Schraegstrich am Rand). Im Reiter MQTT berichtigen.",
+                  str(self.praefix)[:80])
+        return False
+
+    def altes_praefix_abraeumen(self, alt):
+        """Unter einem nicht mehr benutzten Praefix abraeumen und nachlesen.
+        Ein Aufraeumschritt haelt den Dienst nie an. Rueckgabe: code."""
+        try:
+            code, geleert, rest, grund = broker_leeren(alt)
+        except Exception as fehler:  # noqa: BLE001
+            code, geleert, rest, grund = 2, [], [], str(fehler)
+        if code == 0:
+            log.info("MQTT: altes Praefix %s abgeraeumt und nachgelesen "
+                     "(%d Themen)", alt, len(geleert))
+        elif code == 1:
+            log.warning("MQTT: unter dem alten Praefix %s stehen noch %d "
+                        "zurueckbehaltene Themen: %s", alt, len(rest),
+                        ", ".join(rest[:5]))
+        else:
+            log.warning("MQTT: altes Praefix %s nicht abgeraeumt - %s",
+                        alt, grund)
+        return code
+
+    def praefix_merken(self):
+        """Das zuletzt benutzte Praefix festhalten (seit 1.3.13, M8). Liegt ein
+        anderes im Merker, wird es zuerst abgeraeumt; laesst es sich nicht
+        abraeumen (Broker nicht zu fragen), bleibt der alte Merker stehen, und
+        der naechste Start versucht es wieder."""
+        alt = praefix_merker_lesen()
+        if alt and alt != self.praefix and praefix_taugt(alt):
+            if self.altes_praefix_abraeumen(alt) == 2:
+                return
+        if alt != self.praefix:
+            praefix_merker_schreiben(self.praefix)
 
     def verbindungen_nachziehen(self, vorher):
         """Themenpraefix, MQTT-Schalter und UDP beim Neueinlesen nachziehen.
@@ -2043,6 +2469,8 @@ class Dienst:
         praefix = self.cfg.get("mqtt_topic", "chromecast4lox") or "chromecast4lox"
         mqtt_ein = self.cfg.get("mqtt_ein", "1") == "1"
         mqtt_vorher = vorher.get("mqtt_ein", "1") == "1"
+        self.udp_absender = miniserver_adressen()
+        geleert = None
         if praefix != self.praefix or mqtt_ein != mqtt_vorher:
             log.info("MQTT-Einstellungen geaendert (Praefix %s -> %s, MQTT %s -> %s)"
                      " - die Verbindung wird neu aufgebaut", self.praefix, praefix,
@@ -2058,30 +2486,25 @@ class Dienst:
                 # sendet, bliebe damit fuer immer im Broker (Regeln/07,
                 # Letzter Wille (c); in WSL gemessen 25.09.2026, Fall M5).
                 # Ein Aufraeumschritt haelt den Dienst nie an.
-                alt = self.praefix
-                try:
-                    code, geleert, rest, grund = broker_leeren(alt)
-                except Exception as fehler:  # noqa: BLE001
-                    code, geleert, rest, grund = 2, [], [], str(fehler)
-                if code == 0:
-                    log.info("MQTT: altes Praefix %s abgeraeumt und nachgelesen "
-                             "(%d Themen)", alt, len(geleert))
-                elif code == 1:
-                    log.warning("MQTT: unter dem alten Praefix %s stehen noch %d "
-                                "zurueckbehaltene Themen: %s", alt, len(rest),
-                                ", ".join(rest[:5]))
-                else:
-                    log.warning("MQTT: altes Praefix %s nicht abgeraeumt - %s",
-                                alt, grund)
+                if praefix_taugt(self.praefix):
+                    geleert = self.altes_praefix_abraeumen(self.praefix)
             self.praefix = praefix
             self.mqtt.praefix = praefix
             if mqtt_ein:
-                self.mqtt.start()
+                if self.praefix_pruefen():
+                    self.mqtt.start()
+                    # Merker nachziehen (M8): ist das alte Praefix eben
+                    # abgeraeumt, gilt das neue; sonst raeumt praefix_merken()
+                    # ab, was im Merker steht.
+                    if geleert in (0, 1):
+                        praefix_merker_schreiben(praefix)
+                    else:
+                        self.praefix_merken()
             else:
                 log.info("MQTT ist ausgeschaltet")
 
         udp_ein = self.cfg.get("udp", "1") == "1"
-        port = self._zahl("udp_port", 7090)
+        port = self._zahl("udp_port", 7090, 1024, 65535)
         port_bisher = self.udp.port if self.udp else None
         if (udp_ein and port != port_bisher) or (not udp_ein and self.udp):
             log.info("UDP-Einstellungen geaendert (Port %s -> %s) - der Empfang "
@@ -2113,7 +2536,10 @@ class Dienst:
             "zaehler": self.zaehler,
             "geraete": erreichbar,
             "verluste": self.mqtt.verluste,
-            "fassung": version(),
+            # "-" statt leer (seit 1.3.13, M11; Entscheidung 5): ein leerer
+            # Wert geht nie retained hinaus, und der retained Altwert der
+            # vorigen Fassung blieb stehen (gemessen 30.09.2026, MQTT M11).
+            "fassung": version() or "-",
         }
         for schluessel, wert in werte.items():
             self.mqtt.senden("server/" + schluessel, wert,
@@ -2157,8 +2583,10 @@ class Dienst:
                         "im Reiter Einstellungen mindestens einen eintragen.")
         for alt in list(self.geraete):
             if alt not in namen:
-                self.geraete[alt].trennen()
+                weg = self.geraete[alt]
+                weg.trennen()
                 del self.geraete[alt]
+                self.geraet_abraeumen(weg, namen)
         erlaubt = str(self.cfg.get("gruppen", "1")).strip() != "0"
         schnell = str(self.cfg.get("beschleunigung", "0")).strip() == "1"
         for name in namen:
@@ -2169,6 +2597,43 @@ class Dienst:
             self.geraete[name].gruppen_erlaubt = erlaubt
             self.geraete[name].lauscher_erlaubt = schnell
             self.geraete[name].netzsuche = self.netzsuche if schnell else None
+
+    def geraet_abraeumen(self, weg, namen):
+        """Ein entferntes Geraet (seit 1.3.13, M4; Entscheidung 5).
+
+        Einmal "-" retained fuer jeden retained Zustand - Loxone sieht
+        "keine Aussage" statt des letzten Stands -, dann wird unter
+        <praefix>/<geraet>/ abgeraeumt und nachgelesen. Bis 1.3.12 blieben
+        neun retained Zustaende stehen (state IDLE, volume 100 ...), und nach
+        jedem Neustart von Gateway oder Miniserver meldete das entfernte
+        Geraet seinen letzten Stand als gueltig (gemessen 30.09.2026, MQTT M4).
+        Traegt ein verbliebenes Geraet dasselbe Thema, bleibt alles stehen."""
+        if any(thema_saeubern(n) == weg.thema for n in namen):
+            return
+        if not self.mqtt.verbunden or not praefix_taugt(self.praefix):
+            log.warning("'%s' ist entfernt; seine retained Themen unter %s/%s/ "
+                        "bleiben stehen - MQTT ist nicht verbunden.",
+                        weg.name, self.praefix, weg.thema)
+            return
+        gesendet = 0
+        for eintrag in THEMEN.get("geraet", []):
+            if eintrag.get("retain", False):
+                if self.mqtt.senden_und_warten(weg.thema + "/" + eintrag["schluessel"], "-"):
+                    gesendet += 1
+        try:
+            code, geleert, rest, grund = broker_leeren(self.praefix, nur=weg.thema)
+        except Exception as fehler:  # noqa: BLE001
+            code, geleert, rest, grund = 2, [], [], str(fehler)
+        if code == 0:
+            log.info("'%s' entfernt: %d Zustaende als '-' gemeldet, %d Themen unter "
+                     "%s/%s/ abgeraeumt und nachgelesen", weg.name, gesendet,
+                     len(geleert), self.praefix, weg.thema)
+        elif code == 1:
+            log.warning("'%s' entfernt: unter %s/%s/ stehen noch %d Themen: %s",
+                        weg.name, self.praefix, weg.thema, len(rest), ", ".join(rest[:5]))
+        else:
+            log.warning("'%s' entfernt: %d Zustaende als '-' gemeldet, Abraeumen nicht "
+                        "moeglich - %s", weg.name, gesendet, grund)
 
     def geraete_fuer(self, kennung):
         """Welche Geraete meint diese Kennung? Immer eine LISTE.
@@ -2217,21 +2682,23 @@ class Dienst:
         log.info("Konfiguration: %s", CONFIG_FILE)
 
         if self.cfg.get("mqtt_ein", "1") == "1":
-            self.mqtt.start()
+            if self.praefix_pruefen():
+                self.mqtt.start()
+                self.praefix_merken()
         else:
             log.info("MQTT ist ausgeschaltet")
 
         self.geraete_aufbauen()
 
         if self.cfg.get("udp", "1") == "1":
-            self.udp = UdpEmpfaenger(self._zahl("udp_port", 7090), self)
+            self.udp = UdpEmpfaenger(self._zahl("udp_port", 7090, 1024, 65535), self)
             self.udp.start()
 
         if str(self.cfg.get("beschleunigung", "0")).strip() == "1":
             self.netzsuche.start()
 
-        intervall = max(2, self._zahl("intervall", 10))
-        vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60))
+        intervall = self._zahl("intervall", 10, 2, 3600)
+        vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60, 5, 86400))
         letzte_vollmeldung = 0
 
         while self.laeuft:
@@ -2257,6 +2724,12 @@ class Dienst:
                 for eintrag in THEMEN.get("dienst", []):
                     if not eintrag.get("retain", False):
                         self.mqtt.abraeumen("server/" + eintrag["schluessel"])
+                # tts_active beim Verbinden auf den wahren Stand (seit 1.3.13,
+                # C11/M6) - auch fuer ein Geraet, das gerade nicht antwortet.
+                # Bis 1.3.12 blieb "1" aus einer abgebrochenen Ansage retained
+                # stehen, solange der Lautsprecher nicht erreichbar war.
+                for geraet in self.geraete.values():
+                    geraet._senden("tts_active", "1" if geraet.ansage_laeuft else "0", True)
                 log.info("MQTT neu verbunden - alle Zustaende werden erneut gemeldet")
 
             for geraet in list(self.geraete.values()):
@@ -2276,6 +2749,12 @@ class Dienst:
                 geraet.melden(erzwingen=erzwingen)
             if (time.time() - letzte_vollmeldung) >= vollmeldung_alle:
                 letzte_vollmeldung = time.time()
+                # server/online 1 mit jeder Vollmeldung (seit 1.3.13): endet
+                # ein zweiter Dienst, setzt sein Letzter Wille die 0 - der
+                # verbliebene sagte bis 1.3.12 erst beim naechsten eigenen
+                # Verbinden wieder 1 (Pruefung MQTT M7).
+                if self.mqtt.verbunden:
+                    self.mqtt.senden("server/online", "1")
 
             # Das Lebenszeichen geht in JEDEM Durchgang hinaus, auch wenn
             # sich sonst nichts geaendert hat.
@@ -2289,13 +2768,14 @@ class Dienst:
                 self.cfg = konfiguration_lesen()
                 self.verbindungen_nachziehen(vorher)
                 self.geraete_aufbauen()
-                intervall = max(2, self._zahl("intervall", 10))
-                vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60))
+                intervall = self._zahl("intervall", 10, 2, 3600)
+                vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60, 5, 86400))
 
-            time.sleep(intervall)
+            self.halt.wait(intervall)
 
     def stop(self):
         self.laeuft = False
+        self.halt.set()
         # -1 heisst: der Takt laeuft nicht mehr. Ein stehengebliebener
         # Zaehler waere von einem langsamen nicht zu unterscheiden. Seit 1.3.9
         # nicht retained - das erreicht nur, wer gerade verbunden ist; den
@@ -2314,7 +2794,10 @@ class Dienst:
             except Exception:  # noqa: BLE001
                 pass
         for geraet in self.geraete.values():
-            geraet.melden_offline()
+            # tts_active retained auf 0 (seit 1.3.13, C11/M6): eine beim
+            # Anhalten abgebrochene Ansage liess bis 1.3.12 "1" stehen.
+            geraet._senden("tts_active", "0", True)
+            geraet.melden_offline(True)
             geraet.trennen()
         self.netzsuche.stop()
         self.mqtt.stop()
@@ -2327,6 +2810,13 @@ def main():
     # Nachweis.
     if "--themen" in sys.argv[1:]:
         print(json.dumps({
+            # Was der SENDECODE wirklich veroeffentlicht (seit 1.3.13, O17):
+            # _melden() einmal gegen eine Attrappe des Lautsprechers und eine
+            # aufzeichnende MQTT-Huelle. Bis 1.3.12 verglich der Reiter Test
+            # die Liste aus bin/cc_themen.json mit derselben Liste, hier nur
+            # wieder ausgegeben - ein Thema, das der Code nicht mehr sendet,
+            # blieb gruen (Pruefung Oberflaeche 17).
+            "gesendet_geraet": sendecode_geraetethemen(),
             "fassung": THEMEN.get("fassung", 0),
             "geraet": [e["schluessel"] for e in THEMEN.get("geraet", ())],
             "dienst": [e["schluessel"] for e in THEMEN.get("dienst", ())],
@@ -2360,7 +2850,54 @@ def main():
             "Anlage kommt, wurde nichts gestartet.\n")
         sys.exit(1)
 
+    # Das eigene Protokoll (seit 1.3.13, C12) - erst hier, damit "--themen"
+    # und "--mqtt-leeren" nicht in das Dienstprotokoll schreiben.
+    log_datei_einrichten()
+
+    # EIN Dienst (seit 1.3.13, C7; Regeln/03 "Ein Dauerlaeufer nimmt eine
+    # Sperrdatei"). Bis 1.3.12 gab es keine Sperre: zwei Waechterlaeufe in
+    # derselben Sekunde (cron holt nach dem Uhrsprung beim Boot nach) oder
+    # daemon und Waechter zugleich ergaben 10 von 10 Runden zwei Dienste, beim
+    # Boot mit zwei Waechtern 20 von 20 Runden drei (gemessen 30.09.2026,
+    # Code-Befund 7, Installer-Befund 1). Das Handle bleibt bis zum
+    # Prozessende offen (global); faellt es, faellt die Sperre. Python-Dateien
+    # werden seit 3.4 nicht an Kindprozesse vererbt (PEP 446) - espeak-ng
+    # bekommt sie also nicht. Bauart BLE-Scanner NG 1.3.20.
+    global _SPERRE
+    sperrdatei = os.path.join(DATA_DIR, "dienst.lock")
+    try:
+        import fcntl
+        os.makedirs(DATA_DIR, exist_ok=True)
+        _SPERRE = open(sperrdatei, "a")
+        fcntl.flock(_SPERRE.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except ImportError:
+        _SPERRE = None          # kein fcntl (nicht Linux): ohne Sperre weiter
+    except OSError as fehler:
+        if fehler.errno in (errno.EAGAIN, errno.EACCES, errno.EWOULDBLOCK):
+            meldung = ("Chromecast 4 Lox NG laeuft bereits (Sperre %s belegt) - "
+                       "dieser zweite Start endet." % sperrdatei)
+            log.warning("%s", meldung)
+            sys.stderr.write(meldung + "\n")
+            sys.exit(3)
+        log.warning("Sperrdatei %s nicht zu nehmen (%s) - weiter ohne Sperre.",
+                    sperrdatei, fehler)
+
     dienst = Dienst()
+
+    # SIGTERM beendet den Dienst SAUBER (seit 1.3.13, C11/M6): Dienst.stop()
+    # meldet server/online 0, die Geraete als Platzhalter offline und
+    # tts_active 0. Bis 1.3.12 lief der finally-Zweig nur bei
+    # KeyboardInterrupt; cc_dienst('stop'), uninstall und die Hakenskripte
+    # schicken aber SIGTERM - 0 Zeilen "Beendet" im Protokoll, tts_active 1
+    # blieb retained stehen (gemessen 30.09.2026, Code-Befund 11, MQTT M6).
+    def beenden(signum, _rahmen):
+        log.info("Signal %s empfangen - der Dienst endet", signum)
+        dienst.laeuft = False
+        dienst.halt.set()
+
+    signal.signal(signal.SIGTERM, beenden)
+    signal.signal(signal.SIGINT, beenden)
+
     try:
         dienst.start()
     except KeyboardInterrupt:
@@ -2368,6 +2905,65 @@ def main():
     finally:
         dienst.stop()
         log.info("Beendet")
+
+
+_SPERRE = None
+
+
+class _AufzeichnendeHuelle(object):
+    """Nimmt auf, was gesendet wuerde - fuer sendecode_geraetethemen()."""
+
+    def __init__(self):
+        self.themen = []
+
+    def senden(self, unterthema, wert, retain=True):
+        teil = unterthema.split("/", 1)[-1]
+        if teil not in self.themen:
+            self.themen.append(teil)
+        return True
+
+
+class _AttrappeCast(object):
+    """Ein Lautsprecher mit festem Zustand; baut keine Verbindung auf."""
+
+    class _Status(object):
+        volume_level = 0.3
+        volume_muted = False
+        display_name = "Probe"
+
+    class _Medien(object):
+        player_state = "PLAYING"
+        title = "t"
+        artist = "a"
+        album_artist = ""
+        album_name = "b"
+        duration = 10
+        adjusted_current_time = 1
+        content_id = ""
+        content_type = ""
+
+    class _Steuerung(object):
+        status = None
+
+    def __init__(self):
+        self.status = self._Status()
+        self.media_controller = self._Steuerung()
+        self.media_controller.status = self._Medien()
+        self.socket_client = object()
+        self.cast_type = "audio"
+
+
+def sendecode_geraetethemen():
+    """Die Geraetethemen, die _melden(erzwingen=True) und melden_offline()
+    wirklich senden - in der Reihenfolge des ersten Auftretens. Kein Netz,
+    keine Datei: der Lautsprecher und die MQTT-Huelle sind Attrappen."""
+    huelle = _AufzeichnendeHuelle()
+    geraet = Geraet("Probe", huelle)
+    geraet.cast = _AttrappeCast()
+    geraet._melden(erzwingen=True)
+    geraet.cast = None
+    geraet.melden_offline(True)
+    return huelle.themen
 
 
 if __name__ == "__main__":

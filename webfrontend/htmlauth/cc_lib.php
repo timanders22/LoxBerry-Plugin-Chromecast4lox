@@ -180,6 +180,55 @@ function cc_defaults()
  * diesen Unterschied brauchen cc_cfg_vervollstaendigen() und die
  * Pruefzeile im Reiter Test.
  */
+/**
+ * Kodierung der Werte in der Datei (seit 1.3.13, C3) - dieselbe wie
+ * wert_kodieren()/wert_dekodieren() im Dienst.
+ *
+ * Die Datei ist zeilenorientiert. Bis 1.3.12 ersetzte cc_config_write() in
+ * JEDEM Wert den Zeilenumbruch durch ";" - auch in den Favoriten, die
+ * Oberflaeche und Dienst nur am Umbruch trennen: aus drei Favoriten wurde
+ * einer mit kaputter Adresse (gemessen 30.09.2026 unter PHP 7.4/8.5 und im
+ * Dienst, Code-Befund 3). Jetzt: Rueckstrich wird doppelt, ein Umbruch wird
+ * zur Folge Rueckstrich-n. Eine andere Folge hinter einem Rueckstrich bleibt
+ * beim Lesen stehen - eine alte Datei liest sich also unveraendert.
+ */
+function cc_wert_kodieren($v)
+{
+    $v = str_replace(array("\r\n", "\r"), "\n", (string) $v);
+    $v = str_replace(array('\\', "\n"), array('\\\\', '\\n'), $v);
+    // Ein Wert, der mit einem Anfuehrungszeichen beginnt oder endet, bekommt
+    // ein Paar darum: beide Leser nehmen genau EIN umschliessendes Paar ab
+    // (O5: Geraetenamen zeichengenau, auch mit ').
+    $n = strlen($v);
+    if ($n > 0 && (strpos('"\'', $v[0]) !== false || strpos('"\'', $v[$n - 1]) !== false)) {
+        $v = '"' . $v . '"';
+    }
+    return $v;
+}
+
+function cc_wert_dekodieren($v)
+{
+    return preg_replace_callback('/\\\\(.)/s', function ($m) {
+        if ($m[1] === 'n') { return "\n"; }
+        if ($m[1] === '\\') { return '\\'; }
+        return $m[0];
+    }, (string) $v);
+}
+
+/**
+ * Zeilen einer Datei - an CRLF, LF und CR getrennt, sonst an nichts
+ * (seit 1.3.13, C4). "\R" ohne u trennt auch am Byte 0x85 (NEL), und das
+ * steckt in UTF-8 mitten in "Å" (C3 85) oder "х" (D1 85): aus "Åsa Küche"
+ * wurde eine Zeile "\xC3", und das naechste Speichern loeschte den Namen
+ * (gemessen 30.09.2026, Code-Befund 4). "\R" MIT u scheitert an einem
+ * einzigen ungueltigen Byte ganz (preg_split gibt false) - dann laese sich
+ * die Konfiguration gar nicht. Die ausgeschriebene Liste traegt beides.
+ */
+function cc_zeilen($text)
+{
+    return preg_split('/\r\n|\n|\r/', (string) $text);
+}
+
 function cc_config_roh()
 {
     $out = array();
@@ -187,7 +236,7 @@ function cc_config_roh()
     if (!is_file($file)) {
         return $out;
     }
-    foreach (preg_split('/\R/', (string) @file_get_contents($file)) as $line) {
+    foreach (cc_zeilen((string) @file_get_contents($file)) as $line) {
         $t = trim($line);
         if ($t === '' || $t[0] === ';' || $t[0] === '#' || $t[0] === '[') {
             continue;
@@ -203,7 +252,7 @@ function cc_config_roh()
             || ($val[0] === "'" && $val[$len - 1] === "'"))) {
             $val = substr($val, 1, -1);
         }
-        $out[$key] = $val;
+        $out[$key] = cc_wert_dekodieren($val);
     }
     return $out;
 }
@@ -286,7 +335,21 @@ function cc_config_zustand()
     if (filesize($file) === 0) {
         return 'leer';
     }
-    return @file_get_contents($file) === false ? 'unlesbar' : 'ok';
+    $roh = @file_get_contents($file);
+    if ($roh === false) {
+        return 'unlesbar';
+    }
+    // Gekuerzt (seit 1.3.13, C9): jeder Schreiber dieser Linie legt [CONFIG]
+    // an und endet mit einem Zeilenende. Fehlt eines davon, ist die Datei
+    // mitten im Schreiben abgebrochen. Sie zu vervollstaendigen hiesse, die
+    // fehlenden Werte mit der Werkseinstellung zu fuellen - und ohne
+    // aktionstoken wuerfelte cc_aktionstoken() ein neues (in WSL gemessen
+    // 30.09.2026, ulimit -f 1, Code-Befund 9: Lautstaerkegrenze 100, Ruhezeit
+    // aus, Token leer). Dieselbe Frage stellt der Dienst.
+    if (substr($roh, -1) !== "\n" || !preg_match('/^\s*\[CONFIG\]\s*$/m', $roh)) {
+        return 'gekuerzt';
+    }
+    return 'ok';
 }
 
 /**
@@ -314,7 +377,7 @@ function cc_config_write($cfg)
     // geschrieben. cc_config_read() liefert in diesem Fall die reine
     // Werkseinstellung - sie hier zurueckzuschreiben hiesse, die
     // Einstellungen des Anwenders durch Vorgabewerte zu ersetzen.
-    if (cc_config_zustand() === 'unlesbar') {
+    if (in_array(cc_config_zustand(), array('unlesbar', 'gekuerzt'), true)) {
         return false;
     }
     // Und nicht ohne Vorgabeliste: cc_defaults() bestimmt, WELCHE
@@ -337,18 +400,48 @@ function cc_config_write($cfg)
     // Datei geschrieben wurde, sagt ihr Zeitstempel im Dateisystem.
     $txt = "; Chromecast 4 Lox NG\n; Wird von der Plugin-Oberflaeche geschrieben.\n\n[CONFIG]\n";
     foreach (cc_defaults() as $k => $vorgabe) {
-        $v = isset($cfg[$k]) ? $cfg[$k] : $vorgabe;
-        // Mehrzeilige Geraeteliste auf eine Zeile bringen - INI kennt
-        // keine Fortsetzungszeilen.
-        $v = str_replace(array("\r\n", "\n", "\r"), ';', (string) $v);
-        $v = preg_replace('/;{2,}/', ';', $v);
-        $txt .= $k . '=' . trim($v, '; ') . "\n";
+        $v = isset($cfg[$k]) ? (string) $cfg[$k] : (string) $vorgabe;
+        if ($k === 'geraete') {
+            // Die Geraeteliste steht wie bisher mit ";" auf einer Zeile -
+            // jeder Name fuer sich getrimmt, leere fallen weg.
+            $v = implode(';', cc_geraete(array('geraete' => $v)));
+        }
+        // Jeder Wert kodiert (C3), nicht mehr jeder Umbruch zu ";".
+        $txt .= $k . '=' . cc_wert_kodieren($v) . "\n";
     }
-    $ok = @file_put_contents($file, $txt) !== false;
-    if ($ok) {
-        @chmod($file, 0644);
+    return cc_datei_schreiben($file, $txt, 0600);
+}
+
+/**
+ * Eine Datei unteilbar schreiben (seit 1.3.13, C9/C10; Regeln/03
+ * "Atomares Schreiben"): Nebendatei <ziel>.tmp.<pid>, Rechte VOR dem Inhalt,
+ * Laenge gegen strlen(), dann rename(). Nur zwei Zustaende: alte oder neue
+ * Datei.
+ *
+ * Bis 1.3.12 schrieb cc_config_write() mit file_put_contents() direkt auf die
+ * Konfiguration und setzte danach 0644. Bei vollem Datentraeger (ulimit -f 1)
+ * blieb eine auf 1024 Byte gekuerzte Datei mit 10 von 28 Schluesseln stehen,
+ * und die Datei mit dem Aktionstoken war fuer jeden lokalen Benutzer lesbar
+ * (in WSL gemessen 30.09.2026, Code-Befunde 9 und 10, Installer-Befund 5).
+ */
+function cc_datei_schreiben($ziel, $inhalt, $modus)
+{
+    $tmp = $ziel . '.tmp.' . getmypid();
+    $fh = @fopen($tmp, 'c');
+    if ($fh === false) {
+        return false;
     }
-    return $ok;
+    @chmod($tmp, $modus);
+    $ok = @ftruncate($fh, 0);
+    $n = $ok ? @fwrite($fh, $inhalt) : false;
+    $ok = $ok && $n === strlen($inhalt) && @fflush($fh);
+    @fclose($fh);
+    clearstatcache(true, $tmp);
+    if (!$ok || @filesize($tmp) !== strlen($inhalt) || !@rename($tmp, $ziel)) {
+        @unlink($tmp);
+        return false;
+    }
+    return true;
 }
 
 /**
@@ -374,7 +467,7 @@ function cc_aktionstoken()
     // Eine leere Datei ist genau der Zustand, den postinstall.sh aus der
     // Zweitschrift wiederherstellt; wer die Werkseinstellung darueber
     // schreibt, macht die Zweitschrift wertlos.
-    if (in_array(cc_config_zustand(), array('unlesbar', 'leer'), true)) {
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer', 'gekuerzt'), true)) {
         $wert = '';
         return $wert;
     }
@@ -399,11 +492,16 @@ function cc_formtoken()
     return $t === '' ? '' : hash_hmac('sha256', 'formular-v1', $t);
 }
 
-/** Geraeteliste aus der Konfiguration. */
+/**
+ * Geraeteliste aus der Konfiguration. Semikolon und Zeilenumbruch trennen -
+ * ein Komma seit 1.3.13 NICHT mehr (O5): das Feld heisst "einer je Zeile",
+ * und "Bad, oben" wurde bis 1.3.12 still zu zwei Geraeten (gemessen
+ * 30.09.2026, Oberflaechen-Befund 5f). geraeteliste() im Dienst trennt gleich.
+ */
 function cc_geraete($cfg)
 {
-    $roh = cc_cfg($cfg, 'geraete', '');
-    $teile = preg_split('/[;,\n\r]+/', $roh);
+    $roh = (string) cc_cfg($cfg, 'geraete', '');
+    $teile = preg_split('/[;\n\r]+/', $roh);
     $out = array();
     foreach ($teile as $t) {
         $t = trim($t);
@@ -412,6 +510,264 @@ function cc_geraete($cfg)
         }
     }
     return $out;
+}
+
+/**
+ * Taugt ein Themenpraefix fuer die Oberflaeche? (seit 1.3.13, O5)
+ *
+ * Genau die Zeichen, die die Oberflaeche seit jeher speichert (cc_thema()
+ * lieferte nie etwas anderes): Buchstaben, Ziffern, _ und -, 1 bis 64. Bis
+ * 1.3.12 wurde eine abweichende Eingabe still umgeschrieben ("haus/cast" ->
+ * "haus_cast", leer -> "geraet") und als "Gespeichert." gemeldet; jetzt wird
+ * sie abgewiesen. Ein Schraegstrich bleibt draussen: das MQTT-Gateway macht
+ * daraus einen Unterstrich, und die Titel der Eingangsvorlage passten nicht
+ * mehr (Regeln/07).
+ */
+function cc_praefix_taugt($p)
+{
+    return is_string($p) && preg_match('/^[A-Za-z0-9_-]{1,64}\z/', $p) === 1;
+}
+
+/**
+ * Das Aktionstoken aus einer Sicherung (seit 1.3.13, C2; Regeln/05 "Das
+ * Positivmuster fuer ein Token"): Zeichenkette aus [A-Za-z0-9_.-], bis 64.
+ * Leer heisst "keins gesichert" - dann gilt das geltende. "Array" ist die
+ * Spur einer Liste, die ein (string) umgewandelt hat, und wird abgewiesen:
+ * mit ihr waere das Formularmerkmal hash_hmac('sha256','formular-v1','Array')
+ * fuer jeden ausrechenbar (gemessen 30.09.2026, Code-Befund 2).
+ */
+function cc_token_taugt($t)
+{
+    return is_string($t) && strcasecmp($t, 'Array') !== 0
+        && preg_match('/^[A-Za-z0-9_.\-]{1,64}\z/', $t) === 1;
+}
+
+/**
+ * Die Zahlenfelder mit ihren Grenzen - EINE Liste fuer das Formular, die
+ * Sicherung und den Reiter Test (seit 1.3.13, C2/O5). Die Grenzen sind die
+ * des Formulars; udp_port beginnt bei 1024, denn der Dienst laeuft als
+ * loxberry und kann darunter nicht binden.
+ */
+function cc_zahlfelder()
+{
+    return array(
+        'udp_port'            => array(1024, 65535),
+        'intervall'           => array(2, 3600),
+        'aktualisierung'      => array(5, 86400),
+        'lautstaerke_schritt' => array(1, 50),
+        'tts_port'            => array(1, 65535),
+        'tts_lautstaerke'     => array(1, 100),
+        'lautstaerke_max'     => array(0, 100),
+        'ruhe_max'            => array(0, 100),
+    );
+}
+
+/**
+ * Einen Wert pruefen - wie beim Speichern (seit 1.3.13, C2/O2/O5).
+ *
+ * Rueckgabe: array(Wert als Zeichenkette, '') oder array(null, Beanstandung).
+ * $bisher ist die geltende Konfiguration: ein leeres Token und das geltende
+ * Praefix werden an ihr gemessen. Bis 1.3.12 uebernahm cc_sicherung_lesen()
+ * jeden Wert ungeprueft ($neu[$k] = $w): Token als Liste wurde "Array",
+ * intervall "inf", udp_port 99999, mqtt_topic "a/#" (gemessen 30.09.2026
+ * unter PHP 7.4 und 8.5, Code-Befund 2, Oberflaechen-Befund 2, MQTT M9).
+ */
+function cc_wert_pruefen($k, $w, $bisher)
+{
+    $name = cc_e($k);
+    if (is_array($w) || is_object($w) || is_bool($w) || $w === null) {
+        return array(null, sprintf(cc_t('PRUEF.KEIN_TEXT'), $name));
+    }
+    // Das Token ist eine ZEICHENKETTE; eine Zahl in der Sicherung stammt
+    // nicht aus diesem Plugin (Code-Befund 2: 12345 wurde angenommen).
+    if ($k === 'aktionstoken' && !is_string($w)) {
+        return array(null, cc_t('PRUEF.TOKEN'));
+    }
+    if (is_float($w)) {
+        if (!is_finite($w) || floor($w) !== $w) {
+            return array(null, sprintf(cc_t('PRUEF.KEINE_GANZZAHL'), $name));
+        }
+        $w = (string) (int) $w;
+    }
+    $s = (string) $w;
+    if (strlen($s) > 4096) {
+        return array(null, sprintf(cc_t('PRUEF.ZU_LANG'), $name));
+    }
+    $zahlen = cc_zahlfelder();
+    if ($k === 'aktionstoken') {
+        if ($s === '') {
+            return array((string) cc_cfg($bisher, 'aktionstoken', ''), '');
+        }
+        return cc_token_taugt($s) ? array($s, '') : array(null, cc_t('PRUEF.TOKEN'));
+    }
+    if (in_array($k, array('enabled', 'mqtt_ein', 'udp', 'tts_fortsetzen', 'gruppen',
+                           'beschleunigung'), true)) {
+        return ($s === '0' || $s === '1') ? array($s, '')
+            : array(null, sprintf(cc_t('PRUEF.SCHALTER'), $name));
+    }
+    if (isset($zahlen[$k])) {
+        list($u, $o) = $zahlen[$k];
+        if (!preg_match('/^-?[0-9]{1,15}\z/', $s)) {
+            return array(null, sprintf(cc_t('PRUEF.KEINE_GANZZAHL'), $name));
+        }
+        $n = (int) $s;
+        return ($n >= $u && $n <= $o) ? array((string) $n, '')
+            : array(null, sprintf(cc_t('PRUEF.BEREICH'), $name, $u, $o));
+    }
+    if ($k === 'tts_pegel') {
+        if ($s === '') {
+            return array('', '');
+        }
+        return (preg_match('/^[0-9]{1,3}\z/', $s) && (int) $s <= 100) ? array((string) (int) $s, '')
+            : array(null, sprintf(cc_t('PRUEF.BEREICH_LEER'), $name, 0, 100));
+    }
+    if ($k === 'tts_modus') {
+        return array_key_exists($s, cc_tts_modi()) ? array($s, '')
+            : array(null, sprintf(cc_t('PRUEF.MODUS'), $name));
+    }
+    if ($k === 'tts_sprache') {
+        return preg_match('/^[A-Za-z]{2,3}([_-][A-Za-z0-9]{1,8}){0,2}\z/', $s) ? array($s, '')
+            : array(null, cc_t('PRUEF.SPRACHE'));
+    }
+    if ($k === 'ruhe_von' || $k === 'ruhe_bis') {
+        return ($s === '' || preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]\z/', $s)) ? array($s, '')
+            : array(null, cc_t('RUHE.FEHLER'));
+    }
+    if ($k === 'mqtt_topic') {
+        // Das geltende Praefix bleibt zulaessig, auch wenn es aus einer
+        // aelteren Fassung stammt und enger nicht passt.
+        if (cc_praefix_taugt($s) || ($s !== '' && $s === (string) cc_cfg($bisher, 'mqtt_topic', ''))) {
+            return array($s, '');
+        }
+        return array(null, cc_t('PRUEF.PRAEFIX'));
+    }
+    // Freie Texte: kein Steuerzeichen - ausser dem Zeilenumbruch in
+    // Favoriten und Geraeteliste, die je Zeile einen Eintrag tragen.
+    $erlaubt_umbruch = in_array($k, array('favoriten', 'geraete'), true);
+    $muster = $erlaubt_umbruch ? '/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/' : '/[\x00-\x1F\x7F]/';
+    if (preg_match($muster, $s)) {
+        return array(null, sprintf(cc_t('PRUEF.STEUERZEICHEN'), $name));
+    }
+    return array($s, '');
+}
+
+/**
+ * Die Sicherungsdatei (seit 1.3.13, C1/O1): ein lesbarer Kopf aus
+ * _-Schluesseln, dann ALLE Schluessel aus den Vorgaben mit dem Wert der
+ * Datei. Bis 1.3.12 rief der Knopf cc_cfg() ohne Argumente auf und lieferte
+ * einen PHP-Fehler statt einer Datei - seit mindestens 1.3.4 (gemessen
+ * 30.09.2026 unter 7.4 und 8.5, Code- und Oberflaechen-Befund 1).
+ */
+function cc_sicherung_bauen()
+{
+    $aus = array(
+        '_hinweis' => 'Sicherung der Einstellungen von Chromecast 4 Lox NG. Enthaelt das '
+                    . 'Aktionstoken (Merkwort der Oberflaeche) - vertraulich behandeln.',
+        '_plugin'  => 'Chromecast 4 Lox NG',
+        '_stand'   => date('Y-m-d H:i:s'),
+    );
+    $cfg = cc_config_read();
+    foreach (cc_defaults() as $k => $v) {
+        $aus[$k] = isset($cfg[$k]) ? (string) $cfg[$k] : (string) $v;
+    }
+    return $aus;
+}
+
+/**
+ * Die Einmalmeldung (seit 1.3.13, O4; Bauform BLE-Scanner NG 1.3.20,
+ * Regeln/04 "Jeder POST-Handler endet mit einer Umleitung" samt Nachtrag
+ * Raumklima 0.11.8). data/plugins/<ordner>/einmalmeldung.json, 0600, nur beim
+ * GET gelesen, vor der Anzeige geloescht, aelter als 120 s verworfen. Sie
+ * traegt fertige Meldungstexte und Suchergebnisse - keine Zugangsdaten.
+ */
+function cc_einmal_datei()
+{
+    return cc_paths()['datadir'] . '/einmalmeldung.json';
+}
+
+function cc_einmal_schreiben($daten)
+{
+    $d = cc_paths()['datadir'];
+    if (!is_dir($d) && !@mkdir($d, 0775, true)) {
+        return false;
+    }
+    $daten['zeit'] = time();
+    $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                              | JSON_INVALID_UTF8_SUBSTITUTE);
+    return $js !== false && cc_datei_schreiben(cc_einmal_datei(), $js, 0600);
+}
+
+function cc_einmal_lesen()
+{
+    $f = cc_einmal_datei();
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    @unlink($f);
+    if (!is_array($d) || !isset($d['zeit']) || abs(time() - (int) $d['zeit']) > 120) {
+        return null;
+    }
+    $aus = array('fehler' => array());
+    if (isset($d['fehler']) && is_array($d['fehler'])) {
+        foreach ($d['fehler'] as $m) {
+            if (is_string($m)) { $aus['fehler'][] = $m; }
+        }
+    }
+    foreach (array('hinweis', 'test_titel', 'test_text', 'suchfehler', 'tab') as $k) {
+        $aus[$k] = isset($d[$k]) && is_string($d[$k]) ? $d[$k] : '';
+    }
+    $aus['saved'] = !empty($d['saved']);
+    $aus['gesucht'] = !empty($d['gesucht']);
+    $aus['gefunden'] = array();
+    if (isset($d['gefunden']) && is_array($d['gefunden'])) {
+        foreach ($d['gefunden'] as $g) {
+            if (is_array($g) && isset($g['name']) && is_string($g['name'])) {
+                $aus['gefunden'][] = array(
+                    'name'    => $g['name'],
+                    'modell'  => isset($g['modell']) && is_string($g['modell']) ? $g['modell'] : '',
+                    'adresse' => isset($g['adresse']) && is_string($g['adresse']) ? $g['adresse'] : '',
+                    'art'     => isset($g['art']) && is_string($g['art']) ? $g['art'] : '',
+                );
+            }
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Was ist mit dem Dienst nach einer Handlung? (seit 1.3.13, O3/O8/I2)
+ * Gemessen an den Prozessen, nicht am Rueckgabewert von kill oder nohup.
+ * $vorher: Zahl der Prozesse vor der Handlung.
+ */
+function cc_dienst_lage_satz($vorher)
+{
+    $jetzt = cc_dienst_pids();
+    if (count($jetzt) > 1) {
+        return sprintf(cc_t('DIENST.MEHRERE_LAUFEN'), count($jetzt), implode(', ', $jetzt));
+    }
+    if ($jetzt) {
+        return sprintf(cc_t('DIENST.LAEUFT_PID'), $jetzt[0]);
+    }
+    return $vorher > 0 ? cc_t('DIENST.ANGEHALTEN') : cc_t('DIENST.LIEF_NICHT_SATZ');
+}
+
+/**
+ * Den Dienst nach einer Einstellung nachziehen und sagen, was geschah
+ * (seit 1.3.13, O3; Regeln/05 Punkt 7): enabled=1 -> neu starten, sonst
+ * anhalten, was laeuft. Rueckgabe: ein Satz.
+ */
+function cc_dienst_nachziehen($cfg)
+{
+    $vorher = count(cc_dienst_pids());
+    if (cc_cfg($cfg, 'enabled', '1') === '1') {
+        cc_dienst('restart');
+        return cc_dienst_pid() > 0 ? cc_t('TEXT.H_NEUGESTARTET') : cc_t('TEXT.H_LAEUFT_NICHT');
+    }
+    if ($vorher > 0) {
+        cc_dienst('stop');
+    }
+    return cc_t('DIENST.AUS_SCHALTER') . ' ' . cc_dienst_lage_satz($vorher);
 }
 
 /**
@@ -941,8 +1297,7 @@ function cc_dienst($aktion)
     $p = cc_paths();
     // Aus einem Archiv wird nichts gestartet und nichts beendet (Muster 3).
     if ($p['home'] === '') {
-        return 'Diese Seite laeuft nicht aus der Installation (ausgepacktes Archiv '
-            . 'oder Pruefordner) - es wurde kein Dienst gestartet oder beendet.';
+        return cc_t('DIENST.ARCHIV');
     }
     $skript = $p['bindir'] . '/chromecast4lox_ng-server.py';
     $meldungen = array();
@@ -958,9 +1313,12 @@ function cc_dienst($aktion)
             foreach ($pids as $pid) {
                 @exec('kill ' . (int) $pid . ' 2>&1', $meldungen);
             }
-            // Zeit lassen: der Dienst meldet server/online=0 und die Geraete
-            // offline. Hart abgeschossen bliebe im Broker ein retained '1'
-            // stehen, und Loxone glaubte weiter an einen laufenden Dienst.
+            // Zeit lassen: auf SIGTERM meldet der Dienst server/online=0,
+            // die Geraete als Platzhalter offline und tts_active 0 (seit
+            // 1.3.13, C11 - bis 1.3.12 hatte er keinen Behandler dafuer, und
+            // dieser Satz stimmte nicht). Hart abgeschossen bliebe im Broker
+            // ein retained '1' stehen, und Loxone glaubte weiter an einen
+            // laufenden Dienst.
             for ($i = 0; $i < 20; $i++) {
                 usleep(500000);
                 if (!cc_dienst_pids()) {
@@ -973,30 +1331,46 @@ function cc_dienst($aktion)
                     @exec('kill -9 ' . (int) $pid . ' 2>&1', $meldungen);
                 }
                 usleep(500000);
-                $meldungen[] = 'Der Dienst reagierte nicht auf SIGTERM und wurde abgeschossen.';
+                $meldungen[] = cc_t('DIENST.KILL9');
             }
             if (count($pids) > 1) {
-                $meldungen[] = 'Es liefen ' . count($pids) . ' Prozesse dieses Dienstes - alle wurden beendet.';
+                $meldungen[] = sprintf(cc_t('DIENST.MEHRERE'), count($pids));
             }
         } else {
-            $meldungen[] = 'Es lief kein Dienst.';
+            $meldungen[] = cc_t('DIENST.LIEF_NICHT');
         }
         @unlink($datei);
     }
     if (in_array($aktion, array('start', 'restart'), true)) {
         if (!is_file($skript)) {
-            return 'Dienst nicht gefunden: ' . $skript;
+            return sprintf(cc_t('DIENST.NICHT_GEFUNDEN'), $skript);
         }
-        $log = $p['logdir'] . '/' . $p['plugin'] . '.log';
-        @mkdir(dirname($datei), 0775, true);
+        // In die Startdatei, nicht in das Protokoll (seit 1.3.13, C12): dort
+        // schreibt allein der Dienst selbst. Hier landet nur, was vor seinem
+        // Protokoll scheitert.
+        $log = $p['logdir'] . '/' . $p['plugin'] . '_start.log';
+        if (!is_dir(dirname($datei))) {
+            @mkdir(dirname($datei), 0775, true);
+        }
+        if (!is_dir($p['logdir'])) {
+            @mkdir($p['logdir'], 0775, true);
+        }
         @exec('nohup ' . escapeshellarg($skript) . ' >> ' . escapeshellarg($log)
-            . ' 2>&1 & echo $! > ' . escapeshellarg($datei) . '; echo gestartet', $meldungen);
+            . ' 2>&1 & echo $! > ' . escapeshellarg($datei), $meldungen);
+        $pid = 0;
         for ($i = 0; $i < 16; $i++) {
             usleep(500000);
-            if (cc_dienst_pid() > 0) {
+            $pid = cc_dienst_pid();
+            if ($pid > 0) {
                 break;
             }
         }
+        // "gestartet" nur nach Messung (seit 1.3.13, I2). Bis 1.3.12 stand
+        // hier ein festes "echo gestartet" - auch wenn die Schale die
+        // Protokolldatei nicht anlegen durfte und kein Dienst lief (in WSL
+        // gemessen 30.09.2026, Installer-Befund 2).
+        $meldungen[] = $pid > 0 ? sprintf(cc_t('DIENST.GESTARTET'), $pid)
+                                : sprintf(cc_t('DIENST.NICHT_ANGELAUFEN'), $log);
     }
     return implode("\n", $meldungen);
 }
@@ -1012,7 +1386,7 @@ function cc_suche($ohne_gruppen = false)
 {
     $skript = cc_paths()['bindir'] . '/cc_discover.py';
     if (!is_file($skript)) {
-        return array(array(), 'cc_discover.py: ' . $skript);
+        return array(array(), sprintf(cc_t('SUCHE.F_KEIN_SKRIPT'), $skript));
     }
     $roh = array();
     $rc = 0;
@@ -1023,14 +1397,14 @@ function cc_suche($ohne_gruppen = false)
           . ($ohne_gruppen ? ' --ohne-gruppen' : '') . ' 2>&1', $roh, $rc);
     $text = trim(implode("\n", $roh));
     if ($rc === 124 || $rc === 137) {
-        return array(array(), 'Zeitueberschreitung: die Suche wurde nach 30 s abgebrochen '
-            . '(Rueckgabe ' . $rc . ').' . ($text !== '' ? "\n" . $text : ''));
+        return array(array(), sprintf(cc_t('SUCHE.F_ZEIT'), 30, $rc)
+            . ($text !== '' ? "\n" . $text : ''));
     }
     // Den Rueckgabewert auswerten, nicht nur die Ausgabe: eine leere
     // Ausgabe bei einem Abbruch ist kein "nichts gefunden", sondern das
     // Gegenteil.
     if ($rc !== 0) {
-        return array(array(), $text !== '' ? $text : ('Rueckgabewert ' . $rc));
+        return array(array(), $text !== '' ? $text : sprintf(cc_t('SUCHE.F_RC'), $rc));
     }
     $d = json_decode($text, true);
     if (!is_array($d)) {
@@ -1043,6 +1417,13 @@ function cc_suche($ohne_gruppen = false)
 function cc_log_file()
 {
     $p = cc_paths();
+    // Das Protokoll des Dienstes zuerst (seit 1.3.13, C12): daneben liegt die
+    // Startdatei <plugin>_start.log, und die juengere war nicht immer die
+    // richtige. Fehlt das Protokoll, zeigt die Seite die juengste Datei.
+    $haupt = $p['logdir'] . '/' . $p['plugin'] . '.log';
+    if (is_file($haupt)) {
+        return $haupt;
+    }
     $c = glob($p['logdir'] . '/*.log');
     if (!$c) {
         return '';
@@ -1057,7 +1438,7 @@ function cc_log_tail($file, $max = 300)
     if ($file === '' || !is_file($file)) {
         return array();
     }
-    $lines = preg_split('/\R/', (string) @file_get_contents($file));
+    $lines = cc_zeilen((string) @file_get_contents($file));
     $lines = array_values(array_filter($lines, function ($l) { return trim($l) !== ''; }));
     return array_reverse(array_slice($lines, -$max));
 }
@@ -1111,7 +1492,9 @@ function cc_xml_virtual_in_http($kopf, $cmds)
         // Ohne Unit steht am Eingang eine nackte Zahl, und die Einheit findet
         // nur, wer den Kommentar aufklappt.
         $o .= 'Unit="' . cc_x(isset($c['unit']) ? $c['unit'] : '') . '" ';
-        $o .= 'HintText=""';
+        // Der Hinweistext traegt die ausfuehrliche Erklaerung (seit 1.3.13,
+        // O16); bis 1.3.12 war er in allen 23 Befehlen leer.
+        $o .= 'HintText="' . cc_x(isset($c['hint']) ? $c['hint'] : '') . '"';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualInHttp>' . $crlf;
@@ -1158,7 +1541,7 @@ function cc_xml_virtual_out($kopf, $cmds)
             $o .= 'SourceValHigh="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
             $o .= 'DestValHigh="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
         }
-        $o .= 'HintText=""';
+        $o .= 'HintText="' . cc_x(isset($c['hint']) ? $c['hint'] : '') . '"';
         $o .= '/>' . $crlf;
     }
     $o .= '</VirtualOut>' . $crlf;
@@ -1172,6 +1555,94 @@ function cc_xml_virtual_out($kopf, $cmds)
 function cc_sammelziel()
 {
     return 'alle';
+}
+
+/**
+ * Kommentar eines Vorlagenbefehls - hoechstens 40 Zeichen (seit 1.3.13, O16).
+ * Loxone Config macht den Kommentar zum ANZEIGENAMEN der Kachel (Regeln/07).
+ * Bis 1.3.12 stand "<Geraet> - <Beschriftung>" ungekuerzt da; mit
+ * "Küche Lautsprecher Obergeschoss" waren 5 von 23 Eingaengen und 11 von 45
+ * Ausgaengen laenger als 40 Zeichen (gemessen 30.09.2026, Oberflaechen-Befund
+ * 16). Gekuerzt wird der Geraetename, die Beschriftung bleibt ganz.
+ */
+function cc_kommentar($geraet, $kurz)
+{
+    $grenze = 40;
+    $voll = $geraet . ' - ' . $kurz;
+    if (cc_zeichenzahl($voll) <= $grenze) {
+        return $voll;
+    }
+    $platz = $grenze - cc_zeichenzahl(' - ' . $kurz) - 1;
+    if ($platz < 1) {
+        return cc_zeichen_kuerzen($kurz, $grenze);
+    }
+    return cc_zeichen_kuerzen($geraet, $platz) . "\u{2026}" . ' - ' . $kurz;
+}
+
+/** Zeichen, nicht Byte - ohne mbstring (auf dem LoxBerry nicht zugesichert). */
+function cc_zeichenzahl($s)
+{
+    $n = @preg_match_all('/./us', (string) $s);
+    return $n === false ? strlen((string) $s) : $n;
+}
+
+function cc_zeichen_kuerzen($s, $n)
+{
+    if (@preg_match('/^.{0,' . (int) $n . '}/us', (string) $s, $m) === 1) {
+        return $m[0];
+    }
+    return substr((string) $s, 0, (int) $n);
+}
+
+/** Hinweistext eines Themas - die ausfuehrliche Erklaerung ohne Auszeichnung. */
+function cc_hinweis_text($schluessel)
+{
+    return trim(html_entity_decode(strip_tags(cc_thema_lang($schluessel)), ENT_QUOTES, 'UTF-8'));
+}
+
+/**
+ * Welche Befehle kommen in die Ausgangsvorlagen? (seit 1.3.13, M3)
+ * Ein Textbefehl (tts) nicht: ein virtueller Ausgang schickt dort einen
+ * festen Wert, und aus "tts 1" wurde eine Ansage "eins" (gemessen 30.09.2026,
+ * Pruefung MQTT M3). Den Text bekommt man ueber einen Ausgang mit eigenem
+ * Befehlstext oder ueber MQTT.
+ */
+function cc_vorlagen_befehle()
+{
+    $aus = array();
+    foreach (cc_themen()['befehle'] as $e) {
+        if ($e['art'] !== 'text') {
+            $aus[] = $e;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Wie viele Ein- und Ausgaenge legt die Vorlage je Geraet an? Aus dem Code
+ * gerechnet, nicht getippt (seit 1.3.13, O14; bis 1.3.12 stand im Reiter
+ * "16 Eingaenge", die Vorlage legte 9 an). Rueckgabe:
+ * array(eingaenge je Geraet, ausgaenge je Geraet, ausgelassene Textthemen,
+ *       Dienst-Eingaenge).
+ */
+function cc_vorlage_zahlen()
+{
+    $ein = 0;
+    $text = array();
+    foreach (cc_themen()['geraet'] as $e) {
+        if ($e['art'] === 'text') {
+            $text[] = $e['schluessel'];
+        } else {
+            $ein++;
+        }
+    }
+    $dienst = 0;
+    foreach (cc_themen()['dienst'] as $e) {
+        if ($e['art'] !== 'text') {
+            $dienst++;
+        }
+    }
+    return array($ein, count(cc_vorlagen_befehle()), $text, $dienst);
 }
 
 /**
@@ -1195,11 +1666,12 @@ function cc_vorlage($art, $cfg, $geraete)
             }
             $cmds[] = array(
                 'title'   => $praefix . '_server_' . $e['schluessel'],
-                'comment' => cc_thema_kurz('server_' . $e['schluessel']),
+                'comment' => cc_zeichen_kuerzen(cc_thema_kurz('server_' . $e['schluessel']), 40),
                 'check'   => ' ',
                 'analog'  => $e['art'] === 'analog',
                 'min'     => $e['min'], 'max' => $e['max'],
-                'unit'    => $e['einheit'] === '' ? '' : '<v.1> ' . $e['einheit'],
+                'unit'    => cc_vorlage_einheit($e),
+                'hint'    => cc_hinweis_text('server_' . $e['schluessel']),
             );
         }
         foreach ($geraete as $g) {
@@ -1214,11 +1686,12 @@ function cc_vorlage($art, $cfg, $geraete)
                 }
                 $cmds[] = array(
                     'title'   => $praefix . '_' . $t . '_' . $e['schluessel'],
-                    'comment' => $g . ' - ' . cc_thema_kurz($e['schluessel']),
+                    'comment' => cc_kommentar($g, cc_thema_kurz($e['schluessel'])),
                     'check'   => ' ',
                     'analog'  => $e['art'] === 'analog',
                     'min'     => $e['min'], 'max' => $e['max'],
-                    'unit'    => $e['einheit'] === '' ? '' : '<v.1> ' . $e['einheit'],
+                    'unit'    => cc_vorlage_einheit($e),
+                    'hint'    => cc_hinweis_text($e['schluessel']),
                 );
             }
         }
@@ -1239,16 +1712,17 @@ function cc_vorlage($art, $cfg, $geraete)
         // spielt synchron.
         foreach (array_merge(array(cc_sammelziel()), $geraete) as $g) {
             $t = cc_thema($g);
-            foreach (cc_themen()['befehle'] as $e) {
+            foreach (cc_vorlagen_befehle() as $e) {
                 $b = $e['schluessel'];
                 $analog = cc_befehl_analog($b);
                 $cmds[] = array(
                     'title'   => $praefix . '_' . $t . '_' . $b,
-                    'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),
+                    'comment' => cc_kommentar($g, cc_thema_kurz('cmd_' . $b)),
                     'on'      => $praefix . '/' . $t . '/cmd/' . $b . ' '
-                                 . ($analog ? '<v.0>' : '1'),
+                                 . ($analog ? '<v.0>' : cc_vorlage_festwert($b, $cfg)),
                     'analog'  => $analog,
                     'min'     => $e['min'], 'max' => $e['max'],
+                    'hint'    => cc_hinweis_text('cmd_' . $b),
                 );
             }
         }
@@ -1264,16 +1738,18 @@ function cc_vorlage($art, $cfg, $geraete)
         $cmds = array();
         foreach (array_merge(array(cc_sammelziel()), $geraete) as $g) {
             $t = cc_thema($g);
-            foreach (cc_themen()['befehle'] as $e) {
+            foreach (cc_vorlagen_befehle() as $e) {
                 $b = $e['schluessel'];
                 $analog = cc_befehl_analog($b);
+                $fest = cc_vorlage_festwert($b, $cfg);
                 $cmds[] = array(
                     'title'   => $t . '_' . $b,
-                    'comment' => $g . ' - ' . cc_thema_kurz('cmd_' . $b),
+                    'comment' => cc_kommentar($g, cc_thema_kurz('cmd_' . $b)),
                     'on'      => $t . '/' . strtoupper($b)
-                                 . ($analog ? ' <v.0>' : '') . ';',
+                                 . ($analog ? ' <v.0>' : ($fest !== '1' ? ' ' . $fest : '')) . ';',
                     'analog'  => $analog,
                     'min'     => $e['min'], 'max' => $e['max'],
+                    'hint'    => cc_hinweis_text('cmd_' . $b),
                 );
             }
         }
@@ -1285,6 +1761,37 @@ function cc_vorlage($art, $cfg, $geraete)
     }
 
     return array('', '');
+}
+
+/**
+ * Einheit eines Vorlageneingangs (seit 1.3.13, O16): mit Einheit
+ * "<v.1> %", ohne Einheit bei einem Zahlenwert "<v>" - bis 1.3.12 standen
+ * favorit, server_zaehler, server_geraete und server_verluste ohne Unit da.
+ */
+function cc_vorlage_einheit($e)
+{
+    if ($e['einheit'] !== '') {
+        return '<v.1> ' . $e['einheit'];
+    }
+    return $e['art'] === 'analog' ? '<v>' : '';
+}
+
+/**
+ * Der feste Wert eines digitalen Ausgangsbefehls (seit 1.3.13, M3).
+ * volume_up/volume_down tragen die eingestellte Schrittweite - so, wie es die
+ * Hilfe sagt. Bis 1.3.12 schickte die Vorlage "1", und der Dienst las das als
+ * Schritt von 1 %: die Einstellung lautstaerke_schritt wirkte ueber MQTT nie
+ * (gemessen 30.09.2026, Pruefung MQTT M3). Wer die Schrittweite aendert, legt
+ * die Ausgangsvorlage neu an; der Reiter sagt es.
+ */
+function cc_vorlage_festwert($befehl, $cfg)
+{
+    if ($befehl === 'volume_up' || $befehl === 'volume_down') {
+        list($w, $f) = cc_wert_pruefen('lautstaerke_schritt',
+            cc_cfg($cfg, 'lautstaerke_schritt', '5'), $cfg);
+        return $f === '' ? $w : '5';
+    }
+    return '1';
 }
 
 /* ==================================================================
@@ -1376,14 +1883,27 @@ function cc_sicherung_lesen($roh)
     }
     $neu = cc_defaults();
     $bekannt = array_keys($neu);
+    $bisher = cc_config_read();
     $anzahl = 0;
     foreach ($daten as $k => $w) {
+        // Der lesbare Kopf (_hinweis, _stand, ...) wird UEBERGANGEN, nicht
+        // beanstandet (seit 1.3.13, O3; Regeln/05). Bis 1.3.12 wurde eine
+        // Sicherung mit Kopf als "Unbekannte Einstellung" abgewiesen.
+        if (is_string($k) && $k !== '' && $k[0] === '_') {
+            continue;
+        }
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(cc_t('TEXT.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
             continue;
         }
-        $neu[$k] = $w;
+        // Jeder WERT wird geprueft wie beim Speichern (seit 1.3.13, C2).
+        list($gut, $fehler) = cc_wert_pruefen($k, $w, $bisher);
+        if ($fehler !== '') {
+            $mangel[] = $fehler;
+            continue;
+        }
+        $neu[$k] = $gut;
         $anzahl++;
     }
     if ($anzahl === 0) {
@@ -1408,7 +1928,7 @@ function cc_sicherung_lesen($roh)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     $fehlend = array();
     foreach (array_keys(cc_defaults()) as $fk) {
-        if (!array_key_exists($fk, $daten)) {
+        if (!is_array($daten) || !array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
     }

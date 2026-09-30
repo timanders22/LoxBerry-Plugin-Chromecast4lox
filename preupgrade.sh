@@ -264,40 +264,61 @@ rm -f "$CC_BASE/data/plugins/$CC_PFOLDER/dienst.pid" 2>/dev/null
 # "rm -rf .../<x>/" trifft den Nachbarn "<x>.upgrade_sicherung" nicht.
 SICHER="$LBHOMEDIR/data/plugins/$PDIR.upgrade_sicherung"
 
-# Die neue Sicherung entsteht NEBEN der alten und ersetzt sie erst, wenn sie
-# vollstaendig steht. Bis 1.3.10 stand hier "rm -rf $SICHER" VOR dem
-# Kopieren: brach ein Update nach purge_installation ab und wurde erneut
-# angestossen, gab es nichts mehr zu sichern, und die einzige Abschrift war
-# schon geloescht (Bestand-2026-09-18/klasse-D: 11 von 12 Dateien; in WSL
-# nachgemessen 18.09.2026, Pruefung-Chromecast4lox-1.3.11, Fall d1: 14 von
-# 14, Fall d2: Abbruch beim Schreiben). Reihenfolge wie GardenaSmartSystem
-# 1.2.10: in $SICHER.neu bauen -> jede Datei byteweise pruefen -> die alte
-# nach $SICHER.alt -> die neue an ihren Platz -> die alte wegwerfen.
-# "mv -T" schiebt nie IN ein vorhandenes Verzeichnis hinein.
+# Seit 1.3.13 (I6, Entscheidung 1 vom 29.09.2026): eine Sicherung aus einem
+# FRUEHEREN Vorgang wird zuerst beiseitegelegt (<name>.alt), bevor die neue
+# entsteht - bei einem Upgrade wird nie ein Bestand aus einem frueheren
+# Vorgang eingespielt. Bis 1.3.12 blieb sie "unangetastet" stehen, wenn keine
+# neue entstehen konnte, und postupgrade.sh spielte sie ohne Herkunftspruefung
+# zurueck (Installer-Befund 6). Nach einem abgebrochenen Update haelt die
+# Zweitschrift neben dem Konfigordner die Einstellungen; postinstall.sh holt
+# sie von dort.
+#
+# Die neue Sicherung entsteht in $SICHER.neu, jede Datei wird byteweise
+# geprueft, dann kommt sie an ihren Platz ("mv -T" schiebt nie IN ein
+# vorhandenes Verzeichnis). Sie traegt den Zeitpunkt aus der Marke
+# (Datei "vorgang"); postupgrade.sh spielt nur zurueck, was aus DIESEM
+# Vorgang stammt.
+#
+# Gesichert wird nur eine Konfiguration MIT Inhalt (seit 1.3.13, I3;
+# cc_cfg_inhalt oben). Bis 1.3.12 kam auch eine abgeschnittene, leere oder
+# fremde Datei in die Sicherung ("<OK> ... gesichert"), und postupgrade.sh
+# kopierte sie ueber die eben aus der Zweitschrift geheilte Konfiguration:
+# Aktionstoken und Geraete waren weg (in WSL gemessen 30.09.2026,
+# Installer-Befund 3). Die Sicherungsarchive unter webfrontend/html/.../files
+# werden nicht mehr gesichert: der Ordner wird im Code nicht benutzt.
 CC_NEU="$SICHER.neu"
 CC_QCFG="$LBHOMEDIR/config/plugins/$PDIR"
-CC_QFILES="$LBHOMEDIR/webfrontend/html/plugins/$PDIR/files"
+
+if [ -e "$SICHER" ] || [ -L "$SICHER" ]; then
+    rm -rf "${SICHER:?}.alt" 2>/dev/null
+    if mv -T "$SICHER" "$SICHER.alt" 2>/dev/null; then
+        echo "<INFO> Eine Sicherung aus einem frueheren Vorgang wurde beiseitegelegt und wird nicht eingespielt: $SICHER.alt"
+    else
+        rm -rf "${SICHER:?}" 2>/dev/null
+        echo "<WARNING> Eine Sicherung aus einem frueheren Vorgang liess sich nicht beiseitelegen und wurde entfernt: $SICHER"
+    fi
+fi
 
 echo "<INFO> Creating backup folder for upgrading $SICHER"
 rm -rf "$CC_NEU" 2>/dev/null
-mkdir -p "$CC_NEU/config" "$CC_NEU/files" 2>/dev/null
+mkdir -p "$CC_NEU/config" 2>/dev/null
 chmod 0700 "$CC_NEU" 2>/dev/null
 CC_OK=1
 CC_GRUND=""
 
 echo "<INFO> Backing up existing config files"
-# Ohne Konfigordner gibt es nichts, was eine vorhandene Sicherung ersetzen
-# duerfte: so sieht der zweite Versuch nach einem abgebrochenen Update aus
-# (purge_installation hat den Ordner schon entfernt, Fall d1).
-if [ -d "$CC_QCFG" ]; then
-    cp -a "$CC_QCFG/." "$CC_NEU/config/" 2>/dev/null \
-        || { CC_OK=0; CC_GRUND="$CC_GRUND Konfiguration: cp Rueckgabewert $?;"; }
-else
+if [ ! -d "$CC_QCFG" ]; then
     CC_OK=0
     CC_GRUND="$CC_GRUND keine Konfiguration unter $CC_QCFG;"
+elif ! cc_cfg_inhalt "$CC_QCFG/chromecast-4lox-ng.cfg"; then
+    CC_OK=0
+    CC_GRUND="$CC_GRUND die Einstellungen tragen kein vollstaendiges Aktionstoken (leer, abgeschnitten oder fremd) - sie werden nicht gesichert, die Zweitschrift bleibt massgeblich;"
+else
+    cp -a "$CC_QCFG/." "$CC_NEU/config/" 2>/dev/null \
+        || { CC_OK=0; CC_GRUND="$CC_GRUND Konfiguration: cp Rueckgabewert $?;"; }
+    CC_ABW=$(cc_abweichend "$CC_QCFG" "$CC_NEU/config")
+    [ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
 fi
-CC_ABW=$(cc_abweichend "$CC_QCFG" "$CC_NEU/config")
-[ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
 
 # Das Protokoll wird nicht gesichert: purge_installation loescht
 # log/plugins/<ordner>/ beim Upgrade nicht, nur beim Deinstallieren
@@ -305,45 +326,20 @@ CC_ABW=$(cc_abweichend "$CC_QCFG" "$CC_NEU/config")
 # ueberschrieb damit jede Zeile, die waehrend der Installation dazukam (in
 # WSL nachgestellt am 17.09.2026).
 
-echo "<INFO> Backing up existing backup archives"
-if [ -d "$CC_QFILES" ]; then
-    cp -a "$CC_QFILES/." "$CC_NEU/files/" 2>/dev/null \
-        || { CC_OK=0; CC_GRUND="$CC_GRUND Sicherungsarchive: cp Rueckgabewert $?;"; }
-fi
-CC_ABW=$(cc_abweichend "$CC_QFILES" "$CC_NEU/files")
-[ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
-
-# Eine Sicherung MIT Aktionstoken wird nie durch eine OHNE ersetzt. Nach
-# purge_installation kopiert der Installer die mitgelieferte Vorgabe nach
-# config/plugins/<ordner>/; bricht er danach ab, ist ihre Kopie vollstaendig
-# und heil - und traegt nichts mehr vom Anwender (Fall d3).
-if [ "$CC_OK" = 1 ] && ! cc_cfg_inhalt "$CC_NEU/config/chromecast-4lox-ng.cfg" \
-   && cc_cfg_inhalt "$SICHER/config/chromecast-4lox-ng.cfg"; then
-    CC_OK=0
-    CC_GRUND="$CC_GRUND die Einstellungen tragen kein vollstaendiges Aktionstoken, die vorhandene Sicherung schon;"
-fi
-
 if [ "$CC_OK" = 1 ]; then
-    rm -rf "$SICHER.alt" 2>/dev/null
-    if [ -e "$SICHER" ] && ! mv -T "$SICHER" "$SICHER.alt" 2>/dev/null; then
-        rm -rf "$CC_NEU" 2>/dev/null
-        echo "<WARNING> Die bisherige Sicherung liess sich nicht beiseitelegen; sie bleibt"
-        echo "<WARNING> unangetastet: $SICHER"
-    elif mv -T "$CC_NEU" "$SICHER" 2>/dev/null; then
-        rm -rf "$SICHER.alt" 2>/dev/null
-        echo "<OK> Einstellungen und Sicherungsarchive gesichert: $SICHER"
-    else
-        [ -e "$SICHER.alt" ] && mv -T "$SICHER.alt" "$SICHER" 2>/dev/null
-        rm -rf "$CC_NEU" 2>/dev/null
-        echo "<WARNING> Die neue Sicherung liess sich nicht an ihren Platz bringen."
-        echo "<WARNING> Platz und Rechte in $LBHOMEDIR/data/plugins pruefen."
+    if ! cat "$CC_MARKE" > "$CC_NEU/vorgang" 2>/dev/null || [ ! -s "$CC_NEU/vorgang" ]; then
+        CC_OK=0
+        CC_GRUND="$CC_GRUND der Zeitpunkt des Vorgangs liess sich nicht vermerken;"
     fi
+fi
+
+if [ "$CC_OK" = 1 ] && mv -T "$CC_NEU" "$SICHER" 2>/dev/null; then
+    rm -rf "${SICHER:?}.alt" 2>/dev/null
+    echo "<OK> Einstellungen gesichert: $SICHER"
 else
     rm -rf "$CC_NEU" 2>/dev/null
-    echo "<WARNING> Die Einstellungen wurden NICHT neu gesichert:$CC_GRUND"
-    if [ -d "$SICHER" ]; then
-        echo "<WARNING> Die bisherige Sicherung bleibt unangetastet: $SICHER"
-    fi
+    [ "$CC_OK" = 1 ] && CC_GRUND="$CC_GRUND die neue Sicherung liess sich nicht an ihren Platz bringen (Platz und Rechte in $LBHOMEDIR/data/plugins pruefen);"
+    echo "<WARNING> Die Einstellungen wurden NICHT gesichert:$CC_GRUND"
 fi
 
 # Exit with Status 0

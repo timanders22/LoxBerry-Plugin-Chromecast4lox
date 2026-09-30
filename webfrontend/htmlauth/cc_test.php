@@ -23,20 +23,25 @@ function cc_test_ausfuehren($was, $geraet = '')
 
     switch ($was) {
 
+        // Alle Texte aus den Sprachdateien (seit 1.3.13, O9): bis 1.3.12 war
+        // jede Antwort eines Testknopfs deutsch, auch auf der englischen
+        // Seite (gemessen 30.09.2026, Oberflaechen-Befund 9).
         case 'status':
             $pid = cc_dienst_pid();
-            $t = "Dienst:             " . ($pid ? "laeuft (PID $pid)" : 'laeuft nicht') . "\n";
-            $t .= "Konfigurierte Geraete: " . (count($geraete) ? implode(', ', $geraete) : 'keine') . "\n";
-            $t .= "MQTT:               " . (cc_cfg($cfg, 'mqtt_ein', '1') === '1' ? 'ein' : 'aus') . "\n";
-            $t .= "UDP-Befehle:        " . (cc_cfg($cfg, 'udp', '1') === '1'
-                ? 'ein, Port ' . cc_cfg($cfg, 'udp_port', '7090') : 'aus') . "\n\n";
+            $t = cc_t('AKTION.Z_DIENST') . ' ' . ($pid ? sprintf(cc_t('AKTION.LAEUFT_PID'), $pid)
+                                                         : cc_t('AKTION.LAEUFT_NICHT')) . "\n";
+            $t .= cc_t('AKTION.Z_GERAETE') . ' ' . (count($geraete) ? implode(', ', $geraete)
+                                                                     : cc_t('AKTION.KEINE')) . "\n";
+            $t .= cc_t('AKTION.Z_MQTT') . ' ' . (cc_cfg($cfg, 'mqtt_ein', '1') === '1'
+                ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) . "\n";
+            $t .= cc_t('AKTION.Z_UDP') . ' ' . (cc_cfg($cfg, 'udp', '1') === '1'
+                ? sprintf(cc_t('AKTION.UDP_EIN'), cc_cfg($cfg, 'udp_port', '7090'))
+                : cc_t('TEXT.S_AUS')) . "\n\n";
             if (!$pid) {
-                $t .= "Der Dienst laeuft nicht. Ursache steht meistens im Protokoll\n"
-                    . "(Reiter Logdateien). Mit \"Dienst neu starten\" erneut versuchen.\n\n";
+                $t .= cc_t('AKTION.S_LAEUFT_NICHT') . "\n\n";
             }
             if (!$geraete) {
-                $t .= "Ohne Geraet in den Einstellungen tut der Dienst nichts.\n"
-                    . "Mit \"Chromecasts im Netz suchen\" die genauen Namen ermitteln.\n\n";
+                $t .= cc_t('AKTION.S_OHNE_GERAET') . "\n\n";
             }
             // Zuerst die EIGENEN Prozesse, argumentweise erkannt
             // (cc_dienst_pids() in cc_lib.php). Bis 1.3.10 stand hier nur die
@@ -51,24 +56,22 @@ function cc_test_ausfuehren($was, $geraet = '')
             // genauen Namen der ausfuehrbaren Datei. Startet LoxBerry den
             // Dienst unter python3.11, bleibt die Ausgabe leer.
             $cc_eigene = cc_dienst_pids();
-            $t .= "Eigene Prozesse:    "
-                . ($cc_eigene ? implode(', ', $cc_eigene) : 'keine') . "\n";
+            $t .= cc_t('AKTION.Z_EIGENE') . ' '
+                . ($cc_eigene ? implode(', ', $cc_eigene) : cc_t('AKTION.KEINE')) . "\n";
             foreach ($cc_eigene as $cc_einzeln) {
                 $t .= cc_sh('ps -o pid,etime,rss,args -p '
                     . (int) $cc_einzeln . ' 2>/dev/null') . "\n";
             }
-            $t .= "\nAlle Prozesse im System, deren Befehlszeile den Dienstnamen\n"
-                . "enthaelt - darunter koennen fremde sein:\n";
+            $t .= "\n" . cc_t('AKTION.S_ALLE_PROZESSE') . "\n";
             $t .= cc_sh('pgrep -a -f "[c]hromecast4lox_ng-server" 2>/dev/null');
-            return array('Zustand des Dienstes', trim($t) !== '' ? $t : 'Keine Angaben.');
+            return array(cc_t('TEXT.T171'), trim($t) !== '' ? $t : cc_t('AKTION.KEINE_ANGABEN'));
 
         case 'suchen':
             $skript = $p['bindir'] . '/cc_discover.py';
             if (!is_file($skript)) {
-                return array('Chromecasts im Netz', 'cc_discover.py nicht gefunden: ' . $skript);
+                return array(cc_t('AKTION.T_NETZ'), sprintf(cc_t('SUCHE.F_KEIN_SKRIPT'), $skript));
             }
-            $t = "Es wird 10 Sekunden im Netz gesucht. Chromecasts melden sich per\n"
-               . "mDNS; Geraete im Ruhezustand brauchen manchmal einen Moment.\n\n";
+            $t = cc_t('AKTION.S_SUCHE_DAUER') . "\n\n";
             $args = cc_cfg($cfg, 'gruppen', '1') === '1' ? '' : ' --ohne-gruppen';
             // "-k 5" wie in cc_suche(), und die Zeitueberschreitung wird
             // gesagt statt verschwiegen (Muster 13 der Nachlese).
@@ -78,18 +81,16 @@ function cc_test_ausfuehren($was, $geraet = '')
                   $cc_aus, $cc_rc);
             $t .= implode("\n", $cc_aus);
             if ($cc_rc === 124 || $cc_rc === 137) {
-                $t .= "\n\nZeitueberschreitung: die Suche wurde nach 25 s abgebrochen"
-                    . " (Rueckgabe $cc_rc).";
+                $t .= "\n\n" . sprintf(cc_t('SUCHE.F_ZEIT'), 25, $cc_rc);
             }
-            return array('Chromecasts im Netz', $t);
+            return array(cc_t('AKTION.T_NETZ'), $t);
 
         case 'themen':
             $praefix = cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
             if (!$geraete) {
-                return array('MQTT-Themen', 'Es ist kein Geraet konfiguriert.');
+                return array(cc_t('AKTION.T_THEMEN'), cc_t('AKTION.KEIN_GERAET'));
             }
-            $t = "Themen je Geraet - welche retained ankommen, steht in der\n"
-               . "Spalte retain im Reiter MQTT (bin/cc_themen.json):\n\n";
+            $t = cc_t('AKTION.S_THEMEN_KOPF') . "\n\n";
             $t .= "  $praefix/server/online\n";
             foreach ($geraete as $g) {
                 $th = cc_thema($g);
@@ -99,7 +100,7 @@ function cc_test_ausfuehren($was, $geraet = '')
                         strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
                 }
             }
-            $t .= "\n\nBefehle - hier veroeffentlicht der Miniserver:\n\n";
+            $t .= "\n\n" . cc_t('AKTION.S_BEFEHLE_KOPF') . "\n\n";
             foreach ($geraete as $g) {
                 $th = cc_thema($g);
                 $t .= "\n  " . $g . "\n";
@@ -108,60 +109,56 @@ function cc_test_ausfuehren($was, $geraet = '')
                         strip_tags(html_entity_decode($erklaerung, ENT_QUOTES, 'UTF-8')));
                 }
             }
-            return array('MQTT-Themen', $t);
+            return array(cc_t('AKTION.T_THEMEN'), $t);
 
         case 'konfig':
-            $t = "Datei: " . $p['config'] . "\n\n";
+            $t = cc_t('TEXT.T183') . ' ' . $p['config'] . "\n\n";
             if (is_file($p['config'])) {
                 $t .= (string) @file_get_contents($p['config']);
             } else {
-                $t .= "Datei nicht vorhanden - es gelten die Vorgabewerte:\n\n";
+                $t .= cc_t('AKTION.S_KONFIG_FEHLT') . "\n\n";
                 foreach (cc_defaults() as $k => $v) {
                     $t .= $k . '=' . $v . "\n";
                 }
             }
-            return array('Konfiguration', $t);
+            return array(cc_t('AKTION.T_KONFIG'), $t);
 
         case 'umgebung':
             $t = "PHP:        " . PHP_VERSION . "\n";
-            $t .= "LBHOMEDIR:  " . ($p['home'] !== '' ? $p['home'] : '(nicht gesetzt)') . "\n";
+            $t .= "LBHOMEDIR:  " . ($p['home'] !== '' ? $p['home'] : cc_t('AKTION.NICHT_GESETZT')) . "\n";
             $t .= "Plugin:     " . $p['plugin'] . "\n";
             $t .= "bin:        " . $p['bindir'] . "\n";
             $t .= "log:        " . $p['logdir'] . "\n\n";
             $t .= cc_sh('python3 --version');
-            $t .= "\n\nBenoetigte Python-Module:\n";
+            $t .= "\n\n" . cc_t('AKTION.S_MODULE') . "\n";
             foreach (array('pychromecast', 'zeroconf', 'paho.mqtt.client') as $m) {
                 $r = cc_sh('python3 -c ' . escapeshellarg('import ' . $m));
-                $t .= sprintf("  %-22s %s\n", $m, $r === '' ? 'vorhanden' : 'FEHLT');
+                $t .= sprintf("  %-22s %s\n", $m, $r === '' ? cc_t('AKTION.VORHANDEN') : cc_t('AKTION.FEHLT'));
             }
-            $t .= "\nVersion von pychromecast:\n  ";
+            $t .= "\n" . cc_t('AKTION.S_PYCC_FASSUNG') . "\n  ";
             $v = cc_sh('python3 -c ' . escapeshellarg(
                 'import importlib.metadata as m; print(m.version("PyChromecast"))'));
-            $t .= ($v !== '' ? $v : '(nicht ermittelbar)') . "\n";
-            $t .= "\nHinweis: Fehlt pychromecast, hat die Installation das Paket\n"
-                . "python3-pychromecast nicht eingerichtet. Nachholen mit:\n"
+            $t .= ($v !== '' ? $v : cc_t('AKTION.NICHT_ERMITTELBAR')) . "\n";
+            $t .= "\n" . cc_t('AKTION.S_PYCC_FEHLT') . "\n"
                 . "  sudo apt-get install -y python3-pychromecast\n";
-            return array('Umgebung', $t);
+            return array(cc_t('AKTION.T_UMGEBUNG'), $t);
 
         case 'mqttinfo':
             $broker = cc_mqtt_broker();
             $udp = cc_mqtt_udpinport();
-            $t = "Broker:              " . ($broker !== '' ? $broker : 'nicht gefunden') . "\n";
-            $t .= "UDP-Relay (UDP In):  " . ($udp ? $udp : 'nicht gesetzt') . "\n";
-            $t .= "MQTT im Plugin:      " . (cc_cfg($cfg, 'mqtt_ein', '1') === '1' ? 'ein' : 'aus') . "\n";
-            $t .= "Themenpraefix:       " . cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . "\n\n";
+            $t = cc_t('AKTION.Z_BROKER') . ' ' . ($broker !== '' ? $broker : cc_t('AKTION.NICHT_GEFUNDEN')) . "\n";
+            $t .= cc_t('AKTION.Z_RELAY') . ' ' . ($udp ? $udp : cc_t('AKTION.NICHT_GESETZT')) . "\n";
+            $t .= cc_t('AKTION.Z_MQTT_PLUGIN') . ' ' . (cc_cfg($cfg, 'mqtt_ein', '1') === '1'
+                ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) . "\n";
+            $t .= cc_t('AKTION.Z_PRAEFIX') . ' ' . cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . "\n\n";
             if ($broker === '') {
-                $t .= "Ohne MQTT-Gateway kann das Plugin nichts veroeffentlichen.\n"
-                    . "Das Gateway ist ein eigenes LoxBerry-Plugin und muss installiert sein.\n\n";
+                $t .= cc_t('AKTION.S_OHNE_GATEWAY') . "\n\n";
             }
             if (!$udp) {
-                $t .= "Der UDP-Eingangsport des Gateways wird gebraucht, damit der\n"
-                    . "Miniserver Befehle senden kann. Im Gateway unter \"UDP In\"\n"
-                    . "einen Port setzen und die Vorlage der Ausgaenge neu erzeugen.\n\n";
+                $t .= cc_t('AKTION.S_OHNE_RELAY') . "\n\n";
             }
-            $t .= "Zum Mitlesen eignet sich der MQTT Finder des Gateways;\n"
-                . "dort auf " . cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . "/# achten.";
-            return array('MQTT-Gateway', $t);
+            $t .= sprintf(cc_t('AKTION.S_FINDER'), cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox') . '/#');
+            return array(cc_t('TEXT.T176'), $t);
 
         case 'restart':
             // Waehrend einer Aktualisierung wird nichts angefasst. Die
@@ -172,63 +169,70 @@ function cc_test_ausfuehren($was, $geraet = '')
             // haelt schon am Eingang an - dies ist die zweite Tuer, weil
             // diese Datei auch von anderswoher eingebunden werden kann.
             if (cc_upgrade_laeuft()) {
-                return array('Dienst neu starten', cc_t('UPGRADE.T_AKTION'));
+                return array(cc_t('TEXT.T178'), cc_t('UPGRADE.T_AKTION'));
             }
             // Den Schalter mitziehen: wer neu startet, will den Dienst
-            // laufen sehen - auch nach dem naechsten Waechterlauf.
-            cc_dienst_schalter(true);
+            // laufen sehen - auch nach dem naechsten Waechterlauf. Scheitert
+            // das Schreiben, steht es da (seit 1.3.13, C14).
+            $cc_schalter = cc_dienst_schalter(true);
             $a = cc_dienst('restart');
             $pid = cc_dienst_pid();
             $t = ($a !== '' ? $a . "\n\n" : '');
-            $t .= $pid ? "Dienst laeuft jetzt (PID $pid)."
-                : "Der Dienst laeuft nicht. Protokoll im Reiter Logdateien pruefen.";
-            return array('Dienst neu starten', $t);
+            $t .= $pid ? sprintf(cc_t('AKTION.LAEUFT_JETZT'), $pid) : cc_t('AKTION.S_LAEUFT_NICHT');
+            if (!$cc_schalter) {
+                $t .= "\n\n" . cc_t('AKTION.SCHALTER_EIN_FEHLT');
+            }
+            return array(cc_t('TEXT.T178'), $t);
 
         case 'stop':
             if (cc_upgrade_laeuft()) {
-                return array('Dienst anhalten', cc_t('UPGRADE.T_AKTION'));
+                return array(cc_t('TEXT.T179'), cc_t('UPGRADE.T_AKTION'));
             }
             // Erst den Schalter, dann anhalten. Andersherum koennte der
             // Waechter dazwischen anlaufen und den Dienst sofort wieder
             // starten.
-            cc_dienst_schalter(false);
+            //
+            // Seit 1.3.13 wird der Rueckgabewert ausgewertet (C14) und das
+            // Ergebnis an den Prozessen gemessen (O8). Bis 1.3.12 stand
+            // "Angehalten ... Der Waechter startet ihn NICHT nach" auch dann,
+            // wenn der Schalter sich nicht setzen liess - dann startete ihn
+            // der Waechter nach spaetestens fuenf Minuten wieder.
+            $cc_vorher = count(cc_dienst_pids());
+            $cc_schalter = cc_dienst_schalter(false);
             $a = cc_dienst('stop');
             $t = ($a !== '' ? $a . "\n\n" : '');
-            $t .= cc_dienst_pid() ? "Es laeuft noch etwas - bitte Protokoll pruefen."
-                : "Angehalten.\n\nDer Waechter startet ihn NICHT nach - der Schalter\n"
-                . "\"Dienst laufen lassen\" steht jetzt auf aus. Mit \"Dienst neu starten\"\n"
-                . "oder ueber den Haken im Reiter Einstellungen geht es wieder an.\n"
-                . "Beim naechsten Systemstart bleibt er ebenfalls aus.";
-            return array('Dienst anhalten', $t);
+            if (cc_dienst_pids()) {
+                $t .= cc_dienst_lage_satz($cc_vorher) . ' ' . cc_t('AKTION.S_LAEUFT_NOCH');
+            } else {
+                $t .= cc_dienst_lage_satz($cc_vorher) . "\n\n"
+                    . ($cc_schalter ? cc_t('AKTION.S_SCHALTER_AUS') : cc_t('AKTION.SCHALTER_AUS_FEHLT'));
+            }
+            return array(cc_t('TEXT.T179'), $t);
 
         case 'ping':
             if ($geraet === '') {
                 $geraet = $geraete ? $geraete[0] : '';
             }
             if ($geraet === '') {
-                return array('Geraet ansprechen', 'Es ist kein Geraet konfiguriert.');
+                return array(cc_t('TEXT.T180'), cc_t('AKTION.KEIN_GERAET'));
             }
             $port = (int) cc_cfg($cfg, 'udp_port', '7090');
             if (cc_cfg($cfg, 'udp', '1') !== '1') {
-                return array('Geraet ansprechen', "Der UDP-Weg ist ausgeschaltet.\n\n"
-                    . "Er wird hier gebraucht, um dem Dienst von aussen einen Befehl\n"
-                    . "zu schicken. Im Reiter Einstellungen einschalten oder den\n"
-                    . "Befehl per MQTT senden.");
+                return array(cc_t('TEXT.T180'), cc_t('AKTION.S_UDP_AUS'));
             }
             $befehl = cc_thema($geraet) . '/volume_step 0;';
             $sock = @fsockopen('udp://127.0.0.1', $port, $errno, $errstr, 2);
             if (!$sock) {
-                return array('Geraet ansprechen', "UDP-Port $port nicht erreichbar: $errstr ($errno)");
+                return array(cc_t('TEXT.T180'), sprintf(cc_t('AKTION.UDP_NICHT_ERREICHBAR'),
+                                                        $port, $errstr, $errno));
             }
             @fwrite($sock, $befehl);
             @fclose($sock);
-            return array('Befehl gesendet', "An 127.0.0.1:$port gesendet:\n\n  $befehl\n\n"
-                . "Das ist eine Lautstaerkeaenderung um 0 - sie veraendert nichts,\n"
-                . "zwingt den Dienst aber, das Geraet anzusprechen und den Zustand\n"
-                . "neu zu melden. Ob es geklappt hat, steht im Protokoll.");
+            return array(cc_t('AKTION.T_GESENDET'), sprintf(cc_t('AKTION.GESENDET_AN'), $port)
+                . "\n\n  " . $befehl . "\n\n" . cc_t('AKTION.S_PING'));
     }
 
-    return array('Unbekannt', 'Diese Aktion gibt es nicht.');
+    return array(cc_t('AKTION.T_UNBEKANNT'), cc_t('AKTION.UNBEKANNT'));
 }
 
 /* ==================================================================
@@ -253,10 +257,18 @@ function cc_selbstpruefung()
     $cfg = cc_config_read();
     $geraete = cc_geraete($cfg);
 
-    /* --- 1. Laeuft der Dienst? ------------------------------------- */
+    /* --- 1. Laeuft der Dienst? -------------------------------------
+     * ALLE Prozesse (seit 1.3.13, O10). Bis 1.3.12 fragte die Zeile
+     * cc_dienst_pid() - eine einzige Nummer - und zeigte bei zwei Diensten
+     * einen Haken (gemessen 30.09.2026 unter 7.4 und 8.5,
+     * Oberflaechen-Befund 10). Mehr als einer ist ein Kreuz. */
+    $pids = cc_dienst_pids();
     $pid = cc_dienst_pid();
     $an = cc_cfg($cfg, 'enabled', '1') === '1';
-    if (!$an) {
+    if (count($pids) > 1) {
+        cc_pruefzeile($z, cc_t('TEST.F_DIENST'), false,
+            sprintf(cc_t('TEST.A_MEHRERE'), count($pids), implode(', ', $pids)));
+    } elseif (!$an) {
         cc_pruefzeile($z, cc_t('TEST.F_DIENST'), null, cc_t('TEST.A_AUSGESCHALTET'));
     } else {
         cc_pruefzeile($z, cc_t('TEST.F_DIENST'), $pid > 0,
@@ -335,6 +347,30 @@ function cc_selbstpruefung()
                           implode(', ', $fehlen)));
     }
 
+    /* --- 3c. Ueberstehen die Favoriten Schreiben und Lesen? ---------
+     * (seit 1.3.13, C3) Bis 1.3.12 machte cc_config_write() aus jedem
+     * Zeilenumbruch ein ";", und aus drei Favoriten wurde einer. Gemessen
+     * wird die Kodierung, die cc_config_write() benutzt, an drei festen
+     * Probezeilen UND an der eingetragenen Liste - ohne in die Datei zu
+     * schreiben: kodieren, als Dateizeile zerlegen wie cc_config_roh(),
+     * dekodieren, zaehlen. */
+    $probe = "Eins = http://a.example/1.mp3\nZwei = http://b.example/2.mp3?x=1;y=2\nDrei = http://c.example/3.mp3";
+    $cc_rund = function ($text) {
+        $zeile = 'favoriten=' . cc_wert_kodieren($text);
+        $teile = cc_zeilen($zeile);
+        $wert = substr($teile[0], strlen('favoriten='));
+        $n = strlen($wert);
+        if ($n >= 2 && ($wert[0] === '"' || $wert[0] === "'") && $wert[$n - 1] === $wert[0]) {
+            $wert = substr($wert, 1, -1);
+        }
+        return count(cc_favoriten(array('favoriten' => cc_wert_dekodieren($wert))));
+    };
+    $fav_soll = count(cc_favoriten($cfg));
+    $fav_probe = $cc_rund($probe);
+    $fav_ist = $cc_rund((string) cc_cfg($cfg, 'favoriten', ''));
+    cc_pruefzeile($z, cc_t('TEST.F_FAVORITEN'), $fav_probe === 3 && $fav_ist === $fav_soll,
+        sprintf(cc_t('TEST.A_FAVORITEN'), $fav_probe, 3, $fav_ist, $fav_soll));
+
     /* --- 4. Sind Geraete eingetragen? ------------------------------ */
     cc_pruefzeile($z, cc_t('TEST.F_GERAETE'), count($geraete) > 0,
         count($geraete) > 0 ? sprintf(cc_t('TEST.A_GERAETE'), count($geraete),
@@ -402,16 +438,25 @@ function cc_selbstpruefung()
     } else {
         $roh = cc_sh('timeout -k 5 20 python3 ' . escapeshellarg($skript) . ' --themen');
         $d = json_decode(trim($roh), true);
-        if (!is_array($d) || !isset($d['geraet'])) {
+        /* Gegen den SENDECODE (seit 1.3.13, O17): "gesendet_geraet" ist, was
+         * _melden() im Dienst gegen eine Attrappe des Lautsprechers wirklich
+         * veroeffentlicht. Bis 1.3.12 hielt die Zeile bin/cc_themen.json
+         * gegen dieselbe Datei, vom Dienst nur wieder ausgegeben - ein Thema,
+         * das der Code nicht mehr sendet, blieb gruen (Oberflaechen-Befund
+         * 17). Verglichen wird als Menge, in beide Richtungen. */
+        if (!is_array($d) || !isset($d['gesendet_geraet']) || !is_array($d['gesendet_geraet'])
+            || !$d['gesendet_geraet']) {
             cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_NICHT_MESSBAR'));
         } else {
-            $gleich = $d['geraet'] === $eigene;
+            $gesendet = $d['gesendet_geraet'];
+            $nur_liste = array_values(array_diff($eigene, $gesendet));
+            $nur_code = array_values(array_diff($gesendet, $eigene));
+            $gleich = !$nur_liste && !$nur_code;
             cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), $gleich,
                 $gleich ? sprintf(cc_t('TEST.A_THEMEN_GLEICH'), count($eigene),
-                                  count($d['befehle']))
+                                  count($gesendet))
                         : sprintf(cc_t('TEST.A_THEMEN_ANDERS'),
-                                  implode(', ', array_diff($eigene, $d['geraet'])),
-                                  implode(', ', array_diff($d['geraet'], $eigene))));
+                                  implode(', ', $nur_liste), implode(', ', $nur_code)));
         }
     }
 
@@ -514,16 +559,27 @@ function cc_selbstpruefung()
         }
     }
 
-    /* --- 11. Laeuft der Waechter? ---------------------------------- */
+    /* --- 11. Laeuft der Waechter? ----------------------------------
+     * An ALLEN Cron-Orten (seit 1.3.13, O11; Regeln/04, Raumklima 0.11.8).
+     * Bis 1.3.12 nur der feste Pfad cron.05min - ein liegengebliebener
+     * Eintrag in einem anderen Takt blieb unsichtbar, und die Antwort nannte
+     * keinen Pfad (gemessen 30.09.2026, Oberflaechen-Befund 11). */
     $home = $p['home'];
-    $wpfad = $home !== '' ? $home . '/system/cron/cron.05min/' . $p['plugin'] : '';
+    $wtreffer = $home !== '' ? glob($home . '/system/cron/cron.*min/' . $p['plugin']) : array();
+    $wtreffer = is_array($wtreffer) ? $wtreffer : array();
     if ($home === '') {
         cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), null, cc_t('TEST.A_NICHT_MESSBAR'));
     } elseif (!$an) {
         cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), null, cc_t('TEST.A_AUSGESCHALTET'));
+    } elseif (!$wtreffer) {
+        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), false, cc_t('TEST.A_KEIN_WAECHTER'));
     } else {
-        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), is_file($wpfad),
-            is_file($wpfad) ? cc_t('TEST.A_JA') : cc_t('TEST.A_KEIN_WAECHTER'));
+        $wsoll = $home . '/system/cron/cron.05min/' . $p['plugin'];
+        $wrest = array_values(array_diff($wtreffer, array($wsoll)));
+        $wda = in_array($wsoll, $wtreffer, true);
+        cc_pruefzeile($z, cc_t('TEST.F_WAECHTER'), $wda && !$wrest,
+            $wda && !$wrest ? sprintf(cc_t('TEST.A_WAECHTER_PFAD'), $wsoll)
+                            : sprintf(cc_t('TEST.A_WAECHTER_REST'), implode(', ', $wtreffer)));
     }
 
     /* --- Bilanz ---------------------------------------------------- */

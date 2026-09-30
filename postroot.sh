@@ -87,6 +87,17 @@ LBHOMEDIR="$CC_BASE"
 CC_PFOLDER="${3:-chromecast-4lox-ng}"
 PDIR="$CC_PFOLDER"
 PBIN="$CC_BASE/bin/plugins/$CC_PFOLDER"
+# Die Ordner der INFO-Zeilen aus der geprueften Wurzel (seit 1.3.13). Als root
+# fehlen die LBP*-Variablen der Umgebung, und bis 1.3.12 stand dort
+# "Plugin CGI folder is: /chromecast-4lox-ng" (Installer-Pruefung, ohne
+# Wirkung auf die Installation).
+PCGI="$CC_BASE/webfrontend/htmlauth/plugins/$CC_PFOLDER"
+PHTML="$CC_BASE/webfrontend/html/plugins/$CC_PFOLDER"
+PTEMPL="$CC_BASE/templates/plugins/$CC_PFOLDER"
+PDATA="$CC_BASE/data/plugins/$CC_PFOLDER"
+PLOG="$CC_BASE/log/plugins/$CC_PFOLDER"
+PCONFIG="$CC_BASE/config/plugins/$CC_PFOLDER"
+PSBIN="$CC_BASE/sbin/plugins/$CC_PFOLDER"
 
 # ---------- Prozesse des Dienstes finden und beenden ----------
 # Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den

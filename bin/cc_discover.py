@@ -57,6 +57,13 @@ def main():
         return 1
 
     try:
+        # Mit --json heisst "nichts gefunden" eine leere Liste (seit 1.3.13,
+        # C13). Bis 1.3.12 kam auch hier der Klartext unten, und cc_suche()
+        # in der Oberflaeche zeigte ihn als roten Fehlerkasten statt des
+        # Hinweises SUCHE.H_NICHTS (gemessen 30.09.2026, Code-Befund 13).
+        if not gefunden and ALS_JSON:
+            print("[]")
+            return 0
         if not gefunden:
             print("Kein Chromecast gefunden.")
             print()

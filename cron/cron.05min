@@ -23,7 +23,12 @@
 DIENST="REPLACELBPBINDIR/chromecast4lox_ng-server.py"
 CFG="REPLACELBPCONFIGDIR/chromecast-4lox-ng.cfg"
 LOG="REPLACELBPLOGDIR/REPLACELBPPLUGINDIR.log"
+# Die Startdatei (seit 1.3.13, C12): in <plugin>.log schreibt allein der
+# Dienst selbst; hierher geht nur, was vor seinem Protokoll scheitert.
+STARTLOG="REPLACELBPLOGDIR/REPLACELBPPLUGINDIR_start.log"
 PIDDATEI="REPLACELBPDATADIR/dienst.pid"
+# Die gemeinsame Startsperre mit daemon/daemon (seit 1.3.13, I1/C7).
+SPERRE="REPLACELBPDATADIR.startsperre"
 
 # Die eigene Fehlerausgabe sichern. Der Cron des LoxBerry ruft jede Datei
 # als "($f cron=05min > /dev/null 2>&1 &)" auf - am Geraet gemessen in
@@ -39,9 +44,11 @@ PIDDATEI="REPLACELBPDATADIR/dienst.pid"
 # Regeln/06 fuer den Abfahrts-Assistenten 1.6.10; dort kam heraus, dass ein
 # blosses Anhaengen die Aenderungszeit nicht auffrischt - deshalb "touch",
 # damit die stuendliche Logwartung die Datei nicht wegraeumt.
-mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
-touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
-exec 2>>"REPLACELBPLOGDIR/cron.err"
+#
+# Seit 1.3.13 steht das HINTER der Frage nach dem Schalter (I2): ein
+# ausgeschaltetes Plugin legt beim Boot keinen Protokollordner mehr an, in den
+# der daemon als root dann eine Datei legt, die root gehoert (in WSL gemessen
+# 30.09.2026, Installer-Befund 2).
 
 # Ist das Plugin ausgeschaltet, hat der Waechter nichts zu tun. Sonst
 # startete er einen Dienst nach, den der Anwender im Reiter Test bewusst
@@ -54,6 +61,10 @@ exec 2>>"REPLACELBPLOGDIR/cron.err"
 if [ -f "$CFG" ] && grep -q '^enabled=0' "$CFG"; then
     exit 0
 fi
+
+mkdir -p "REPLACELBPLOGDIR" 2>/dev/null
+touch "REPLACELBPLOGDIR/cron.err" 2>/dev/null
+exec 2>>"REPLACELBPLOGDIR/cron.err"
 
 # Waehrend einer Aktualisierung nichts starten. preupgrade.sh legt die
 # Marke neben den Datenordner, postroot.sh entfernt sie nach dem
@@ -141,6 +152,22 @@ if [ ! -x "$DIENST" ]; then
     exit 1
 fi
 
+# Startsperre (seit 1.3.13, I1/C7): Pruefen und Starten unter EINER Sperre
+# mit daemon/daemon. Bis 1.3.12 gab es keine: zwei Waechterlaeufe in derselben
+# Sekunde (cron holt nach dem Uhrsprung beim Boot nach) ergaben 10 von 10
+# Runden zwei Dienste, daemon und zwei Waechter 20 von 20 Runden drei (in WSL
+# gemessen 30.09.2026, Code-Befund 7, Installer-Befund 1). Wer spaeter kommt,
+# wartet bis 15 s und sieht dann den eben gestarteten. Der Dienst erbt den
+# Deskriptor NICHT (9<&- beim Start). Die Datei bleibt liegen; uninstall
+# raeumt sie ab.
+if [ ! -e "$SPERRE" ]; then
+    : > "$SPERRE" 2>/dev/null
+fi
+if command -v flock >/dev/null 2>&1 && [ -r "$SPERRE" ]; then
+    exec 9<"$SPERRE"
+    flock -w 15 9 || exit 0
+fi
+
 # Laeuft er schon? Argumentweise gesucht, nicht ueber
 # "pgrep -f chromecast4lox_ng-server": das traefe auch einen offenen Editor,
 # ein Sicherungsskript - und den Dienst eines zweiten Plugin-Ordners.
@@ -153,6 +180,50 @@ fi
 CC_UID=$(id -u loxberry 2>/dev/null)
 [ -n "$CC_UID" ] || CC_UID=$(id -u 2>/dev/null)
 CC_LAEUFT=$(cc_dienste_finden "$DIENST" "$CC_UID")
+
+# Mehr als einer? Alle bis auf den aeltesten beenden (seit 1.3.13, C7). Bis
+# 1.3.12 trug dieser Waechter nur die PID des ersten nach und liess die
+# uebrigen laufen - bis zum naechsten Neustart (in WSL gemessen 30.09.2026,
+# Installer-Befund 1: der naechste Takt liess es bei drei). Der aelteste ist
+# der mit der kleinsten Startzeit (Feld 22 in /proc/<pid>/stat).
+CC_ANZAHL=$(printf '%s\n' "$CC_LAEUFT" | grep -c .)
+if [ "$CC_ANZAHL" -gt 1 ]; then
+    CC_BLEIBT=""
+    CC_BLEIBT_ZEIT=""
+    for CC_P in $CC_LAEUFT; do
+        CC_Z=$(awk '{print $22}' "/proc/$CC_P/stat" 2>/dev/null)
+        case "$CC_Z" in ''|*[!0-9]*) continue ;; esac
+        if [ -z "$CC_BLEIBT_ZEIT" ] || [ "$CC_Z" -lt "$CC_BLEIBT_ZEIT" ]; then
+            CC_BLEIBT=$CC_P
+            CC_BLEIBT_ZEIT=$CC_Z
+        fi
+    done
+    [ -n "$CC_BLEIBT" ] || CC_BLEIBT=$(printf '%s\n' "$CC_LAEUFT" | head -1)
+    CC_WEG=""
+    for CC_P in $CC_LAEUFT; do
+        [ "$CC_P" = "$CC_BLEIBT" ] || CC_WEG="$CC_WEG $CC_P"
+    done
+    kill $CC_WEG 2>/dev/null
+    CC_I=0
+    while [ "$CC_I" -lt 20 ]; do
+        CC_LEBT=0
+        for CC_P in $CC_WEG; do
+            kill -0 "$CC_P" 2>/dev/null && CC_LEBT=1
+        done
+        [ "$CC_LEBT" = 0 ] && break
+        sleep 0.5
+        CC_I=$((CC_I + 1))
+    done
+    for CC_P in $CC_WEG; do
+        kill -0 "$CC_P" 2>/dev/null && kill -9 "$CC_P" 2>/dev/null
+    done
+    echo "$CC_BLEIBT" > "$PIDDATEI"
+    MELDUNG="Chromecast 4 Lox NG: es liefen $CC_ANZAHL Dienste - beendet:$CC_WEG, es bleibt PID $CC_BLEIBT."
+    command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"
+    echo "$MELDUNG" >&2
+    exit 0
+fi
+
 if [ -f "$PIDDATEI" ]; then
     P=$(cat "$PIDDATEI" 2>/dev/null)
     case "$P" in
@@ -202,14 +273,15 @@ fi
 WER=$(id -un 2>/dev/null)
 if [ "$WER" = "loxberry" ]; then
     # 'echo $!' unmittelbar nach dem Abzweigen: das ist die Nummer des
-    # Dienstes selbst.
-    nohup "$DIENST" >> "$LOG" 2>&1 &
+    # Dienstes selbst. "9<&-": der Dienst erbt die Startsperre nicht.
+    nohup "$DIENST" >> "$STARTLOG" 2>&1 9<&- &
     echo $! > "$PIDDATEI"
 elif [ "$(id -u 2>/dev/null)" = "0" ]; then
     # Hier muss 'echo $!' INNERHALB der su-Zeichenkette stehen: draussen
     # waere es die Nummer des su-Prozesses, und der beendet sich sofort.
-    su loxberry -c "nohup '$DIENST' >> '$LOG' 2>&1 & echo \$! > '$PIDDATEI'" >/dev/null 2>&1
-    chown loxberry:loxberry "$PIDDATEI" 2>/dev/null
+    chown loxberry:loxberry "$LOG" "$STARTLOG" 2>/dev/null
+    su loxberry -c "nohup '$DIENST' >> '$STARTLOG' 2>&1 9<&- & echo \$! > '$PIDDATEI'" >/dev/null 2>&1 9<&-
+    chown loxberry:loxberry "$PIDDATEI" "$STARTLOG" 2>/dev/null
 else
     MELDUNG="Chromecast 4 Lox NG: der Waechter laeuft als '$WER' - weder loxberry noch root. Es wird nicht nachgestartet."
     command -v logger >/dev/null 2>&1 && logger -t chromecast_4lox_ng "$MELDUNG"

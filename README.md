@@ -4,6 +4,63 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.13
+
+Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
+Gemessen an Attrappen; ein echter Chromecast war nicht angeschlossen. Befunde
+mit Datei:Zeile: `Pruefung-Durchgang-2026-09-29/Chromecast4lox_BEFUNDE_UND_VERBESSERUNGEN.md`.
+
+**„Einstellungen sichern“ funktioniert zum ersten Mal.** Der Knopf endete seit
+mindestens 1.3.4 in einem PHP-Fehler. Die Sicherung trägt jetzt einen lesbaren
+Kopf. Beim Zurückspielen wird jeder Wert geprüft wie beim Speichern; bis 1.3.12
+machte eine Sicherung mit einer Liste als Token den Formularschutz für jeden
+ausrechenbar.
+
+**Befehle von außen**
+
+* Der UDP-Eingang nimmt Befehle nur noch von den Miniservern (aus der
+  LoxBerry-Konfiguration) und vom LoxBerry selbst an. Andere Absender werden
+  verworfen und gebremst protokolliert. Bis 1.3.12 konnte jedes Gerät im
+  Heimnetz alle Lautsprecher steuern.
+* `volume inf` oder `seek 1e400` trennen die Verbindung zum Lautsprecher nicht
+  mehr; Werte außerhalb 0–100 werden abgewiesen und gemeldet, nicht still
+  gekappt. `volume_down` mit negativem Wert umgeht die Lautstärkegrenze nicht
+  mehr.
+* Ein retained Befehl unter `cmd/` wird nicht mehr bei jedem Verbinden
+  ausgeführt (bis 1.3.12 wiederholte sich so eine Ansage nach jedem Neustart).
+
+**Dienst**
+
+* Beim Systemstart liefen bis zu drei Dienste (daemon plus zwei Wächterläufe,
+  wenn cron nach einem Uhrsprung Minuten nachholt). Jetzt sperrt eine
+  Startsperre, und ein zweiter Dienst beendet sich sofort.
+* Das Protokoll gehört nicht mehr root: Beim Start mit ausgeschaltetem Dienst
+  legte `daemon` es als root an, danach ließ sich der Dienst bis zum nächsten
+  Neustart nicht mehr starten, und die Oberfläche meldete trotzdem „gestartet“.
+* Der Dienst schreibt sein Protokoll selbst; nach dem Leeren der Ramdisk geht
+  nichts mehr ins Leere. Beim Anhalten meldet er sich ab (`server/online 0`,
+  Geräte offline, `tts_active 0`).
+
+**Einstellungen**
+
+* Favoriten und Gerätenamen überstehen das Speichern: aus drei Favoriten wurde
+  bis 1.3.12 einer, und Namen wie „Åsa Küche“ gingen verloren. Ein Komma trennt
+  keine Geräte mehr – eine alte Liste mit Kommas wird zu einem Gerät und ist
+  einmal neu einzutragen.
+* Die Konfiguration hat die Rechte 0600 und wird so geschrieben, dass ein voller
+  Datenträger sie nicht kürzt.
+
+**MQTT**
+
+* Ein entferntes Gerät bekommt einmal `-` und wird dann abgeräumt.
+* `online 0` eines ausgefallenen Geräts und `server/online 1` gehen mit jeder
+  Vollmeldung erneut hinaus.
+* Ein altes Präfix wird bei Start und Deinstallation mit abgeräumt.
+
+**Installation:** Eine Neuinstallation spielt keine alte Zweitschrift mehr ein
+(`preinstall.sh`, `.alt`); eine kaputte Konfiguration überschreibt beim Update
+nicht mehr die heile.
+
 ## Neu in 1.3.12
 
 Nachlese nach den Hausregeln vom 18./19.09.2026 (MQTT-Retain) und den
