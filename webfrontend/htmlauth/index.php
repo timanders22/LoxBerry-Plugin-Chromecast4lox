@@ -421,6 +421,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     }
 }
 
+/* ============ Speichern: Sprachausgabe fuer andere Plugins (Ansage-3) ============
+ *
+ * Ein eigenes Formular mit eigenem Handler; es fasst nur sprechen_ein,
+ * sprechen_geraet, sprechen_stunde und sprechtoken an. Bei einer
+ * Beanstandung wird nichts gespeichert (Entscheidung 16); die eingetippten
+ * Werte kommen zurueck (X-2) - das Sprechtoken nie. Der Dienst muss nicht neu
+ * starten: den Schalter liest der Endpunkt bei jedem Aufruf. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_sprechen'])) {
+    list($cc_sneu, $cc_sbean) = cc_sprechen_formular($_POST, cc_config_read());
+    if ($cc_sbean) {
+        $cc_fehler[] = cc_t('TEXT.NICHTS_GESPEICHERT');
+        foreach ($cc_sbean as $cc_sk => $cc_st) {
+            $cc_fehler[] = $cc_st;
+            $cc_beanstandet[] = $cc_sk;
+        }
+        $cc_eingaben_form = 'sprechen';
+    } elseif (cc_config_write($cc_sneu)) {
+        $cc_saved = true;
+        $cc_hinweis = cc_t($cc_sneu['sprechen_ein'] === '1' ? 'SPRECHEN.H_GESPEICHERT_AN'
+                                                            : 'SPRECHEN.H_GESPEICHERT_AUS');
+    } else {
+        $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
+    }
+    $cc_tab = 'tab-settings';
+}
+
 $cc_cfg = cc_config_read();
 $cc_konfig_zustand = cc_config_zustand();
 /* Fehlende Schluessel EINMAL in die Datei schreiben - nur ueber eine heile
@@ -883,6 +909,39 @@ if ($cc_komma) { ?>
 <div class="sm-small"><?php echo cc_t('TEXT.T036'); ?></div>
 </form>
 
+<?php /* Ansage-3 (01.10.2026): Sprachausgabe fuer andere Plugins - eigenes
+       Formular, ab Werk aus. Das Sprechtoken ist ein Kennwortfeld: leer laesst es,
+       wie es ist, und es steht nie im HTML dieser Seite. */
+$cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
+<h2 id="sprechen"><?php echo cc_t('SPRECHEN.H'); ?></h2>
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
+<div class="sm-small"><?php echo cc_t('SPRECHEN.EINLEITUNG'); ?></div>
+<label class="sm-check"><input data-role="none" type="checkbox" name="sprechen_ein" value="1"<?= cc_eingabe_an('sprechen', 'sprechen_ein', cc_cfg($cc_cfg, 'sprechen_ein', '0') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('SPRECHEN.L_EIN'); ?></b></label>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.H_EIN'); ?></div>
+<div class="sm-row" style="margin-top:8px;">
+<div>
+<label><?php echo cc_t('SPRECHEN.L_GERAET'); ?></label>
+<input data-role="none" type="text" name="sprechen_geraet" value="<?= cc_e(cc_eingabe('sprechen', 'sprechen_geraet', cc_cfg($cc_cfg, 'sprechen_geraet', ''))) ?>"<?= cc_markierung('sprechen_geraet') ?> placeholder="<?= cc_e(cc_sammelziel()) ?>">
+<div class="sm-small"><?= sprintf(cc_t('SPRECHEN.H_GERAET'), $cc_geraete ? cc_e(implode(', ', $cc_geraete)) : cc_e(cc_t('SPRECHEN.E_KEINE'))) ?></div>
+</div>
+<div>
+<label><?php echo cc_t('SPRECHEN.L_STUNDE'); ?></label>
+<input data-role="none" type="number" name="sprechen_stunde" min="10" max="240" value="<?= cc_e(cc_eingabe('sprechen', 'sprechen_stunde', cc_cfg($cc_cfg, 'sprechen_stunde', '60'))) ?>"<?= cc_markierung('sprechen_stunde') ?>>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.H_STUNDE'); ?></div>
+</div>
+</div>
+<label><?php echo cc_t('SPRECHEN.L_TOKEN'); ?></label>
+<input data-role="none" type="password" name="sprechtoken" id="cc_sprechtoken" value="" autocomplete="new-password"<?= cc_markierung('sprechtoken') ?> placeholder="<?= cc_e($cc_stok !== '' ? sprintf(cc_t('SPRECHEN.P_TOKEN_GESETZT'), strlen($cc_stok)) : cc_t('SPRECHEN.P_TOKEN_LEER')) ?>">
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-lesen" type="button" onclick="ccTokenWuerfeln()"><?php echo cc_t('SPRECHEN.K_WUERFELN'); ?></button>
+</div>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.H_TOKEN'); ?></div>
+<label class="sm-check"><input data-role="none" type="checkbox" name="sprechtoken_loeschen" value="1"<?= cc_eingabe_an('sprechen', 'sprechtoken_loeschen', false) ? ' checked' : '' ?>> <?php echo cc_t('SPRECHEN.L_LOESCHEN'); ?></label>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_sprechen" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.H_SPEICHERN'); ?></div>
+</form>
+
 <h2><?= cc_t('TEXT.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= cc_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= cc_t('TEXT.SICH_WARNUNG') ?></div>
@@ -1116,6 +1175,26 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <div class="sm-small">
 <?php echo cc_t('TEXT.T165'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T166'); ?></span><?php echo cc_t('TEXT.T167'); ?> <span class="sm-mono"><?php echo cc_t('TEXT.T168'); ?></span> <?php echo cc_t('TEXT.T169'); ?>
 </div>
+
+<?php /* Ansage-3: die Schnittstelle fuer andere Plugins - dieselbe wie Alexa-NG. */
+$cc_s_an = cc_cfg($cc_cfg, 'sprechen_ein', '0') === '1'; ?>
+<h2 id="sprechen-einbindung"><?php echo cc_t('SPRECHEN.E_H'); ?></h2>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.E_TEXT'); ?></div>
+<div class="sm-alert <?= $cc_s_an ? 'sm-info' : 'sm-warn' ?>"><?= $cc_s_an ? cc_t('SPRECHEN.E_AN') : cc_t('SPRECHEN.E_AUS') ?></div>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:22%;"><?php echo cc_t('SPRECHEN.E_SP_WAS'); ?></th><th><?php echo cc_t('SPRECHEN.E_SP_WERT'); ?></th></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_ADRESSE'); ?></td><td><span class="sm-mono"><?= cc_e(cc_sprechen_adresse()) ?></span> <?php echo cc_t('SPRECHEN.E_Z_ADRESSE_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_FELDER'); ?></td><td><?php echo cc_t('SPRECHEN.E_Z_FELDER_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_GERAET'); ?></td><td><?= sprintf(cc_t('SPRECHEN.E_Z_GERAET_TEXT'), $cc_geraete ? cc_e(implode(', ', $cc_geraete)) : cc_e(cc_t('SPRECHEN.E_KEINE'))) ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_ANTWORT'); ?></td><td><?php echo cc_t('SPRECHEN.E_Z_ANTWORT_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_CODES'); ?></td><td><?php echo cc_t('SPRECHEN.E_Z_CODES_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_SELBSTTEST'); ?></td><td><?php echo cc_t('SPRECHEN.E_Z_SELBSTTEST_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_STATUS'); ?></td><td><?php echo cc_t('SPRECHEN.E_Z_STATUS_TEXT'); ?></td></tr>
+<tr><td><?php echo cc_t('SPRECHEN.E_Z_GRENZEN'); ?></td><td><?= cc_e(sprintf(cc_t('SPRECHEN.E_Z_GRENZEN_TEXT'), (int) cc_cfg($cc_cfg, 'sprechen_stunde', '60'))) ?></td></tr>
+</table>
+</div>
+<div class="sm-small"><?php echo cc_t('SPRECHEN.E_ALEXA'); ?></div>
 </div>
 
 <!-- ================= Reiter: Test ================= -->
@@ -1177,6 +1256,14 @@ if ($cc_tab === 'tab-test') {
 <?php foreach ($cc_geraete as $g) { ?><option value="<?= cc_e($g) ?>"><?= cc_e($g) ?></option><?php } ?>
 </select><?php } ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="ping"><?php echo cc_t('TEXT.T180'); ?></button></form>
+<?php /* Ansage-3: Testansage ueber dieselbe Funktion wie der Endpunkt. */ ?>
+<form method="post" action="index.php"><input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-test">
+<?php if ($cc_geraete) { ?><select data-role="none" name="testgeraet" style="width:auto;margin-right:8px;">
+<option value=""><?= cc_e(cc_t('SPRECHEN.O_STANDARD')) ?></option>
+<?php foreach ($cc_geraete as $g) { ?><option value="<?= cc_e($g) ?>"><?= cc_e($g) ?></option><?php } ?>
+<option value="<?= cc_e(cc_sammelziel()) ?>"><?= cc_e(cc_t('SPRECHEN.O_ALLE')) ?></option>
+</select><?php } ?>
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="test" value="sprechen"><?php echo cc_t('SPRECHEN.K_TESTANSAGE'); ?></button></form>
 </div>
 
 <?php if ($cc_test_titel !== '') { ?>
@@ -1247,6 +1334,20 @@ function ccTtsModus() {
     zeige(start);
 })();
 ccTtsModus();
+/* Ansage-3: ein Sprechtoken im Browser wuerfeln (32 Hexzeichen). Der Server
+ * zeigt es nie; hier steht es einmal sichtbar im Feld, zum Abschreiben in die
+ * anderen Plugins, und wird mit "Speichern" uebernommen. */
+function ccTokenWuerfeln() {
+    var f = document.getElementById('cc_sprechtoken');
+    if (!f || !window.crypto || !window.crypto.getRandomValues) { return; }
+    var b = new Uint8Array(16), s = '', i;
+    window.crypto.getRandomValues(b);
+    for (i = 0; i < b.length; i++) { s += ('0' + b[i].toString(16)).slice(-2); }
+    f.value = s;
+    f.type = 'text';
+    f.focus();
+    f.select();
+}
 </script>
 <?php
 if ($cc_frame) {

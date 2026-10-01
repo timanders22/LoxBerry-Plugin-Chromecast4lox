@@ -4,6 +4,28 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.15
+
+Neu: Sprachausgabe für andere Plugins (Punkt Ansage-3 der Verbesserungsliste). Gemessen an
+Attrappen für Lautsprecher, Dienst und Broker unter PHP 7.4, 8.3 und 8.5 sowie mit dem unveränderten
+Alexa-NG-Anschluss des Abfahrts-Assistenten als Verbraucher; nicht am Gerät, nicht an echten Lautsprechern.
+
+* **Sprech-Endpunkt** `http://127.0.0.1/plugins/chromecast-4lox-ng/index.php` mit `aktion=sprechen` –
+  dieselbe Schnittstelle wie Alexa NG. So können andere Plugins (Sprachsteuerung, Abfahrts-Assistent,
+  Abfuhrkalender, FerienFeiertage, Octopus …) Ansagen auf Google-/Nest-Lautsprechern und Chromecasts
+  ausgeben. **Ab Werk aus**; einschalten im Reiter Einstellungen, Abschnitt „Sprachausgabe für andere
+  Plugins“.
+* Ziel: ein Gerät, eine Kommaliste, `gruppe:<Name>` oder `alle`; ohne Angabe das Standardgerät. Ein
+  unbekannter Name ergibt 404 – nie einen Rückfall auf „alle“. `laut=` gilt nur für die Ansage, danach
+  wird die vorige Lautstärke wiederhergestellt.
+* Das **Sprechtoken** wird wie ein Kennwort behandelt: nie in einer Adresse, nie im Protokoll (nur die
+  Textlänge), nicht in „Einstellungen sichern“. Angenommen wird nur von diesem LoxBerry selbst.
+* `OK=1` heißt: der Dienst hat die Ansage bei den verbundenen Lautsprechern eingereiht. Antwortet der
+  Dienst nicht binnen 5 s, wird nichts gesprochen (503) – auch nicht später nach einem Neustart.
+* Ruhezeit und Lautstärke-Obergrenze gelten wie bei Ansagen aus Loxone; höchstens 60 Ansagen je
+  Stunde (einstellbar), derselbe Text an dasselbe Ziel binnen 30 s wird nicht wiederholt.
+* Reiter Test: Knopf „Testansage“ und eine Prüfzeile zur Sprachausgabe.
+
 ## Neu in 1.3.14
 
 Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
@@ -653,6 +675,113 @@ davon unberührt, weil Themenpräfix und UDP-Port gleich bleiben.
   weiterlaufen. Syntax erweitert um einen optionalen Gerätenamen:
   `<Gerät>/<BEFEHL> <Wert>;`
 
+## Sprachausgabe für andere Plugins
+
+Andere Plugins auf **diesem** LoxBerry können über Chromecast 4 Lox NG eine
+Ansage auf Google-Lautsprechern abgeben (Google Home, Nest Mini,
+Lautsprechergruppen, alle). Die Schnittstelle ist **dieselbe wie bei
+[Alexa-NG](https://github.com/timanders22/LoxBerry-Plugin-Alexa-NG)**: gleiche
+Felder, gleiche Antwortzeile, gleiche Codes. Ein Plugin, das Alexa-NG schon
+anspricht, ändert nur den Ordner in der Adresse, die Gerätenamen und das Token.
+
+**Ab Werk aus.** Einschalten im Reiter *Einstellungen*, Abschnitt
+*Sprachausgabe für andere Plugins*: Haken setzen, ein **Sprechtoken**
+eintragen (oder mit *Zufälliges Token einsetzen* würfeln und abschreiben),
+optional ein Standardgerät und die Stundengrenze. Das Update ändert an einer
+eingerichteten Anlage nichts.
+
+### Aufruf
+
+`POST http://127.0.0.1:<Port>/plugins/chromecast-4lox-ng/index.php`
+(der Port steht in `config/system/general.json` unter `Webserver` → `Port`,
+meist 80). Angenommen wird nur von diesem LoxBerry selbst (`127.0.0.1`/`::1`);
+von anderswo kommt `403 GRUND=NUR_LOKAL`. Loxone spricht das Plugin weiter
+über MQTT und UDP an.
+
+| Feld | Inhalt |
+|---|---|
+| `aktion` | `sprechen` |
+| `token` | das Sprechtoken (16–128 Zeichen aus `A–Z a–z 0–9 _ -`) – im Körper der Anfrage, nie in der Adresse |
+| `geraet` | Gerätename wie in der Geräteliste (auch das MQTT-Thema, Groß/klein egal), Kommaliste, `gruppe:<Name>` oder `alle`; leer = Standardgerät |
+| `text` | 1–1000 Zeichen UTF-8, ohne Steuerzeichen und ohne `<` `>`; `text=0` oder leer → `200 UEBERSPRUNGEN=1` |
+| `laut` | optional 0–100, gilt nur für diese Ansage (danach gilt wieder die vorherige Lautstärke) |
+
+Dazu `?selftest=1&token=…` (prüft nur das Token, spricht nichts:
+`SELFTEST;OK=1;TOKEN=OK;SPRECHEN=1;DIENST=1`) und `?aktion=status` (ohne
+Token, lesend: `CHROMECAST4LOX;OK=1;SPRECHEN=1;DIENST=1;ALTER=…;GERAETE=…;ERREICHBAR=…;LETZTE_OK=…;LETZTE_ALTER=…`).
+GET wird wie bei Alexa-NG angenommen; dann steht das Token aber in der Adresse
+und im Zugriffsprotokoll des Webservers – deshalb POST.
+
+### Antwort
+
+Eine Zeile `text/plain`, jede Antwort nennt `GRUND`:
+
+| HTTP | Beispiel | Bedeutung |
+|---|---|---|
+| 200 | `SPRECHEN;OK=1;GERAETE=2;UNVERAENDERT=0;OFFLINE=0;GRUND=EINGEREIHT` | der laufende Dienst hat die Ansage bei 2 verbundenen Lautsprechern eingereiht |
+| 200 | `SPRECHEN;OK=1;GERAETE=0;UNVERAENDERT=1;GRUND=UNVERAENDERT` | derselbe Text ging in den letzten 30 s schon an dieses Gerät |
+| 200 | `SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=TEXT_NULL` | leerer Text oder `0` |
+| 400 | `GRUND=TEXT`, `TEXT_FEHLT`, `LAUT`, `GERAET`, `KEIN_GERAET`, `SSML`, `SSML_OHNE_SCHALTER`, `DRINGEND`, `PARAMETER`, `AKTION` | Feld falsch |
+| 403 | `GRUND=TOKEN`, `KEIN_TOKEN_EINGERICHTET`, `NUR_LOKAL` | Token falsch/fehlt, nicht von diesem LoxBerry |
+| 404 | `GRUND=GERAET_UNBEKANNT;NAME=Bad`, `GRUPPE_UNBEKANNT`, `KEINE_GERAETE` | Gerät unbekannt – **nie** ein Rückfall auf „alle“ |
+| 409 | `GRUND=SPRECHEN_AUS`, `TTS_MODUS` | ausgeschaltet; Ansagemodus `audioserver` |
+| 429 | `GRUND=STUNDENGRENZE` | mehr als 60 Ansagen in der letzten Stunde (10–240 einstellbar) |
+| 503 | `GRUND=DIENST_LAEUFT_NICHT`, `DIENST_ANTWORTET_NICHT`, `GERAETE_OFFLINE;OFFLINE=n`, `BESCHAEFTIGT`, `AKTUALISIERUNG`, `KONFIGURATION` | Dienst weg, kein Ziel verbunden |
+
+**Was `OK=1` heißt.** Der Endpunkt legt die Ansage als Auftragsdatei in
+`data/plugins/<Ordner>/sprechen/` und wartet höchstens 5 s, bis der laufende
+Dienst sie angenommen und bei jedem **verbundenen** Ziel-Lautsprecher in dessen
+Warteschlange gelegt hat (`GRUND=EINGEREIHT`). Ein nicht verbundener
+Lautsprecher wird ausgelassen und gezählt (`OFFLINE=n`); ist es keiner, kommt
+`503 GERAETE_OFFLINE`. Die Wiedergabe selbst (Klang, 3–60 s Ansage,
+Wiederaufnahme) wird **nicht** abgewartet – sonst liefe jede längere Ansage in
+die 10-s-Frist der aufrufenden Plugins. Ihr Ergebnis steht danach in der
+Selbstprüfung (Reiter *Test*) und im Protokoll. Antwortet der Dienst nicht
+binnen 5 s, zieht der Endpunkt den Auftrag zurück, bevor er
+`503 DIENST_ANTWORTET_NICHT` meldet: dann wird auch später nichts gesprochen.
+
+**Abgespielt wird über denselben Weg wie `cmd/tts` aus Loxone** –
+Ansagemodus, Ruhezeit und Lautstärke-Obergrenze, Klang vorab, Fortsetzen und
+die Warteschlange je Gerät gelten unverändert. `laut` wird durch die
+Obergrenze und die Ruhezeit gedeckelt.
+
+### Unterschiede zu Alexa-NG
+
+- **Adresse** (`/plugins/chromecast-4lox-ng/index.php` statt `/plugins/alexang/index.php`)
+  und **Gerätenamen** (die Namen der Geräteliste dieses Plugins).
+- Es gibt **ein** Token (Sprechtoken); ein Aktionstoken für die Schnittstelle gibt es nicht.
+- `ssml=1` wird mit `400 SSML` abgewiesen. `dringend` wird angenommen, wirkt
+  aber nicht: die Ruhezeit dieses Plugins sperrt keine Ansage, sie begrenzt nur
+  die Lautstärke.
+- Kein Mindestabstand zwischen zwei Ansagen (`429 BREMSE` gibt es nicht): jedes
+  Gerät spricht seine Warteschlange nacheinander ab.
+- Nur Aufrufer auf diesem LoxBerry.
+
+### Sicherheit
+
+Das Sprechtoken wird **wie ein Kennwort** behandelt: es steht nie in einer
+Adresse dieses Plugins, nie im Protokoll und nie in der Sicherung, und es
+kommt nie zurück ins Formular (Kennwortfeld; leer lassen behält es, ein Haken
+löscht es). Es ist vom Aktionstoken der Oberfläche getrennt. Eine Sicherung,
+die ein Sprechtoken trägt, wird abgewiesen; beim Zurückspielen bleibt das
+geltende. Der Ansagetext steht in keiner Antwort, keiner Merkdatei und keiner
+Protokollzeile – nur seine Länge.
+
+### Beispiel (PHP, wie die Ausgabeart „Alexa-NG“ der anderen Plugins)
+
+```php
+$ch = curl_init('http://127.0.0.1:' . $port . '/plugins/chromecast-4lox-ng/index.php');
+curl_setopt_array($ch, array(
+    CURLOPT_RETURNTRANSFER => true, CURLOPT_POST => true,
+    CURLOPT_POSTFIELDS => http_build_query(array('aktion' => 'sprechen', 'token' => $token,
+                                                 'geraet' => 'Wohnzimmer', 'text' => $text)),
+    CURLOPT_NOPROXY => '127.0.0.1', CURLOPT_FOLLOWLOCATION => false, CURLOPT_TIMEOUT => 10,
+));
+$antwort = (string) curl_exec($ch);
+$code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
+$gesendet = ($code === 200 && strpos($antwort, 'SPRECHEN;OK=1') === 0);
+```
+
 ## MQTT-Themen
 
 Zustände, retained, je Gerät unter `chromecast4lox/<Gerät>/`:
@@ -689,6 +818,7 @@ Aus `Küche Lautsprecher` wird `Kueche_Lautsprecher`.
 | `webfrontend/htmlauth/index.php` | Oberfläche, vier Reiter |
 | `webfrontend/htmlauth/cc_lib.php` | Konfiguration, Themen, Loxone-XML |
 | `webfrontend/htmlauth/cc_test.php` | Aktionen des Reiters Test |
+| `webfrontend/html/index.php` | Sprachausgabe für andere Plugins (Endpunkt, ab Werk aus) |
 | `config/chromecast-4lox-ng.cfg` | Konfiguration im INI-Format |
 | `dpkg/apt` | `python3-pychromecast`, `python3-zeroconf`, `python3-paho-mqtt` |
 
@@ -747,9 +877,11 @@ In beiden Sprachdateien steht jetzt ein Warnhinweis direkt darüber. Die
 übrigen fünf (`ALLGEMEIN.JA/NEIN/SPEICHERN`, `REITER.MQTT`, `TEXT.T184`) sind
 tatsächlich unbenutzt, kosten aber nichts und bleiben als Reserve stehen.
 
-### Kein `webfrontend/html/`
+### `webfrontend/html/` nur für andere Plugins
 
-Das ist hier richtig und keine Lücke: Loxone spricht das Plugin über **UDP
-(Port 7090)** und MQTT an, nicht über HTTP. Es gibt also keinen Endpunkt, der
-im unangemeldeten Bereich liegen müsste.
+Loxone spricht das Plugin über **UDP (Port 7090)** und MQTT an, nicht über
+HTTP. Im unangemeldeten Bereich liegt nur der Endpunkt der Sprachausgabe für
+andere Plugins (`webfrontend/html/index.php`, ab Werk aus, nur von diesem
+LoxBerry aus) und, im Ansagemodus `lokal`, der Ordner `ansage/` mit den
+erzeugten Sprachdateien.
 

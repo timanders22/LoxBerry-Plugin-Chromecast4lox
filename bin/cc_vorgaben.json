@@ -22,6 +22,10 @@
     "",
     "Der Reiter Test zaehlt beide Seiten gegen diese Datei.",
     "",
+    "Die vier Schluessel sprechen_* und sprechtoken (Ansage-3, 01.10.2026) stehen",
+    "VOR aktionstoken: die Installer erkennen eine abgeschnittene Datei daran,",
+    "dass aktionstoken als letzter Schluessel fehlt.",
+    "",
     "'nur_oberflaeche' nennt die Schluessel, die der Dienst nicht braucht:",
     "'enabled' liest der Waechter unmittelbar aus der Datei, 'aktionstoken'",
     "ist ein Merkmal der Oberflaeche. Sie stehen trotzdem hier - eine Liste",
@@ -29,7 +33,8 @@
   ],
   "fassung": 1,
 
-  "nur_oberflaeche": ["enabled", "aktionstoken"],
+  "nur_oberflaeche": ["enabled", "aktionstoken", "sprechen_ein", "sprechen_geraet",
+                      "sprechen_stunde", "sprechtoken"],
 
   "vorgaben": {
     "enabled": "1",
@@ -59,6 +64,10 @@
     "ruhe_max": "30",
     "gruppen": "1",
     "beschleunigung": "0",
+    "sprechen_ein": "0",
+    "sprechen_geraet": "",
+    "sprechen_stunde": "60",
+    "sprechtoken": "",
     "aktionstoken": ""
   }
 }

@@ -222,7 +222,7 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "chromecast-4lox-ng.cfg" "38721bf14497fc6806acf45bcf539a0aa7f9ee47a603f374902a5b14e155c1af"
+netz_zurueck "chromecast-4lox-ng.cfg" "72c8fbab6eedc6cecbf0db75449df6086115afac34120ee99edc29f07f9566d7"
 
 # ---------- Erstanleitung nur ohne eingerichtete Geraete (seit 1.3.12) ----------
 # Entschieden am 24.09.2026 (AUFTRAG_postinstall-hinweis): die Anleitung zur

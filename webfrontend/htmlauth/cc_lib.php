@@ -559,6 +559,8 @@ function cc_zahlfelder()
         'tts_lautstaerke'     => array(1, 100),
         'lautstaerke_max'     => array(0, 100),
         'ruhe_max'            => array(0, 100),
+        // Ansage-3: hoechstens so viele Ansagen je Stunde ueber den Endpunkt.
+        'sprechen_stunde'     => array(10, 240),
     );
 }
 
@@ -601,7 +603,7 @@ function cc_wert_pruefen($k, $w, $bisher)
         return cc_token_taugt($s) ? array($s, '') : array(null, cc_t('PRUEF.TOKEN'));
     }
     if (in_array($k, array('enabled', 'mqtt_ein', 'udp', 'tts_fortsetzen', 'gruppen',
-                           'beschleunigung'), true)) {
+                           'beschleunigung', 'sprechen_ein'), true)) {
         return ($s === '0' || $s === '1') ? array($s, '')
             : array(null, sprintf(cc_t('PRUEF.SCHALTER'), $name));
     }
@@ -633,6 +635,21 @@ function cc_wert_pruefen($k, $w, $bisher)
         return ($s === '' || preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]\z/', $s)) ? array($s, '')
             : array(null, cc_t('RUHE.FEHLER'));
     }
+    /* Ansage-3: das Sprechtoken steht nie in einer Sicherung. Eine Datei mit
+     * einem (nicht leeren) Sprechtoken stammt nicht aus diesem Plugin und wird
+     * abgewiesen; leer heisst: das geltende bleibt. Im Formular ist es ein
+     * Kennwortfeld (cc_sprechen_formular()). */
+    if ($k === 'sprechtoken') {
+        return $s === '' ? array((string) cc_cfg($bisher, 'sprechtoken', ''), '')
+                         : array(null, cc_t('PRUEF.SPRECHTOKEN'));
+    }
+    if ($k === 'sprechen_geraet') {
+        if (strlen($s) > 400) {
+            return array(null, cc_t('SPRECHEN.F_GERAET_LANG'));
+        }
+        return (!preg_match('/[\x00-\x1F\x7F]/', $s) && preg_match('//u', $s) === 1)
+            ? array($s, '') : array(null, sprintf(cc_t('PRUEF.STEUERZEICHEN'), $name));
+    }
     if ($k === 'mqtt_topic') {
         // Das geltende Praefix bleibt zulaessig, auch wenn es aus einer
         // aelteren Fassung stammt und enger nicht passt.
@@ -662,12 +679,16 @@ function cc_sicherung_bauen()
 {
     $aus = array(
         '_hinweis' => 'Sicherung der Einstellungen von Chromecast 4 Lox NG. Enthaelt das '
-                    . 'Aktionstoken (Merkwort der Oberflaeche) - vertraulich behandeln.',
+                    . 'Aktionstoken (Merkwort der Oberflaeche) - vertraulich behandeln. '
+                    . 'Das Sprechtoken steht nicht darin; beim Zurueckspielen bleibt das geltende.',
         '_plugin'  => 'Chromecast 4 Lox NG',
         '_stand'   => date('Y-m-d H:i:s'),
     );
     $cfg = cc_config_read();
     foreach (cc_defaults() as $k => $v) {
+        if ($k === 'sprechtoken') {
+            continue;   // Ansage-3: nie in der Sicherung
+        }
         $aus[$k] = isset($cfg[$k]) ? (string) $cfg[$k] : (string) $v;
     }
     return $aus;
@@ -748,6 +769,13 @@ function cc_eingabe_felder($form)
             'text'  => array('mqtt_topic'),
             'haken' => array('mqtt_ein'),
         ),
+        // Ansage-3: 'nur_markierung' wird rot umrandet, reist aber nie mit -
+        // das Sprechtoken kommt nicht zurueck ins Formular.
+        'sprechen' => array(
+            'text'  => array('sprechen_geraet', 'sprechen_stunde'),
+            'haken' => array('sprechen_ein', 'sprechtoken_loeschen'),
+            'nur_markierung' => array('sprechtoken'),
+        ),
     );
     return isset($felder[$form]) ? $felder[$form] : null;
 }
@@ -792,6 +820,7 @@ function cc_eingaben_setzen($roh = null)
     }
     $f = cc_eingabe_felder($roh['form']);
     $erlaubt = array_merge($f['text'], $f['haken']);
+    $markierbar = array_merge($erlaubt, isset($f['nur_markierung']) ? $f['nur_markierung'] : array());
     $werte = array();
     if (isset($roh['werte']) && is_array($roh['werte'])) {
         foreach ($roh['werte'] as $k => $v) {
@@ -803,7 +832,7 @@ function cc_eingaben_setzen($roh = null)
     $bean = array();
     if (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) {
         foreach ($roh['beanstandet'] as $b) {
-            if (is_string($b) && in_array($b, $erlaubt, true)) {
+            if (is_string($b) && in_array($b, $markierbar, true)) {
                 $bean[] = $b;
             }
         }
@@ -2079,8 +2108,27 @@ function cc_sicherung_lesen($roh, &$namen = null)
      * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
      * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
+    /* Ansage-3: die vier Schluessel der Sprachausgabe kennt eine Sicherung
+     * bis 1.3.15 nicht. Fehlen sie, bleibt der GELTENDE Wert (nicht die
+     * Werkseinstellung) - das Sprechtoken fehlt in jeder Sicherung. */
+    foreach (cc_sprechen_schluessel() as $sk) {
+        if (!array_key_exists($sk, $daten)) {
+            $neu[$sk] = (string) cc_cfg($bisher, $sk, isset($neu[$sk]) ? $neu[$sk] : '');
+        }
+    }
+    // Das Standardgeraet muss zur Geraeteliste DER SICHERUNG passen.
+    if (!in_array('sprechen_geraet', $namen, true) && (string) $neu['sprechen_geraet'] !== '') {
+        list($cc_sh) = cc_sprechen_ziele($neu['sprechen_geraet'], cc_geraete($neu));
+        if ($cc_sh !== 200) {
+            $mangel[] = sprintf(cc_t('SPRECHEN.F_GERAET'), cc_e($neu['sprechen_geraet']));
+            $namen[] = 'sprechen_geraet';
+        }
+    }
     $fehlend = array();
     foreach (array_keys(cc_defaults()) as $fk) {
+        if (in_array($fk, cc_sprechen_schluessel(), true)) {
+            continue;
+        }
         if (!is_array($daten) || !array_key_exists($fk, $daten)) {
             $fehlend[] = $fk;
         }
@@ -2091,4 +2139,636 @@ function cc_sicherung_lesen($roh, &$namen = null)
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
     return array($mangel ? null : $neu, $mangel, $anzahl);
+}
+
+/** Ansage-3: die Schluessel der Sprachausgabe (in Sicherungen bis 1.3.15 nicht dabei). */
+function cc_sprechen_schluessel()
+{
+    return array('sprechen_ein', 'sprechen_geraet', 'sprechen_stunde', 'sprechtoken');
+}
+
+/* ==================================================================
+ * Sprachausgabe fuer andere Plugins (Punkt Ansage-3, 01.10.2026)
+ *
+ * Endpunkt webfrontend/html/index.php mit DERSELBEN Schnittstelle wie
+ * Alexa-NG (/plugins/alexang/index.php): POST aktion=sprechen, token, geraet,
+ * text, laut; ?selftest=1&token=...; ?aktion=status. Ein Verbraucher-Plugin,
+ * das Alexa-NG anspricht, tauscht nur den Ordner in der Adresse und die
+ * Geraetenamen. Ab Werk aus (sprechen_ein=0), eigenes Sprechtoken,
+ * nur Aufrufer auf diesem LoxBerry (127.0.0.1/::1).
+ *
+ * Uebergabe an den Dienst ueber eine Auftragsdatei in
+ * data/plugins/<ordner>/sprechen/ (siehe SprechEingang im Dienst). Der
+ * Endpunkt wartet hoechstens CC_SPRECHEN_FRIST Sekunden auf die Antwort des
+ * Dienstes und meldet dann ehrlich: OK=1 heisst "vom laufenden Dienst bei
+ * GERAETE verbundenen Lautsprechern eingereiht" (GRUND=EINGEREIHT) - die
+ * Wiedergabe selbst dauert 3 bis 60 s und wird nicht abgewartet; sonst liefe
+ * jede Ansage in die 10-s-Frist der Verbraucher (abfahrt_alexa_rufen). Kommt
+ * die Antwort nicht rechtzeitig, zieht der Endpunkt den Auftrag zurueck,
+ * bevor er 503 meldet - es wird dann nichts gesprochen.
+ * ================================================================== */
+
+define('CC_SPRECHEN_FRIST', 5.0);
+define('CC_SPRECHEN_FENSTER', 30);
+
+function cc_sprechen_ordner()
+{
+    return cc_paths()['datadir'] . '/sprechen';
+}
+
+/** Sprechtoken: 16 bis 128 Zeichen aus Buchstaben, Ziffern, _ und - (die
+ *  Verbraucher pruefen 8 bis 128 derselben Zeichen; "Array" ist die Spur einer
+ *  umgewandelten Liste, Klasse 12). */
+function cc_sprechtoken_taugt($t)
+{
+    return is_string($t) && strcasecmp($t, 'Array') !== 0
+        && preg_match('/^[A-Za-z0-9_\-]{16,128}\z/', $t) === 1;
+}
+
+/** Antwortzeile wie Alexa-NG: KOPF;FELD=WERT;... - Werte ohne ; = und Umbruch. */
+function cc_zeile($kopf, array $felder)
+{
+    $z = $kopf;
+    foreach ($felder as $k => $v) {
+        $z .= ';' . $k . '=' . preg_replace('/[;=\x00-\x1F\x7F]/', '_', (string) $v);
+    }
+    return $z;
+}
+
+/** Nur Aufrufer auf diesem LoxBerry. */
+function cc_ist_lokal($adresse)
+{
+    return in_array((string) $adresse, array('127.0.0.1', '::1', '::ffff:127.0.0.1'), true);
+}
+
+/** Der Port des LoxBerry-Webservers aus general.json (Rueckfall 80). */
+function cc_webport()
+{
+    static $port = null;
+    if ($port !== null) {
+        return $port;
+    }
+    $port = 80;
+    $home = cc_paths()['home'];
+    if ($home !== '' && is_file($home . '/config/system/general.json')) {
+        $g = json_decode((string) @file_get_contents($home . '/config/system/general.json'), true);
+        foreach (array('Webserver', 'WEBSERVER') as $ab) {
+            if (is_array($g) && isset($g[$ab]['Port']) && (int) $g[$ab]['Port'] > 0) {
+                $port = (int) $g[$ab]['Port'];
+                break;
+            }
+        }
+    }
+    return $port;
+}
+
+/** Die Adresse fuer andere Plugins auf diesem LoxBerry. */
+function cc_sprechen_adresse()
+{
+    return 'http://127.0.0.1:' . cc_webport() . '/plugins/' . cc_paths()['plugin'] . '/index.php';
+}
+
+/**
+ * Arbeitet der Dienst? Am Herzschlag in zustand.json gemessen, nicht an einer
+ * Prozessnummer (dreimal das Intervall, mindestens 60 s - wie der Reiter Test).
+ * Rueckgabe array(arbeitet, alter in s oder -1, Zustand oder null).
+ */
+function cc_dienst_herz(array $cfg)
+{
+    $f = cc_paths()['datadir'] . '/zustand.json';
+    $zu = is_file($f) ? json_decode((string) @file_get_contents($f), true) : null;
+    if (!is_array($zu) || !isset($zu['zeit'])) {
+        return array(false, -1, null);
+    }
+    $alter = time() - (int) $zu['zeit'];
+    $grenze = max(60, 3 * (int) cc_cfg($cfg, 'intervall', '10'));
+    return array($alter >= -300 && $alter <= $grenze, max(0, $alter), $zu);
+}
+
+/**
+ * Die Ziele aus dem Feld geraet. Kommaliste aus Geraetenamen, wie sie in der
+ * Geraeteliste stehen (auch das MQTT-Thema, Gross/klein egal - wie
+ * geraet_finden() im Dienst), "gruppe:<name>" (Schreibweise von Alexa-NG; eine
+ * Google-Lautsprechergruppe steht hier wie ein Geraet in der Liste) und
+ * "alle". Ein Name, der selbst ein Komma traegt, wird zuerst als Ganzes
+ * gesucht. Nie ein Rueckfall auf "alle".
+ * Rueckgabe array(http, grund, namen, unbekannter Name).
+ */
+function cc_sprechen_ziele($param, array $geraete)
+{
+    $finden = function ($k) use ($geraete) {
+        foreach ($geraete as $g) {
+            if ($k === $g || $k === cc_thema($g)) {
+                return $g;
+            }
+        }
+        $kl = strtolower($k);
+        foreach ($geraete as $g) {
+            if ($kl === strtolower($g) || $kl === strtolower(cc_thema($g))) {
+                return $g;
+            }
+        }
+        return null;
+    };
+    $ganz = $finden(trim((string) $param));
+    if ($ganz !== null) {
+        return array(200, '', array($ganz), '');
+    }
+    $aus = array();
+    foreach (explode(',', (string) $param) as $roh) {
+        $roh = trim($roh);
+        if ($roh === '') {
+            return array(400, 'GERAET', array(), '');
+        }
+        $g = $finden($roh);
+        if ($g === null && in_array(strtolower($roh), array(cc_sammelziel(), 'all', '*'), true)) {
+            if (!$geraete) {
+                return array(404, 'KEINE_GERAETE', array(), '');
+            }
+            foreach ($geraete as $gg) {
+                if (!in_array($gg, $aus, true)) {
+                    $aus[] = $gg;
+                }
+            }
+            continue;
+        }
+        $gruppe = false;
+        if ($g === null && stripos($roh, 'gruppe:') === 0) {
+            $gruppe = true;
+            $roh = trim(substr($roh, 7));
+            $g = $roh === '' ? null : $finden($roh);
+        }
+        if ($g === null) {
+            return array(404, $gruppe ? 'GRUPPE_UNBEKANNT' : 'GERAET_UNBEKANNT', array(),
+                         cc_zeichen_kuerzen($roh, 60));
+        }
+        if (!in_array($g, $aus, true)) {
+            $aus[] = $g;
+        }
+    }
+    return array(200, '', $aus, '');
+}
+
+/** Eine kleine Datei unter data/ lesen (JSON), sonst null. */
+function cc_sprechen_json($name)
+{
+    $f = cc_paths()['datadir'] . '/' . $name;
+    if (!is_file($f)) {
+        return null;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    return is_array($d) ? $d : null;
+}
+
+/** Die Bremse: Stundenliste und Gleichtext-Fenster je Geraet. */
+function cc_sprechen_bremse_lesen()
+{
+    $b = cc_sprechen_json('sprechen_bremse.json');
+    if (!is_array($b)) {
+        $b = array();
+    }
+    $jetzt = time();
+    $stunde = (isset($b['stunde']) && is_array($b['stunde'])) ? $b['stunde'] : array();
+    $b['stunde'] = array_values(array_filter($stunde, function ($t) use ($jetzt) {
+        return is_int($t) && $jetzt - $t < 3600 && $t <= $jetzt + 300;
+    }));
+    $fenster = array();
+    if (isset($b['fenster']) && is_array($b['fenster'])) {
+        foreach ($b['fenster'] as $k => $e) {
+            if (is_string($k) && is_array($e) && isset($e['h'], $e['t']) && is_string($e['h'])
+                && is_int($e['t']) && $jetzt - $e['t'] < 3600) {
+                $fenster[$k] = array('h' => $e['h'], 't' => $e['t']);
+            }
+        }
+    }
+    $b['fenster'] = $fenster;
+    return $b;
+}
+
+/**
+ * Eine Ansage annehmen und an den Dienst uebergeben - EINE Funktion fuer den
+ * Endpunkt und den Knopf "Testansage" im Reiter Test (Regeln/03: Trockenlauf
+ * und Ernstfall in derselben Funktion). Die Tokenpruefung macht der Aufrufer;
+ * erst danach wird geschrieben. Der Text kommt in keine Antwort, keine
+ * Protokollzeile und keine Merkdatei - nur seine Laenge.
+ * $par: geraet, text, laut, ssml, dringend (Zeichenketten, auf is_string geprueft).
+ * Rueckgabe array(http, felder); felder beginnt mit OK und endet mit GRUND.
+ */
+function cc_sprechen_ausfuehren(array $par, $quelle, $wer)
+{
+    $cfg = cc_config_read();
+    $ziele = array();
+    $laenge = 0;
+    $ende = function ($http, array $f) use ($quelle, $wer, &$ziele, &$laenge) {
+        if (!isset($f['GRUND'])) {
+            $f['GRUND'] = '-';
+        }
+        $d = cc_paths()['datadir'];
+        if (is_dir($d) || @mkdir($d, 0775, true)) {
+            $js = json_encode(array('zeit' => time(), 'quelle' => (string) $quelle,
+                'wer' => cc_zeichen_kuerzen((string) $wer, 46), 'http' => (int) $http,
+                'ok' => (int) $f['OK'], 'grund' => (string) $f['GRUND'], 'geraete' => $ziele,
+                'laenge' => (int) $laenge), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
+                | JSON_INVALID_UTF8_SUBSTITUTE);
+            if ($js !== false) {
+                cc_datei_schreiben($d . '/sprechen_letzte.json', $js, 0600);
+            }
+        }
+        return array((int) $http, $f);
+    };
+    $f = array('OK' => 0);
+
+    if (cc_upgrade_laeuft()) {
+        $f['GRUND'] = 'AKTUALISIERUNG';
+        return $ende(503, $f);
+    }
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer', 'gekuerzt'), true)) {
+        $f['GRUND'] = 'KONFIGURATION';
+        return $ende(503, $f);
+    }
+    if ((string) cc_cfg($cfg, 'sprechen_ein', '0') !== '1') {
+        $f['GRUND'] = 'SPRECHEN_AUS';
+        return $ende(409, $f);
+    }
+
+    // ---- Parameter pruefen: abweisen, nie zurechtbiegen (wie Alexa-NG) ----
+    if (!isset($par['text'])) {
+        $f['GRUND'] = 'TEXT_FEHLT';
+        return $ende(400, $f);
+    }
+    if (isset($par['ssml']) && !in_array($par['ssml'], array('0', '1'), true)) {
+        $f['GRUND'] = 'SSML';
+        return $ende(400, $f);
+    }
+    if (isset($par['ssml']) && $par['ssml'] === '1') {
+        // SSML kennt ein Google-Lautsprecher ueber diesen Weg nicht.
+        $f['GRUND'] = 'SSML';
+        return $ende(400, $f);
+    }
+    $text = (string) $par['text'];
+    if (preg_match('//u', $text) !== 1 || preg_match('/[\x00-\x1F\x7F]/', $text)) {
+        $f['GRUND'] = 'TEXT';
+        return $ende(400, $f);
+    }
+    $text = trim($text);
+    if ($text === '' || $text === '0') {
+        // Statusbaustein-Falle (wie Alexa-NG): nichts sprechen, kein Fehler.
+        return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'TEXT_NULL'));
+    }
+    $laenge = cc_zeichenzahl($text);
+    if ($laenge > 1000) {
+        $f['GRUND'] = 'TEXT';
+        return $ende(400, $f);
+    }
+    if (strpbrk($text, '<>') !== false) {
+        $f['GRUND'] = 'SSML_OHNE_SCHALTER';
+        return $ende(400, $f);
+    }
+    $laut = null;
+    if (isset($par['laut']) && $par['laut'] !== '') {
+        if (!preg_match('/^[0-9]{1,3}\z/', $par['laut']) || (int) $par['laut'] > 100) {
+            $f['GRUND'] = 'LAUT';
+            return $ende(400, $f);
+        }
+        $laut = (int) $par['laut'];
+    }
+    // dringend: angenommen wie bei Alexa-NG, ohne Wirkung - die Ruhezeit
+    // dieses Plugins sperrt keine Ansage, sie begrenzt nur die Lautstaerke.
+    if (isset($par['dringend']) && !in_array($par['dringend'], array('0', '1'), true)) {
+        $f['GRUND'] = 'DRINGEND';
+        return $ende(400, $f);
+    }
+    $gp = (isset($par['geraet']) && $par['geraet'] !== '') ? $par['geraet']
+        : (string) cc_cfg($cfg, 'sprechen_geraet', '');
+    if ($gp === '') {
+        $f['GRUND'] = 'KEIN_GERAET';
+        return $ende(400, $f);
+    }
+    if (strlen($gp) > 400 || preg_match('/[\x00-\x1F\x7F]/', $gp) || preg_match('//u', $gp) !== 1) {
+        $f['GRUND'] = 'GERAET';
+        return $ende(400, $f);
+    }
+    if ((string) cc_cfg($cfg, 'tts_modus', 'chromecast') === 'audioserver') {
+        $f['GRUND'] = 'TTS_MODUS';
+        return $ende(409, $f);
+    }
+    list($h, $g, $namen, $unbek) = cc_sprechen_ziele($gp, cc_geraete($cfg));
+    if ($h !== 200) {
+        $f['GRUND'] = $g;
+        if ($unbek !== '') {
+            $f['NAME'] = $unbek;
+        }
+        return $ende($h, $f);
+    }
+    $ziele = $namen;
+
+    // ---- laeuft der Dienst, und kennt er den Eingang? ----
+    list($herz, , $zu) = cc_dienst_herz($cfg);
+    if (!$herz) {
+        $f['GRUND'] = 'DIENST_LAEUFT_NICHT';
+        return $ende(503, $f);
+    }
+    if (empty($zu['sprechen_eingang'])) {
+        $f['GRUND'] = 'DIENST_OHNE_SPRECHEN';
+        return $ende(503, $f);
+    }
+
+    // ---- Bremse, unter einer Sperre (zwei gleiche Aufrufe zugleich) ----
+    $ordner = cc_sprechen_ordner();
+    if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
+        $f['GRUND'] = 'ORDNER';
+        return $ende(503, $f);
+    }
+    $sp = @fopen(cc_paths()['datadir'] . '/sprechen.lock', 'c');
+    $gesperrt = false;
+    if ($sp !== false) {
+        $bis = microtime(true) + 3.0;
+        do {
+            if (flock($sp, LOCK_EX | LOCK_NB)) {
+                $gesperrt = true;
+                break;
+            }
+            usleep(100000);
+        } while (microtime(true) < $bis);
+    }
+    if (!$gesperrt) {
+        if ($sp !== false) {
+            fclose($sp);
+        }
+        $f['GRUND'] = 'BESCHAEFTIGT';
+        return $ende(503, $f);
+    }
+    $frei = function () use ($sp) {
+        flock($sp, LOCK_UN);
+        fclose($sp);
+    };
+    $b = cc_sprechen_bremse_lesen();
+    $grenze = (int) cc_cfg($cfg, 'sprechen_stunde', '60');
+    if ($grenze < 10 || $grenze > 240) {
+        $grenze = 60;
+    }
+    if (count($b['stunde']) >= $grenze) {
+        $frei();
+        $f['GRUND'] = 'STUNDENGRENZE';
+        return $ende(429, $f);
+    }
+    $hash = hash('sha256', $text . '|' . ($laut === null ? '' : $laut));
+    $jetzt = time();
+    $rest = array();
+    $unveraendert = 0;
+    foreach ($ziele as $z) {
+        $e = isset($b['fenster'][$z]) ? $b['fenster'][$z] : null;
+        if (is_array($e) && hash_equals($e['h'], $hash) && $jetzt - $e['t'] < CC_SPRECHEN_FENSTER) {
+            $unveraendert++;
+            continue;
+        }
+        $rest[] = $z;
+    }
+    if (!$rest) {
+        $frei();
+        return $ende(200, array('OK' => 1, 'GERAETE' => 0, 'UNVERAENDERT' => $unveraendert,
+                                'GRUND' => 'UNVERAENDERT'));
+    }
+
+    // ---- Auftrag an den Dienst; hoechstens CC_SPRECHEN_FRIST warten ----
+    $id = bin2hex(random_bytes(10));
+    $auftrag = $ordner . '/' . $id . '.auftrag';
+    $antwort = $ordner . '/' . $id . '.antwort';
+    $js = json_encode(array('id' => $id, 'zeit' => time(), 'geraete' => $rest, 'text' => $text,
+                            'laut' => $laut, 'quelle' => (string) $quelle,
+                            'wer' => cc_zeichen_kuerzen((string) $wer, 46)),
+                      JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false || !cc_datei_schreiben($auftrag, $js, 0600)) {
+        $frei();
+        $f['GRUND'] = 'SCHREIBFEHLER';
+        return $ende(503, $f);
+    }
+    $a = null;
+    $warten = function ($sekunden) use ($antwort) {
+        $bis = microtime(true) + $sekunden;
+        while (microtime(true) < $bis) {
+            usleep(50000);
+            clearstatcache(true, $antwort);
+            if (is_file($antwort)) {
+                $d = json_decode((string) @file_get_contents($antwort), true);
+                @unlink($antwort);
+                return is_array($d) ? $d : array();
+            }
+        }
+        return null;
+    };
+    $a = $warten(CC_SPRECHEN_FRIST);
+    if ($a === null) {
+        if (@unlink($auftrag)) {
+            // Zurueckgezogen: der Dienst hat ihn nie gesehen, gesprochen wird nichts.
+            $frei();
+            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+            return $ende(503, $f);
+        }
+        // Schon abgeholt - die Antwort kommt gleich.
+        $a = $warten(1.5);
+        if ($a === null) {
+            $frei();
+            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+            $f['UNKLAR'] = 1;
+            return $ende(503, $f);
+        }
+    }
+    $eingereiht = (isset($a['eingereiht']) && is_array($a['eingereiht'])) ? $a['eingereiht'] : array();
+    $offline = isset($a['nicht_verbunden']) ? (int) $a['nicht_verbunden'] : 0;
+    $agrund = (isset($a['grund']) && is_string($a['grund'])) ? $a['grund'] : 'ANTWORT_KAPUTT';
+    if (!isset($a['eingereiht'])) {
+        $agrund = 'ANTWORT_KAPUTT';
+    }
+    if ($eingereiht) {
+        $b['stunde'][] = time();
+        foreach ($eingereiht as $z) {
+            if (is_string($z)) {
+                $b['fenster'][$z] = array('h' => $hash, 't' => time());
+            }
+        }
+        $bjs = json_encode($b, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($bjs !== false) {
+            cc_datei_schreiben(cc_paths()['datadir'] . '/sprechen_bremse.json', $bjs, 0600);
+        }
+    }
+    $frei();
+    if ($agrund !== '') {
+        $f['GRUND'] = $agrund;
+        return $ende(503, $f);
+    }
+    if (!$eingereiht) {
+        if (!empty($a['unbekannt']) && $offline === 0) {
+            // Die Geraeteliste hat sich eben geaendert; der Dienst kennt den Namen nicht mehr.
+            $f['GRUND'] = 'GERAET_UNBEKANNT';
+            return $ende(404, $f);
+        }
+        $f['GRUND'] = 'GERAETE_OFFLINE';
+        $f['OFFLINE'] = $offline;
+        return $ende(503, $f);
+    }
+    return $ende(200, array('OK' => 1, 'GERAETE' => count($eingereiht), 'UNVERAENDERT' => $unveraendert,
+                            'OFFLINE' => $offline, 'GRUND' => 'EINGEREIHT'));
+}
+
+/** Statuszeile, ohne Token lesbar - verraet weder Token noch Text. */
+function cc_sprechen_status()
+{
+    $cfg = cc_config_read();
+    list($herz, $alter, $zu) = cc_dienst_herz($cfg);
+    $e = cc_sprechen_json('sprechen_ergebnis.json');
+    $f = array(
+        'OK'         => $herz ? 1 : 0,
+        'SPRECHEN'   => (string) cc_cfg($cfg, 'sprechen_ein', '0') === '1' ? 1 : 0,
+        'DIENST'     => $herz ? 1 : 0,
+        'ALTER'      => $alter,
+        'GERAETE'    => count(cc_geraete($cfg)),
+        'ERREICHBAR' => (is_array($zu) && isset($zu['geraete_erreichbar'])) ? (int) $zu['geraete_erreichbar'] : -1,
+        'LETZTE_OK'  => (is_array($e) && isset($e['ok'])) ? (int) $e['ok'] : -1,
+        'LETZTE_ALTER' => (is_array($e) && isset($e['zeit'])) ? max(0, time() - (int) $e['zeit']) : -1,
+        'GRUND'      => $herz ? '-' : 'DIENST_LAEUFT_NICHT',
+    );
+    return array(200, $f);
+}
+
+/** Klartext zu einem GRUND fuer den Reiter Test (Sprachdatei, Rueckfall der GRUND selbst). */
+function cc_sprechen_grund_text($grund)
+{
+    $s = 'SPRECHEN.G_' . preg_replace('/[^A-Z_]/', '', strtoupper((string) $grund));
+    $t = cc_t($s);
+    return $t === $s ? (string) $grund : $t;
+}
+
+/**
+ * Die Felder des Formulars "Sprachausgabe fuer andere Plugins" pruefen
+ * (Entscheidungen 16 und 19: eine Beanstandung speichert nichts; Leerraum am
+ * Rand faellt still weg). Das Sprechtoken ist ein Kennwortfeld: leer laesst
+ * es, wie es ist; der Haken loescht es. Es reist nie zurueck ins Formular.
+ * Rueckgabe array(neue Konfiguration, Beanstandungen Feld => Text).
+ */
+function cc_sprechen_formular(array $post, array $cfg)
+{
+    $neu = $cfg;
+    $bean = array();
+    $neu['sprechen_ein'] = isset($post['sprechen_ein']) ? '1' : '0';
+
+    $roh = array_key_exists('sprechen_geraet', $post) ? $post['sprechen_geraet'] : '';
+    list($gut, $fehler) = cc_wert_pruefen('sprechen_geraet', is_string($roh) ? trim($roh) : $roh, $cfg);
+    if ($fehler !== '') {
+        $bean['sprechen_geraet'] = $fehler;
+    } else {
+        if ($gut !== '') {
+            list($h, , , $name) = cc_sprechen_ziele($gut, cc_geraete($cfg));
+            if ($h !== 200) {
+                $bean['sprechen_geraet'] = sprintf(cc_t('SPRECHEN.F_GERAET'),
+                                                   cc_e($name !== '' ? $name : $gut));
+            }
+        }
+        if (!isset($bean['sprechen_geraet'])) {
+            $neu['sprechen_geraet'] = $gut;
+        }
+    }
+
+    $roh = array_key_exists('sprechen_stunde', $post) ? $post['sprechen_stunde'] : '';
+    $roh = is_string($roh) ? trim($roh) : $roh;
+    if ($roh === '') {
+        $bean['sprechen_stunde'] = sprintf(cc_t('PRUEF.LEER'), 'sprechen_stunde');
+    } else {
+        list($gut, $fehler) = cc_wert_pruefen('sprechen_stunde', $roh, $cfg);
+        if ($fehler !== '') {
+            $bean['sprechen_stunde'] = $fehler;
+        } else {
+            $neu['sprechen_stunde'] = $gut;
+        }
+    }
+
+    $loeschen = isset($post['sprechtoken_loeschen']);
+    $tok = array_key_exists('sprechtoken', $post) ? $post['sprechtoken'] : '';
+    if (!is_string($tok)) {
+        $bean['sprechtoken'] = cc_t('SPRECHEN.F_TOKEN');
+    } else {
+        $tok = trim($tok);
+        if ($loeschen && $tok !== '') {
+            $bean['sprechtoken'] = cc_t('SPRECHEN.F_TOKEN_UND_LOESCHEN');
+        } elseif ($loeschen) {
+            $neu['sprechtoken'] = '';
+        } elseif ($tok !== '') {
+            if (!cc_sprechtoken_taugt($tok)) {
+                $bean['sprechtoken'] = cc_t('SPRECHEN.F_TOKEN');
+            } elseif ((string) cc_cfg($cfg, 'aktionstoken', '') !== ''
+                      && hash_equals((string) cc_cfg($cfg, 'aktionstoken', ''), $tok)) {
+                $bean['sprechtoken'] = cc_t('SPRECHEN.F_TOKEN_GLEICH');
+            } else {
+                $neu['sprechtoken'] = $tok;
+            }
+        }
+    }
+    if ($neu['sprechen_ein'] === '1' && (string) cc_cfg($neu, 'sprechtoken', '') === ''
+        && !isset($bean['sprechtoken'])) {
+        $bean['sprechtoken'] = cc_t('SPRECHEN.F_EIN_OHNE_TOKEN');
+    }
+    return array($neu, $bean);
+}
+
+/**
+ * Zeile im Reiter Test: Traegt die Sprachausgabe fuer andere Plugins?
+ * Gemessen wird, was sich ohne Ansage messen laesst (Schalter, Token,
+ * Standardgeraet, Herzschlag und Eingang des Dienstes); die letzte Ansage
+ * steht dabei. Rueckgabe array(Frage, true|false|null, Antwort).
+ */
+function cc_sprechen_pruefzeile()
+{
+    $cfg = cc_config_read();
+    $frage = cc_t('SPRECHEN.F_PRUEF');
+    if ((string) cc_cfg($cfg, 'sprechen_ein', '0') !== '1') {
+        return array($frage, null, cc_t('SPRECHEN.A_AUS'));
+    }
+    $tok = (string) cc_cfg($cfg, 'sprechtoken', '');
+    if ($tok === '') {
+        return array($frage, false, cc_t('SPRECHEN.A_KEIN_TOKEN'));
+    }
+    if (!cc_sprechtoken_taugt($tok)) {
+        return array($frage, false, cc_t('SPRECHEN.A_TOKEN_FORM'));
+    }
+    if (hash_equals((string) cc_cfg($cfg, 'aktionstoken', ''), $tok)) {
+        return array($frage, false, cc_t('SPRECHEN.A_TOKEN_GLEICH'));
+    }
+    $std = (string) cc_cfg($cfg, 'sprechen_geraet', '');
+    if ($std !== '') {
+        list($h, , , $n) = cc_sprechen_ziele($std, cc_geraete($cfg));
+        if ($h !== 200) {
+            return array($frage, false, sprintf(cc_t('SPRECHEN.A_STD_UNBEKANNT'), $n !== '' ? $n : $std));
+        }
+    }
+    list($herz, , $zu) = cc_dienst_herz($cfg);
+    if (!$herz) {
+        return array($frage, false, cc_t('SPRECHEN.A_DIENST'));
+    }
+    if (empty($zu['sprechen_eingang'])) {
+        return array($frage, false, cc_t('SPRECHEN.A_EINGANG'));
+    }
+    $text = sprintf(cc_t('SPRECHEN.A_BEREIT'), strlen($tok),
+                    $std !== '' ? $std : cc_t('SPRECHEN.A_OHNE_STD'), cc_sprechen_adresse());
+    $zustand = true;
+    $e = cc_sprechen_json('sprechen_ergebnis.json');
+    if (is_array($e) && isset($e['zeit'], $e['ok'])) {
+        $alter = max(0, time() - (int) $e['zeit']);
+        $geraet = isset($e['geraet']) && is_string($e['geraet']) ? $e['geraet'] : '?';
+        if ((int) $e['ok'] === 1) {
+            $text .= ' ' . sprintf(cc_t('SPRECHEN.A_LETZTE_OK'), $geraet, $alter);
+        } else {
+            $text .= ' ' . sprintf(cc_t('SPRECHEN.A_LETZTE_FEHL'), $geraet, $alter,
+                                   isset($e['meldung']) && is_string($e['meldung']) ? $e['meldung'] : '?');
+            // Die Einrichtung traegt, die letzte Wiedergabe scheiterte - ein
+            // Haken waere hier eine Behauptung, ein Kreuz auch (die Ursache
+            // kann vorbei sein). "Testansage" prueft es.
+            $zustand = null;
+        }
+    }
+    $l = cc_sprechen_json('sprechen_letzte.json');
+    if (is_array($l) && isset($l['zeit'], $l['http'], $l['grund']) && (int) $l['ok'] !== 1) {
+        $text .= ' ' . sprintf(cc_t('SPRECHEN.A_LETZTE_ABWEISUNG'), (int) $l['http'],
+                               (string) $l['grund'], max(0, time() - (int) $l['zeit']));
+    }
+    return array($frage, $zustand, $text);
 }

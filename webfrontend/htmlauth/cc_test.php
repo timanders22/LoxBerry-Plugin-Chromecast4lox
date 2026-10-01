@@ -209,6 +209,20 @@ function cc_test_ausfuehren($was, $geraet = '')
             }
             return array(cc_t('TEXT.T179'), $t);
 
+        case 'sprechen':
+            // Ansage-3: Testansage ueber DIESELBE Funktion wie der Endpunkt
+            // (cc_sprechen_ausfuehren), ohne Token - diese Seite steht hinter der
+            // LoxBerry-Anmeldung und dem Formularmerkmal. Leer = Standardgeraet.
+            list($cc_sh, $cc_sf) = cc_sprechen_ausfuehren(
+                array('text' => cc_t('SPRECHEN.TESTTEXT'), 'geraet' => (string) $geraet),
+                'oberflaeche', 'Reiter Test');
+            $t = sprintf(cc_t('SPRECHEN.T_ANTWORT'), $cc_sh, cc_zeile('SPRECHEN', $cc_sf)) . "\n\n"
+               . cc_sprechen_grund_text($cc_sf['GRUND']);
+            if ($cc_sf['GRUND'] === 'EINGEREIHT') {
+                $t .= "\n\n" . cc_t('SPRECHEN.T_EINGEREIHT_NACH');
+            }
+            return array(cc_t('SPRECHEN.K_TESTANSAGE'), $t);
+
         case 'ping':
             if ($geraet === '') {
                 $geraet = $geraete ? $geraete[0] : '';
@@ -605,6 +619,10 @@ function cc_selbstpruefung()
             $wda && !$wrest ? sprintf(cc_t('TEST.A_WAECHTER_PFAD'), $wsoll)
                             : sprintf(cc_t('TEST.A_WAECHTER_REST'), implode(', ', $wtreffer)));
     }
+
+    /* --- 12. Sprachausgabe fuer andere Plugins (Ansage-3) ----------- */
+    $cc_sz = cc_sprechen_pruefzeile();
+    cc_pruefzeile($z, $cc_sz[0], $cc_sz[1], $cc_sz[2]);
 
     /* --- Bilanz ---------------------------------------------------- */
     $gut = $schlecht = $unbekannt = 0;

@@ -130,6 +130,10 @@ if HTML_DIR.startswith("REPLACE"):
     HTML_DIR = _anlage("webfrontend", "html", "plugins", PLUGIN_NAME)
 CONFIG_FILE = os.path.join(CONFIG_DIR, PLUGIN_NAME + ".cfg")
 ZUSTAND_FILE = os.path.join(DATA_DIR, "zustand.json")
+# Sprech-Eingang fuer andere Plugins (Punkt Ansage-3, 01.10.2026): Auftraege des
+# Endpunkts webfrontend/html/index.php und das Ergebnis der letzten Ansage.
+SPRECHEN_ORDNER = os.path.join(DATA_DIR, "sprechen") if DATA_DIR else ""
+SPRECHEN_ERGEBNIS = os.path.join(DATA_DIR, "sprechen_ergebnis.json") if DATA_DIR else ""
 THEMEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "cc_themen.json")
 
@@ -1872,7 +1876,10 @@ class Geraet:
                 continue
             if auftrag is None:
                 break
-            befehl, wert, schrittweite, cfg = auftrag
+            befehl, wert, schrittweite, cfg = auftrag[:4]
+            # Ansage-3: ein Auftrag aus dem Sprech-Eingang traegt eine
+            # Rueckmeldung - das Ergebnis geht in sprechen_ergebnis.json.
+            rueckmeldung = auftrag[4] if len(auftrag) > 4 else None
             try:
                 ergebnis = self.befehl(befehl, wert, schrittweite, cfg)
             except Exception as fehler:  # noqa: BLE001
@@ -1882,9 +1889,15 @@ class Geraet:
             if ergebnis != "OK":
                 log.warning("%s: %s", self.name, ergebnis)
             self.meldung_setzen("" if ergebnis == "OK" else ergebnis)
+            if rueckmeldung is not None:
+                try:
+                    rueckmeldung(self.name, ergebnis)
+                except Exception as fehler:  # noqa: BLE001
+                    log.warning("'%s': Rueckmeldung der Ansage misslungen: %s",
+                                self.name, fehler)
             self.auftraege.task_done()
 
-    def einreihen(self, befehl, wert, schrittweite, cfg):
+    def einreihen(self, befehl, wert, schrittweite, cfg, rueckmeldung=None):
         """Einen Auftrag ablegen und SOFORT zurueckkehren.
 
         Genau darum geht es: der Aufrufer ist der Netzfaden von paho. Bleibt
@@ -1899,16 +1912,22 @@ class Geraet:
             geleert = 0
             while True:
                 try:
-                    self.auftraege.get_nowait()
+                    weg = self.auftraege.get_nowait()
                     self.auftraege.task_done()
                     geleert += 1
+                    # Ansage-3: auch ein verworfener Auftrag meldet sein Ende.
+                    if weg is not None and len(weg) > 4 and weg[4] is not None:
+                        try:
+                            weg[4](self.name, "Abgebrochen")
+                        except Exception:  # noqa: BLE001
+                            pass
                 except queue.Empty:
                     break
             log.info("'%s': Ansage abgebrochen, %d wartende Auftraege verworfen",
                      self.name, geleert)
             return
         self.faden_starten()
-        self.auftraege.put((befehl, wert, schrittweite, cfg))
+        self.auftraege.put((befehl, wert, schrittweite, cfg, rueckmeldung))
 
     def meldung_setzen(self, text):
         """Die letzte Meldung nach Loxone geben.
@@ -2106,6 +2125,17 @@ class Geraet:
             "lautstaerke": lautstaerke,
         }
 
+    def _lautstaerke_merken(self):
+        """Nur die Lautstaerke festhalten (Ansage-3: "laut" gilt nur fuer die
+        Ansage, auch wenn "danach fortsetzen" aus ist)."""
+        self.vorher = None
+        try:
+            cs = self.cast.status
+        except Exception:  # noqa: BLE001
+            return
+        if cs is not None and cs.volume_level is not None:
+            self.vorher = {"art": "nur_lautstaerke", "lautstaerke": cs.volume_level}
+
     def _lage_herstellen(self):
         """Nach der Ansage wieder aufnehmen, was vorher lief."""
         lage = self.vorher
@@ -2179,6 +2209,10 @@ class Geraet:
 
         fortsetzen = str(cfg.get("tts_fortsetzen", "1")).strip() == "1"
         ansagepegel = cfg.get("tts_pegel")
+        # Ansage-3: eine Lautstaerke aus dem Sprech-Eingang gilt nur fuer diese
+        # Ansage. Mit "danach fortsetzen" stellt _lage_herstellen() sie ohnehin
+        # zurueck; ohne wird hier die vorherige Lautstaerke gemerkt.
+        nur_laut = (not fortsetzen) and str(cfg.get("_sprechen_laut", "")) == "1"
         self.ansage_abbrechen = False
         self.ansage_laeuft = True
         gespielt = False
@@ -2188,6 +2222,8 @@ class Geraet:
         try:
             if fortsetzen:
                 self._lage_merken()
+            elif nur_laut:
+                self._lautstaerke_merken()
             if str(ansagepegel or "").strip() != "":
                 stufe = max(0, min(100, zahl_oder(ansagepegel, 40)))
                 grenze = lautstaerke_grenze(cfg)
@@ -2226,7 +2262,7 @@ class Geraet:
                 if len(adressen) > 1:
                     log.info("'%s': Ansageteil %d von %d gesprochen",
                              self.name, nummer, len(adressen))
-            if fortsetzen:
+            if fortsetzen or nur_laut:
                 self._lage_herstellen()
             if war_lokal and not gespielt:
                 # Kein erfundener Erfolg. Der Lautsprecher hat den Auftrag
@@ -2492,6 +2528,204 @@ class UdpEmpfaenger(threading.Thread):
 
 
 # ---------------------------------------------------------------------------
+# Sprech-Eingang fuer andere Plugins (Punkt Ansage-3, 01.10.2026)
+# ---------------------------------------------------------------------------
+#
+# Der Endpunkt webfrontend/html/index.php (aktion=sprechen, dieselbe
+# Schnittstelle wie Alexa-NG) legt je Ansage eine Auftragsdatei
+# <kennung>.auftrag (0600) nach data/plugins/<ordner>/sprechen/ und wartet
+# hoechstens fuenf Sekunden auf <kennung>.antwort. Dieser Faden holt den
+# Auftrag ab, indem er ihn nach <kennung>.inarbeit UMBENENNT: wer zuerst
+# umbenennt, hat ihn. Zieht der Endpunkt den Auftrag nach Ablauf seiner Frist
+# zurueck (unlink), scheitert das Umbenennen hier, und es wird nichts
+# gesprochen - nie eine Ansage, die der Aufrufer schon als gescheitert
+# gemeldet bekam. Die Datei wird sofort geloescht; der Text bleibt nicht
+# liegen und steht nie im Protokoll (nur seine Laenge).
+#
+# Eingereiht wird mit Geraet.einreihen("tts", ...) - derselbe Weg wie cmd/tts
+# aus Loxone: dieselbe Ruhezeit und Obergrenze der Lautstaerke, derselbe Klang
+# vorab, dieselbe Wiederaufnahme, dieselbe Warteschlange je Geraet. Eine
+# zweite Abspiel-Logik gibt es nicht. Neu ist nur "laut" (Lautstaerke fuer
+# diese eine Ansage, als tts_pegel einer Kopie der Einstellungen).
+#
+# Warum nicht ueber MQTT cmd/tts: der Weg gibt keine Antwort, haengt am
+# Schalter "MQTT ein" und am laufenden Broker, und jede Ansage stuende im
+# Broker fuer jeden Abonnenten lesbar. Warum nicht UDP: ";" zerlegt den Text,
+# und es gibt ebenfalls keine Antwort.
+#
+# Die Antwort sagt: eingereiht bei n Geraeten, m nicht verbunden (ausgelassen
+# und gezaehlt, wie "offline" bei Alexa-NG). Ein nicht verbundenes Geraet
+# bekommt die Ansage nicht - ein Verbindungsversuch kostete bis zu 18 s.
+# Das Ergebnis der Wiedergabe kommt spaeter; es steht je Geraet in
+# sprechen_ergebnis.json (Reiter Test), ohne Text.
+
+SPRECHEN_HOECHSTALTER = 10      # Sekunden; ein aelterer Auftrag wird verworfen
+SPRECHEN_TAKT = 0.2             # Sekunden zwischen zwei Blicken in den Ordner
+
+
+def _ohne_adresse(text):
+    """Eine Meldung ohne Adressen: in einer Google-Adresse stuende der Text."""
+    return re.sub(r"[a-zA-Z][a-zA-Z0-9+.-]*://\S+", "<Adresse>", str(text))
+
+
+class SprechEingang(threading.Thread):
+    """Holt Sprechauftraege des Endpunkts ab und reiht sie ein."""
+
+    def __init__(self, dienst):
+        super().__init__(daemon=True, name="cc-sprechen")
+        self.dienst = dienst
+        self.laeuft = True
+        self.schloss = threading.Lock()
+
+    def run(self):
+        try:
+            os.makedirs(SPRECHEN_ORDNER, mode=0o700, exist_ok=True)
+        except OSError as fehler:
+            log.warning("Sprech-Eingang %s nicht anlegbar: %s", SPRECHEN_ORDNER, fehler)
+        log.info("Sprech-Eingang fuer andere Plugins bereit: %s", SPRECHEN_ORDNER)
+        while self.laeuft and self.dienst.laeuft:
+            try:
+                self.durchgang()
+            except Exception as fehler:  # noqa: BLE001
+                log.error("Sprech-Eingang: %s", fehler)
+            if self.dienst.halt.wait(SPRECHEN_TAKT):
+                break
+
+    def durchgang(self):
+        try:
+            namen = sorted(os.listdir(SPRECHEN_ORDNER))
+        except OSError:
+            return
+        jetzt = time.time()
+        for name in namen:
+            if re.match(r"^[0-9a-f]{16,40}\.auftrag$", name):
+                self.auftrag(name[:-len(".auftrag")])
+                continue
+            # Liegengebliebenes nach einer Minute weg: eine Antwort, die
+            # niemand abgeholt hat, eine abgebrochene Nebendatei.
+            pfad = os.path.join(SPRECHEN_ORDNER, name)
+            try:
+                if jetzt - os.path.getmtime(pfad) > 60:
+                    os.remove(pfad)
+            except OSError:
+                pass
+
+    def auftrag(self, kennung):
+        quelle = os.path.join(SPRECHEN_ORDNER, kennung + ".auftrag")
+        arbeit = os.path.join(SPRECHEN_ORDNER, kennung + ".inarbeit")
+        try:
+            os.rename(quelle, arbeit)
+        except OSError:
+            return              # vom Endpunkt zurueckgezogen
+        daten = None
+        try:
+            with open(arbeit, "r", encoding="utf-8") as fh:
+                daten = json.loads(fh.read(65536))
+        except (OSError, ValueError):
+            daten = None
+        finally:
+            try:
+                os.remove(arbeit)
+            except OSError:
+                pass
+        self.antworten(kennung, self.annehmen(kennung, daten))
+
+    def annehmen(self, kennung, d):
+        aus = {"id": kennung, "eingereiht": [], "nicht_verbunden": 0,
+               "unbekannt": [], "grund": ""}
+        if not isinstance(d, dict):
+            aus["grund"] = "AUFTRAG_KAPUTT"
+            log.warning("Sprechauftrag %s nicht lesbar - verworfen", kennung)
+            return aus
+        text = d.get("text")
+        geraete = d.get("geraete")
+        laut = d.get("laut")
+        zeit = d.get("zeit")
+        herkunft = "%s %s" % (str(d.get("quelle", "?"))[:20], str(d.get("wer", "?"))[:46])
+        if (not isinstance(text, str) or not 1 <= len(text) <= 1000
+                or re.search(r"[\x00-\x1f\x7f]", text)
+                or not isinstance(geraete, list) or not geraete or len(geraete) > 64
+                or any(not isinstance(g, str) or g == "" for g in geraete)
+                or (laut is not None and (isinstance(laut, bool) or not isinstance(laut, int)
+                                          or not 0 <= laut <= 100))
+                or isinstance(zeit, bool) or not isinstance(zeit, (int, float))):
+            aus["grund"] = "AUFTRAG_KAPUTT"
+            log.warning("Sprechauftrag %s (%s) hat eine unerwartete Form - verworfen",
+                        kennung, herkunft)
+            return aus
+        alter = time.time() - float(zeit)
+        if alter > SPRECHEN_HOECHSTALTER or alter < -60:
+            aus["grund"] = "VERALTET"
+            log.warning("Sprechauftrag %s (%s) ist %.0f s alt - verworfen, nicht gesprochen",
+                        kennung, herkunft, alter)
+            return aus
+        cfg = self.dienst.cfg
+        modus = (cfg.get("tts_modus") or "chromecast").strip().lower()
+        # Nur wo der Lautsprecher selbst spricht, braucht es die Verbindung;
+        # in den Modi mit fremdem Sprachdienst ist er nicht beteiligt.
+        braucht_verbindung = modus in ("chromecast", "lokal")
+        nach_name = dict((g.name, g) for g in list(self.dienst.geraete.values()))
+        schritt = self.dienst._zahl("lautstaerke_schritt", 5)
+        auftrag_cfg = dict(cfg)
+        if laut is not None:
+            auftrag_cfg["tts_pegel"] = str(laut)
+            auftrag_cfg["_sprechen_laut"] = "1"
+        for name in geraete:
+            geraet = nach_name.get(name)
+            if geraet is None:
+                aus["unbekannt"].append(name[:60])
+                continue
+            if braucht_verbindung and not geraet.verbunden():
+                aus["nicht_verbunden"] += 1
+                continue
+            geraet.einreihen("tts", text, schritt, auftrag_cfg,
+                             lambda g, m, k=kennung, h=herkunft: self.ergebnis(k, h, g, m))
+            aus["eingereiht"].append(name)
+        log.info("Sprechauftrag %s (%s): %d Zeichen%s - eingereiht bei %s, nicht verbunden %d, "
+                 "unbekannt %d", kennung, herkunft, len(text),
+                 "" if laut is None else ", Lautstaerke %d" % laut,
+                 ", ".join(aus["eingereiht"]) or "keinem Geraet", aus["nicht_verbunden"],
+                 len(aus["unbekannt"]))
+        return aus
+
+    @staticmethod
+    def _schreiben(pfad, daten, rechte):
+        vorlaeufig = "%s.tmp.%d" % (pfad, os.getpid())
+        fd = os.open(vorlaeufig, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, rechte)
+        try:
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, rechte)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(daten, fh, ensure_ascii=False)
+        except Exception:
+            try:
+                os.remove(vorlaeufig)
+            except OSError:
+                pass
+            raise
+        os.replace(vorlaeufig, pfad)
+
+    def antworten(self, kennung, aus):
+        try:
+            self._schreiben(os.path.join(SPRECHEN_ORDNER, kennung + ".antwort"), aus, 0o600)
+        except OSError as fehler:
+            log.warning("Sprechauftrag %s: Antwort nicht schreibbar: %s", kennung, fehler)
+
+    def ergebnis(self, kennung, herkunft, geraet, meldung):
+        """Das Ergebnis der Wiedergabe je Geraet - fuer den Reiter Test, ohne Text."""
+        eintrag = {"zeit": int(time.time()), "id": kennung, "herkunft": herkunft,
+                   "geraet": geraet, "ok": 1 if meldung == "OK" else 0,
+                   "meldung": "" if meldung == "OK" else _ohne_adresse(meldung)[:160]}
+        if not SPRECHEN_ERGEBNIS:
+            return
+        with self.schloss:
+            try:
+                self._schreiben(SPRECHEN_ERGEBNIS, eintrag, 0o644)
+            except OSError as fehler:
+                log.warning("Ergebnis der Ansage nicht schreibbar: %s", fehler)
+
+
+# ---------------------------------------------------------------------------
 # Dienst
 # ---------------------------------------------------------------------------
 
@@ -2508,6 +2742,8 @@ class Dienst:
         self.halt = threading.Event()
         self.udp_absender = miniserver_adressen()
         self.config_mtime = self._mtime()
+        # Ansage-3: der Sprech-Eingang (Faden), gestartet in start().
+        self.sprechen = None
         # Umlaufender Taktzaehler. Bleibt er stehen, arbeitet der Dienst
         # nicht mehr - das erkennt Loxone mit einer Aenderungsueberwachung,
         # und der Reiter Test an der Zustandsdatei.
@@ -2709,6 +2945,8 @@ class Dienst:
                     "befehle_abgeraeumt": self.mqtt.befehle_abgeraeumt,
                     "befehle_stehen": list(self.mqtt.befehle_stehen),
                     "fassung": version(),
+                    # Ansage-3: dieser Dienst nimmt Sprechauftraege an.
+                    "sprechen_eingang": 1 if self.sprechen is not None else 0,
                 }, fh)
             # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
             # Oberflaeche irgendwann eine halbe Datei und meldet einen
@@ -2832,6 +3070,12 @@ class Dienst:
 
         self.geraete_aufbauen()
 
+        # Ansage-3: Sprechauftraege anderer Plugins (immer an; ob der Endpunkt
+        # sie annimmt, entscheidet dort der Schalter sprechen_ein).
+        if SPRECHEN_ORDNER:
+            self.sprechen = SprechEingang(self)
+            self.sprechen.start()
+
         if self.cfg.get("udp", "1") == "1":
             self.udp = UdpEmpfaenger(self._zahl("udp_port", 7090, 1024, 65535), self)
             self.udp.start()
@@ -2933,6 +3177,8 @@ class Dienst:
             pass
         if self.udp:
             self.udp.stop()
+        if self.sprechen is not None:
+            self.sprechen.laeuft = False
         for geraet in self.geraete.values():
             geraet.faden_laeuft = False
             geraet.ansage_abbrechen = True
