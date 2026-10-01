@@ -1,8 +1,25 @@
 # LoxBerry-Plugin Chromecast 4 Lox NG
 
-Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
+Steuert Google-Cast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
-zum Miniserver ist MQTT.
+zum Miniserver ist MQTT. Auf Wunsch spricht es Ansagen für andere Plugins.
+
+**Unterstützte Geräte** — alles, was Google Cast versteht, nicht nur der
+Chromecast-Stick:
+
+* **Chromecast** (alle Generationen, auch Chromecast mit Google TV)
+* **Google Home / Nest Speaker** (Google Home, Home Mini, Nest Mini, Nest Audio,
+  Nest Hub) und Lautsprechergruppen aus der Google-Home-App
+* **Google TV Streamer (4K)** und Fernseher mit **Chromecast built-in**
+
+An echten Geräten im Haus des Autors ist das noch nicht gemessen;
+Rückmeldungen mit Modellangabe sind willkommen.
+
+## Neu in 1.3.16
+
+Nur Beschreibung, kein geänderter Code.
+
+* Die Einleitung nennt jetzt alle unterstützten Google-Cast-Geräte: **Chromecast**, **Google Home / Nest Speaker** (Home, Home Mini, Nest Mini, Nest Audio, Nest Hub, Lautsprechergruppen) sowie **Google TV Streamer (4K)** und Fernseher mit **Chromecast built-in**. Das Plugin war schon bisher nicht auf den Chromecast-Stick beschränkt; an echten Geräten im Haus des Autors ist das weiterhin nicht gemessen.
 
 ## Neu in 1.3.15
 
