@@ -945,6 +945,11 @@ def mqtt_zugangsdaten():
     return None
 
 
+# a1 (Verbesserungsbau 30.09.2026): so oft wird ein retained Befehl je
+# Verbindung geloescht und nachgelesen, bevor er als "steht" gemeldet wird.
+BEFEHL_ABRAEUMEN_VERSUCHE = 3
+
+
 class MqttAnbindung:
     """Duenne Huelle um paho-mqtt. Faellt still aus, wenn die Bibliothek
     oder das Gateway fehlt - der UDP-Weg funktioniert dann weiter."""
@@ -965,6 +970,20 @@ class MqttAnbindung:
         self.jemals_verbunden = False
         # Verworfene retained Befehle, einmal je Thema und Verbindung gemeldet.
         self.retained_gemeldet = set()
+        # Retained Befehle abraeumen (Verbesserungsbau 30.09.2026, a1):
+        #   befehl_offen     Thema -> Zeit, zuletzt RETAINED ueber das Abo
+        #                    gekommen; das Nachlesen fuellt es erneut
+        #   befehl_versuche  Thema -> Loeschversuche in DIESER Verbindung
+        #   im_abraeumen     Thema -> [Frist, erwartete Rueckmeldungen]: die
+        #                    leere Nachricht, die der Broker nach dem Loeschen
+        #                    an das eigene Abo weiterreicht, ist kein Befehl
+        #   befehle_abgeraeumt / befehle_stehen  fuer zustand.json und Test
+        self.abraeum_schloss = threading.Lock()
+        self.befehl_offen = {}
+        self.befehl_versuche = {}
+        self.im_abraeumen = {}
+        self.befehle_abgeraeumt = 0
+        self.befehle_stehen = []
 
     def start(self):
         try:
@@ -1077,6 +1096,11 @@ class MqttAnbindung:
         self.jemals_verbunden = True
         self.neumeldung_faellig = True
         self.retained_gemeldet = set()
+        # a1: je Verbindung wieder bis zu drei Versuche; das Abo liefert jeden
+        # noch zurueckbehaltenen Befehl erneut.
+        with self.abraeum_schloss:
+            self.befehl_versuche = {}
+            self.befehle_stehen = []
         thema = self.praefix + "/+/cmd/#"
         client.subscribe(thema)
         log.info("MQTT verbunden, Befehle abonniert: %s", thema)
@@ -1106,8 +1130,31 @@ class MqttAnbindung:
                     self.retained_gemeldet.add(nachricht.topic)
                     log.warning("Retained Befehl verworfen, nicht ausgefuehrt: %s "
                                 "(ein Befehl wird ohne Retain gesendet)", nachricht.topic)
+                # a1 (Verbesserungsbau 30.09.2026): zum Abraeumen vormerken -
+                # nur einen EIGENEN Befehl aus der Befehlsliste, nie ein
+                # fremdes Thema. Geloescht wird im Takt des Dienstes
+                # (befehle_abraeumen), nicht hier im Netzfaden von paho.
+                if nachricht.payload and eigenes_thema(self.praefix, nachricht.topic):
+                    with self.abraeum_schloss:
+                        self.befehl_offen[nachricht.topic] = time.time()
+                return
+            # a1: die leere Nachricht, die der Broker nach dem EIGENEN
+            # Abraeumen an dieses Abo weiterreicht, ist kein Befehl.
+            if not nachricht.payload and self._eigene_loeschung(nachricht.topic):
+                log.debug("Rueckmeldung des Abraeumens, kein Befehl: %s", nachricht.topic)
                 return
             nutzlast = nachricht.payload.decode("utf-8", "replace").strip()
+            # Eine LEERE Nachricht ist nie ein Befehl (Entscheidung Nr. 18,
+            # 01.10.2026). So sieht die Loeschung eines retained Themas aus -
+            # loeschte jemand anderes ein retained cmd/-Thema, lief bis hierher
+            # z. B. volume_up los. Ueber MQTT braucht jeder Befehl einen Wert
+            # (z. B. 1); die Ausgangsvorlage sendet immer einen. UDP bleibt, wie
+            # es ist.
+            if nutzlast == "":
+                log.info("Leere Nachricht auf %s verworfen, nicht ausgefuehrt "
+                         "(ueber MQTT braucht ein Befehl einen Wert, z. B. 1)",
+                         nachricht.topic)
+                return
             log.info("MQTT-Befehl %s -> %s %s", geraet, befehl, nutzlast)
             self.befehl_rueckruf(geraet, befehl, nutzlast)
         except Exception as fehler:  # noqa: BLE001
@@ -1172,6 +1219,92 @@ class MqttAnbindung:
             log.error("MQTT-Abraeumen fehlgeschlagen: %s", fehler)
             return False
         return True
+
+    def _eigene_loeschung(self, thema):
+        """Ist diese leere Nachricht die Rueckmeldung eines eigenen
+        Loeschens? Jede Loeschung erwartet genau eine; abgelaufene Eintraege
+        fallen weg, damit ein spaeterer echter Befehl mit leerer Nutzlast
+        (volume_up ohne Wert) wieder ausgefuehrt wird."""
+        jetzt = time.time()
+        with self.abraeum_schloss:
+            for t in [t for t, e in self.im_abraeumen.items() if e[0] < jetzt]:
+                del self.im_abraeumen[t]
+            eintrag = self.im_abraeumen.get(thema)
+            if not eintrag:
+                return False
+            eintrag[1] -= 1
+            if eintrag[1] <= 0:
+                del self.im_abraeumen[thema]
+            return True
+
+    def befehle_abraeumen(self, warten):
+        """Retained Befehle am Broker abraeumen und NACHLESEN (seit dem
+        Verbesserungsbau 30.09.2026, a1).
+
+        Bis 1.3.14 wurde ein retained Befehl unter cmd/ nur verworfen und
+        blieb im Broker stehen: nach jedem Verbinden kam er wieder, und ein
+        Werkzeug oder Plugin, das dasselbe Thema abonniert, sah ihn als
+        gueltig. Geloescht wird mit leerer Nutzlast und Retain, QoS 1.
+        Erledigt ist ein Thema erst, wenn es nach einem ERNEUTEN Abonnement
+        nicht wieder zurueckbehalten ankommt - der Rueckgabewert von publish()
+        sagt nur, dass etwas abging (Regeln/07, Nachtrag 19.09.2026).
+        Hoechstens BEFEHL_ABRAEUMEN_VERSUCHE je Thema und Verbindung.
+
+        warten: Funktion(sekunden) -> True, wenn der Dienst enden soll.
+        Laeuft im Takt des Dienstes, nie im Netzfaden von paho (dort wuerde
+        wait_for_publish() auf sich selbst warten)."""
+        with self.abraeum_schloss:
+            offen = sorted(t for t in self.befehl_offen
+                           if self.befehl_versuche.get(t, 0) < BEFEHL_ABRAEUMEN_VERSUCHE)
+            self.befehl_offen.clear()
+        if not offen or not self.client or not self.verbunden:
+            return
+        filter_thema = self.praefix + "/+/cmd/#"
+        while offen:
+            with self.abraeum_schloss:
+                for t in offen:
+                    self.befehl_versuche[t] = self.befehl_versuche.get(t, 0) + 1
+                    eintrag = self.im_abraeumen.setdefault(t, [0.0, 0])
+                    eintrag[0] = time.time() + 30
+                    eintrag[1] += 1
+            for t in offen:
+                try:
+                    info = self.client.publish(t, b"", qos=1, retain=True)
+                    try:
+                        info.wait_for_publish(5)
+                    except TypeError:           # paho 1.x vor 1.6 kennt keine Frist
+                        info.wait_for_publish()
+                except Exception as fehler:  # noqa: BLE001
+                    log.warning("MQTT: retained Befehl %s nicht abraeumbar: %s", t, fehler)
+            # NACHLESEN: ein erneutes Abonnement desselben Filters bekommt vom
+            # Broker alles, was noch zurueckbehalten steht (MQTT 3.1.1, 3.8.4).
+            try:
+                self.client.subscribe(filter_thema)
+            except Exception as fehler:  # noqa: BLE001
+                log.warning("MQTT: Nachlesen der Befehle nicht moeglich: %s", fehler)
+                return
+            if warten(2.0) or not self.verbunden:
+                return
+            with self.abraeum_schloss:
+                wieder = sorted(t for t in offen if t in self.befehl_offen)
+                for t in offen:
+                    self.befehl_offen.pop(t, None)
+                erschoepft = [t for t in wieder
+                              if self.befehl_versuche.get(t, 0) >= BEFEHL_ABRAEUMEN_VERSUCHE]
+                weg = [t for t in offen if t not in wieder]
+                self.befehle_abgeraeumt += len(weg)
+                self.befehle_stehen = sorted((set(self.befehle_stehen) - set(weg))
+                                             | set(erschoepft))
+            if weg:
+                log.info("MQTT: %d retained Befehl(e) am Broker abgeraeumt und nachgelesen: %s",
+                         len(weg), ", ".join(weg[:5]))
+            if erschoepft:
+                log.warning("MQTT: %d retained Befehl(e) stehen nach %d Versuchen noch im "
+                            "Broker: %s - von Hand loeschen (MQTT Finder des Gateways). "
+                            "Bis zur naechsten Verbindung wird es nicht erneut versucht.",
+                            len(erschoepft), BEFEHL_ABRAEUMEN_VERSUCHE,
+                            ", ".join(erschoepft[:5]))
+            offen = [t for t in wieder if t not in erschoepft]
 
     def stop(self):
         if not self.client:
@@ -2558,7 +2691,13 @@ class Dienst:
         try:
             os.makedirs(DATA_DIR, exist_ok=True)
             vorlaeufig = ZUSTAND_FILE + ".neu"
-            with open(vorlaeufig, "w", encoding="utf-8") as fh:
+            # 0644 ausdruecklich, unabhaengig von der umask (Verbesserungsbau
+            # 30.09.2026, a2): die Datei traegt keine Geheimnisse, und die
+            # Oberflaeche liest sie. Rechte VOR dem Inhalt (Regeln/03).
+            fd = os.open(vorlaeufig, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+            if hasattr(os, "fchmod"):
+                os.fchmod(fd, 0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({
                     "zeit": jetzt,
                     "zaehler": self.zaehler,
@@ -2566,6 +2705,9 @@ class Dienst:
                     "geraete_konfiguriert": len(self.geraete),
                     "verluste": self.mqtt.verluste,
                     "mqtt_verbunden": bool(self.mqtt.verbunden),
+                    # a1: seit dem Start abgeraeumt / stehen nach drei Versuchen
+                    "befehle_abgeraeumt": self.mqtt.befehle_abgeraeumt,
+                    "befehle_stehen": list(self.mqtt.befehle_stehen),
                     "fassung": version(),
                 }, fh)
             # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
@@ -2731,6 +2873,11 @@ class Dienst:
                 for geraet in self.geraete.values():
                     geraet._senden("tts_active", "1" if geraet.ansage_laeuft else "0", True)
                 log.info("MQTT neu verbunden - alle Zustaende werden erneut gemeldet")
+
+            # a1: retained Befehle, die beim Verbinden ankamen, am Broker
+            # abraeumen und nachlesen (nur, wenn welche da sind).
+            if self.mqtt.verbunden:
+                self.mqtt.befehle_abraeumen(self.halt.wait)
 
             for geraet in list(self.geraete.values()):
                 if geraet.ansage_laeuft:

@@ -4,6 +4,29 @@ Steuert Google-Chromecast-Geräte vom Loxone Miniserver aus und meldet ihren
 Zustand zurück — Lautstärke, Wiedergabe, Titel, Interpret, Laufzeit. Der Weg
 zum Miniserver ist MQTT.
 
+## Neu in 1.3.14
+
+Verbesserungen aus dem Durchgang vom 30.09.2026 (Verbesserungsliste
+`Pruefung-Durchgang-2026-09-29/VERBESSERUNGEN_OFFEN.md`). Gemessen an Attrappen
+für Lautsprecher und Broker unter PHP 7.4, 8.3 und 8.5; nicht am Gerät.
+
+* **Zurückbehaltene Befehle unter `cmd/` werden beim Verbinden gelöscht** und
+  nachgelesen, höchstens dreimal je Verbindung; was stehen bleibt, zeigt der
+  Reiter Test. Bis 1.3.13 konnte ein alter retained Befehl nach jedem Neustart
+  erneut ausgeführt werden.
+* **Eine leere MQTT-Nachricht auf `cmd/` wird nie als Befehl ausgeführt.** Löscht
+  ein anderes Werkzeug ein retained Befehlsthema, lief bisher z. B. `volume_up`
+  los. Über MQTT braucht jeder Befehl jetzt einen Wert (z. B. `1`); die
+  Loxone-Vorlage sendet ohnehin nie leer. UDP bleibt unverändert.
+* Hinweis beim Übernehmen einer alten Kommaliste („einer je Zeile?“).
+* JSON-Dateien ohne Geheimnisse haben die Rechte 0644; Konfiguration und
+  Einmalmeldung bleiben 0600.
+* **Bei einer Beanstandung wird nichts gespeichert** (bis 1.3.13 wurden die
+  übrigen Felder übernommen); die eingetippten Werte stehen wieder im Formular.
+  „Einstellungen sichern“ warnt bei Werten, die das Zurückspielen nicht bestünden.
+* Ansagen aus anderen Plugins: über MQTT `chromecast4lox/<gerät>/cmd/tts` mit dem
+  Text als Nutzlast (nicht retained); `alle` spricht jeden Lautsprecher an.
+
 ## Neu in 1.3.13
 
 Durchgang vom 30.09.2026 mit vier Prüfern (Code, Oberfläche, Installer, MQTT).
@@ -649,7 +672,9 @@ Dazu `chromecast4lox/server/online` für den Dienst selbst.
 
 Befehle unter `chromecast4lox/<Gerät>/cmd/<Befehl>`: `play`, `pause`, `stop`,
 `quit`, `volume`, `volume_step`, `volume_up`, `volume_down`, `mute`, `next`,
-`prev`, `seek`.
+`prev`, `seek`. Über MQTT braucht jeder Befehl einen Wert (z. B. `1`); eine
+leere Nachricht wird nie ausgeführt – so sieht die Löschung eines retained
+Themas aus. Die Ausgangsvorlage sendet immer einen Wert.
 
 Der Gerätename im Thema entsteht aus dem Anzeigenamen: Umlaute umgeschrieben,
 alles übrige außer Buchstaben, Ziffern, Strich und Unterstrich wird zu `_`.

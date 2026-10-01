@@ -71,6 +71,10 @@ $cc_suchfehler = '';
 $cc_gesucht = false;
 $cc_test_titel = '';
 $cc_test_text = '';
+/* X-2 (Verbesserungsbau 30.09.2026): welches Formular, welche Felder
+ * beanstandet wurden - daraus reisen die Eingaben mit der Einmalmeldung. */
+$cc_eingaben_form = '';
+$cc_beanstandet = array();
 /* Aktiver Reiter. Die Positivliste muss Zeichen fuer Zeichen zu den vier
  * id-Werten der Bereiche weiter unten passen - sonst springt die Seite nach
  * jedem Absenden auf Einstellungen zurueck, obwohl der Reiter sichtbar ist.
@@ -97,6 +101,10 @@ if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
         $cc_gefunden = $cc_einmal['gefunden'];
         $cc_suchfehler = $cc_einmal['suchfehler'];
         $cc_gesucht = $cc_einmal['gesucht'];
+        // X-2: nach einer Beanstandung die eingetippten Werte zeigen.
+        if (is_array($cc_einmal['eingaben'])) {
+            cc_eingaben_setzen($cc_einmal['eingaben']);
+        }
     }
 }
 
@@ -269,15 +277,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
         if ($cc_pr_fehler === '') {
             $cc_m['mqtt_topic'] = $cc_pr_gut;
         } else {
+            // Entscheidung 16 (30.09.2026): bei einer Beanstandung wird NICHTS
+            // gespeichert, auch nicht der Haken. Bis 1.3.14 wurde mqtt_ein
+            // trotzdem geschrieben und der Dienst neu gestartet.
+            $cc_fehler[] = cc_t('TEXT.NICHTS_GESPEICHERT');
             $cc_fehler[] = $cc_pr_fehler;
+            $cc_eingaben_form = 'mqtt';
+            $cc_beanstandet[] = 'mqtt_topic';
         }
     }
-    if (cc_config_write($cc_m)) {
-        $cc_saved = true;
-        require_once __DIR__ . '/cc_test.php';
-        $cc_hinweis = cc_dienst_nachziehen($cc_m);
-    } else {
-        $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
+    if ($cc_eingaben_form !== 'mqtt') {
+        if (cc_config_write($cc_m)) {
+            $cc_saved = true;
+            require_once __DIR__ . '/cc_test.php';
+            $cc_hinweis = cc_dienst_nachziehen($cc_m);
+        } else {
+            $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
+        }
     }
     $cc_tab = 'tab-mqtt';
 }
@@ -300,10 +316,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
      * abgewiesenes Feld behaelt seinen bisherigen Wert; die uebrigen werden
      * gespeichert (Regeln/05 "Beanstandungen melden, nicht das ganze Speichern
      * verhindern"). Dieselbe Pruefung nimmt das Zurueckspielen. */
-    $pruefen = function ($k, $roh) use (&$neu, &$cc_fehler, $cc_bisher) {
+    // X-2: jede Beanstandung merkt sich ihr Feld ($cc_beanstandet).
+    $cc_f0 = count($cc_fehler);
+    $pruefen = function ($k, $roh) use (&$neu, &$cc_fehler, $cc_bisher, &$cc_beanstandet) {
         $roh = is_string($roh) ? trim($roh) : $roh;
         if ($roh === '' && array_key_exists($k, cc_zahlfelder())) {
             $cc_fehler[] = sprintf(cc_t('PRUEF.LEER'), cc_e($k));
+            $cc_beanstandet[] = $k;
             return;
         }
         list($gut, $fehler) = cc_wert_pruefen($k, $roh, $cc_bisher);
@@ -311,6 +330,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
             $neu[$k] = $gut;
         } else {
             $cc_fehler[] = $fehler;
+            $cc_beanstandet[] = $k;
         }
     };
 
@@ -331,6 +351,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $cc_mit_semikolon = array_filter($cc_namen, function ($n) { return strpos($n, ';') !== false; });
     if ($cc_mit_semikolon) {
         $cc_fehler[] = sprintf(cc_t('PRUEF.SEMIKOLON'), cc_e(implode(', ', $cc_mit_semikolon)));
+        $cc_beanstandet[] = 'geraete';
     } else {
         $neu['geraete'] = implode("\n", $cc_namen);
     }
@@ -380,16 +401,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     $neu['gruppen']         = isset($_POST['gruppen']) ? '1' : '0';
     $neu['beschleunigung']  = isset($_POST['beschleunigung']) ? '1' : '0';
 
-    if (cc_config_write($neu)) {
-        // "Gespeichert" nur, wenn gespeichert wurde - und mit Beanstandungen
-        // ausdruecklich als Teil (O6).
+    if ($cc_beanstandet) {
+        // Entscheidung 16 (30.09.2026; Regeln/04): bei einer Beanstandung wird
+        // NICHTS gespeichert, auch nicht die uebrigen richtigen Felder, und
+        // der Dienst wird nicht angefasst. Bis 1.3.14 wurden die uebrigen
+        // gespeichert ("teilweise"). Die eingetippten Werte kommen per X-2
+        // zurueck ins Formular.
+        array_splice($cc_fehler, $cc_f0, 0, array(cc_t('TEXT.NICHTS_GESPEICHERT')));
+        $cc_eingaben_form = 'settings';
+    } elseif (cc_config_write($neu)) {
         $cc_saved = true;
         require_once __DIR__ . '/cc_test.php';
         // Der Haken entscheidet, was nach dem Speichern passiert, und die
         // Meldung sagt, was mit dem Dienst WIRKLICH geschah (O8) - bis 1.3.12
         // stand "angehalten" auch, wenn gar keiner lief.
-        $cc_hinweis = ($cc_fehler ? cc_t('TEXT.H_TEILWEISE') . ' ' : '')
-                    . cc_dienst_nachziehen($neu);
+        $cc_hinweis = cc_dienst_nachziehen($neu);
     } else {
         $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
     }
@@ -421,7 +447,16 @@ $cc_frame = class_exists('LBWeb', false);
  * Knopf sagt, dass die Datei es traegt. Bis 1.3.12 stand hier cc_cfg() ohne
  * Argumente - der Knopf lieferte einen PHP-Fehler statt einer Datei. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
-    $cc_js = json_encode(cc_sicherung_bauen(),
+    // X-3 (Verbesserungsbau 30.09.2026): bestuende ein gespeicherter Wert das
+    // eigene Zurueckspielen nicht, sagt es der Kopf der Datei - mit den
+    // NAMEN, nie den Werten. Geliefert wird trotzdem, vollstaendig.
+    $cc_sich = cc_sicherung_bauen();
+    $cc_altw = cc_rueckspiel_altwerte($cc_sich);
+    if ($cc_altw) {
+        $cc_sich = array('_warnung' => sprintf(cc_t('TEXT.SICH_ALTWERT_KOPF'),
+                                                implode(', ', $cc_altw))) + $cc_sich;
+    }
+    $cc_js = json_encode($cc_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($cc_js !== false) {
         header('Content-Type: application/json; charset=utf-8');
@@ -487,6 +522,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         'test_titel' => $cc_test_titel, 'test_text' => $cc_test_text,
         'gefunden' => is_array($cc_gefunden) ? $cc_gefunden : array(),
         'suchfehler' => (string) $cc_suchfehler, 'gesucht' => $cc_gesucht,
+        'eingaben' => cc_eingaben_sammeln($cc_eingaben_form, $cc_beanstandet),
     );
     if (cc_einmal_schreiben($cc_einmal_neu)) {
         header('Location: index.php?tab=' . rawurlencode(substr($cc_tab, 4)), true, 303);
@@ -595,6 +631,10 @@ if ($cc_frame) {
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
+/* Eigene Zutat (Verbesserungsbau 30.09.2026, X-2): das beanstandete Feld
+   nach einer Beanstandung rot umrandet. */
+.sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet, .sm-wrap textarea.sm-beanstandet {
+  border: 2px solid #c62828 !important; background-color: #fff5f5; }
 
 </style>
 <div class="sm-wrap">
@@ -667,15 +707,22 @@ if ($cc_frame) {
 <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
 
 <h2><?php echo cc_t('TEXT.H_BETRIEB'); ?></h2>
-<label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1"<?= cc_cfg($cc_cfg, 'enabled', '1') === '1' ? ' checked' : '' ?>> <b><?php echo cc_t('TEXT.L_ENABLED'); ?></b></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="enabled" value="1"<?= cc_eingabe_an('settings', 'enabled', cc_cfg($cc_cfg, 'enabled', '1') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('TEXT.L_ENABLED'); ?></b></label>
 <div class="sm-small"><?php echo cc_t('TEXT.H_ENABLED'); ?></div>
 
 <h2><?php echo cc_t('TEXT.T008'); ?></h2>
 <label><?php echo cc_t('TEXT.T009'); ?></label>
-<textarea data-role="none" name="geraete" placeholder="Wohnzimmer&#10;K&uuml;che Lautsprecher"><?= cc_e(implode("\n", $cc_geraete)) ?></textarea>
+<textarea data-role="none" name="geraete"<?= cc_markierung('geraete') ?> placeholder="Wohnzimmer&#10;K&uuml;che Lautsprecher"><?= cc_e(cc_eingabe('settings', 'geraete', implode("\n", $cc_geraete))) ?></textarea>
 <div class="sm-small">
 <?php echo cc_t('TEXT.S_NAME_GENAU'); ?>
 </div>
+<?php /* b1 (Verbesserungsbau 30.09.2026): eine alte Kommaliste aus 1.3.12 ist
+       seit 1.3.13 EIN Geraet. Gefragt wird, nicht geaendert - ein Name darf
+       ein Komma tragen. Die Namen stehen maskiert im Kasten (O7). */
+$cc_komma = array_values(array_filter($cc_geraete, function ($n) { return strpos($n, ',') !== false; }));
+if ($cc_komma) { ?>
+<div class="sm-warnung"><?= sprintf(cc_t('TEXT.W_KOMMA'), cc_e(implode(' | ', $cc_komma))) ?></div>
+<?php } ?>
 
 <?php if ($cc_geraete) { ?>
 <table class="sm-tbl">
@@ -687,13 +734,13 @@ if ($cc_frame) {
 <?php } ?>
 
 <h2><?php echo cc_t('MQTT.H_UDP'); ?></h2>
-<label class="sm-check"><input data-role="none" type="checkbox" name="udp" value="1"<?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? ' checked' : '' ?>> <?php echo cc_t('TEXT.T021'); ?></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="udp" value="1"<?= cc_eingabe_an('settings', 'udp', cc_cfg($cc_cfg, 'udp', '1') === '1') ? ' checked' : '' ?>> <?php echo cc_t('TEXT.T021'); ?></label>
 <div class="sm-small"><?php echo cc_t('TEXT.T022'); ?> <?php echo cc_t('TEXT.S_UDP_ABSENDER'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
 <label><?php echo cc_t('TEXT.T023'); ?></label>
-<input data-role="none" type="number" name="udp_port" min="1" max="65535" value="<?= cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) ?>">
+<input data-role="none" type="number" name="udp_port" min="1" max="65535" value="<?= cc_e(cc_eingabe('settings', 'udp_port', cc_cfg($cc_cfg, 'udp_port', '7090'))) ?>"<?= cc_markierung('udp_port') ?>>
 </div>
 </div>
 <div class="sm-small"><?php echo cc_t('MQTT.H_VERWEIS'); ?></div>
@@ -702,24 +749,24 @@ if ($cc_frame) {
 <div class="sm-row">
 <div>
 <label><?php echo cc_t('TEXT.T027'); ?></label>
-<input data-role="none" type="number" name="intervall" min="2" max="3600" value="<?= cc_e(cc_cfg($cc_cfg, 'intervall', '10')) ?>">
+<input data-role="none" type="number" name="intervall" min="2" max="3600" value="<?= cc_e(cc_eingabe('settings', 'intervall', cc_cfg($cc_cfg, 'intervall', '10'))) ?>"<?= cc_markierung('intervall') ?>>
 <div class="sm-small"><?php echo cc_t('TEXT.T028'); ?></div>
 </div>
 <div>
 <label><?php echo cc_t('TEXT.T029'); ?></label>
-<input data-role="none" type="number" name="aktualisierung" min="5" max="86400" value="<?= cc_e(cc_cfg($cc_cfg, 'aktualisierung', '60')) ?>">
+<input data-role="none" type="number" name="aktualisierung" min="5" max="86400" value="<?= cc_e(cc_eingabe('settings', 'aktualisierung', cc_cfg($cc_cfg, 'aktualisierung', '60'))) ?>"<?= cc_markierung('aktualisierung') ?>>
 <div class="sm-small"><?php echo cc_t('TEXT.T030'); ?></div>
 </div>
 <div>
 <label><?php echo cc_t('TEXT.T031'); ?></label>
-<input data-role="none" type="number" name="lautstaerke_schritt" min="1" max="50" value="<?= cc_e(cc_cfg($cc_cfg, 'lautstaerke_schritt', '5')) ?>">
+<input data-role="none" type="number" name="lautstaerke_schritt" min="1" max="50" value="<?= cc_e(cc_eingabe('settings', 'lautstaerke_schritt', cc_cfg($cc_cfg, 'lautstaerke_schritt', '5'))) ?>"<?= cc_markierung('lautstaerke_schritt') ?>>
 <div class="sm-small"><?php echo cc_t('TEXT.S_SCHRITTWEITE_GILT'); ?></div>
 </div>
 </div>
 
 <h2><?php echo cc_t('FAV.H'); ?></h2>
 <label><?php echo cc_t('FAV.L'); ?></label>
-<textarea data-role="none" name="favoriten" placeholder="<?php echo cc_t('FAV.P'); ?>"><?= cc_e(cc_cfg($cc_cfg, 'favoriten', '')) ?></textarea>
+<textarea data-role="none" name="favoriten"<?= cc_markierung('favoriten') ?> placeholder="<?php echo cc_t('FAV.P'); ?>"><?= cc_e(cc_eingabe('settings', 'favoriten', cc_cfg($cc_cfg, 'favoriten', ''))) ?></textarea>
 <div class="sm-small"><?php echo cc_t('FAV.HINWEIS'); ?></div>
 <?php $cc_fav = cc_favoriten($cc_cfg); if ($cc_fav) { ?>
 <table class="sm-tbl">
@@ -735,27 +782,27 @@ if ($cc_frame) {
 <div class="sm-row">
 <div>
 <label><?php echo cc_t('TTS.L_MODUS'); ?></label>
-<select data-role="none" name="tts_modus" id="tts_modus" onchange="ccTtsModus()">
+<select data-role="none" name="tts_modus" id="tts_modus"<?= cc_markierung('tts_modus') ?> onchange="ccTtsModus()">
 <?php foreach (cc_tts_modi() as $cc_mk => $cc_mt) { ?>
-<option value="<?= cc_e($cc_mk) ?>"<?= cc_cfg($cc_cfg, 'tts_modus', 'chromecast') === $cc_mk ? ' selected' : '' ?>><?php echo cc_t($cc_mt); ?></option>
+<option value="<?= cc_e($cc_mk) ?>"<?= cc_eingabe('settings', 'tts_modus', cc_cfg($cc_cfg, 'tts_modus', 'chromecast')) === $cc_mk ? ' selected' : '' ?>><?php echo cc_t($cc_mt); ?></option>
 <?php } ?>
 </select>
 <div class="sm-small"><?php echo cc_t('TTS.H_MODUS'); ?></div>
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_SPRACHE'); ?></label>
-<input data-role="none" type="text" name="tts_sprache" maxlength="5" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_sprache', 'de')) ?>">
+<input data-role="none" type="text" name="tts_sprache" maxlength="5" value="<?= cc_e(cc_eingabe('settings', 'tts_sprache', cc_cfg($cc_cfg, 'tts_sprache', 'de'))) ?>"<?= cc_markierung('tts_sprache') ?>>
 <div class="sm-small"><?php echo cc_t('TTS.H_SPRACHE'); ?></div>
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_PEGEL'); ?></label>
-<input data-role="none" type="text" name="tts_pegel" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_pegel', '')) ?>" placeholder="<?php echo cc_t('TTS.P_PEGEL'); ?>">
+<input data-role="none" type="text" name="tts_pegel" value="<?= cc_e(cc_eingabe('settings', 'tts_pegel', cc_cfg($cc_cfg, 'tts_pegel', ''))) ?>"<?= cc_markierung('tts_pegel') ?> placeholder="<?php echo cc_t('TTS.P_PEGEL'); ?>">
 <div class="sm-small"><?php echo cc_t('TTS.H_PEGEL'); ?></div>
 </div>
 </div>
 <div style="margin:8px 0;">
 <label style="display:inline-flex;align-items:center;gap:6px;">
-<input data-role="none" type="checkbox" name="tts_fortsetzen" value="1"<?= cc_cfg($cc_cfg, 'tts_fortsetzen', '1') === '1' ? ' checked' : '' ?>> <?php echo cc_t('TTS.L_FORTSETZEN'); ?>
+<input data-role="none" type="checkbox" name="tts_fortsetzen" value="1"<?= cc_eingabe_an('settings', 'tts_fortsetzen', cc_cfg($cc_cfg, 'tts_fortsetzen', '1') === '1') ? ' checked' : '' ?>> <?php echo cc_t('TTS.L_FORTSETZEN'); ?>
 </label>
 <div class="sm-small"><?php echo cc_t('TTS.H_FORTSETZEN'); ?></div>
 </div>
@@ -763,24 +810,24 @@ if ($cc_frame) {
 <div class="sm-row">
 <div>
 <label><?php echo cc_t('TTS.L_IP'); ?></label>
-<input data-role="none" type="text" name="tts_ip" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_ip', '')) ?>" placeholder="192.168.1.50">
+<input data-role="none" type="text" name="tts_ip" value="<?= cc_e(cc_eingabe('settings', 'tts_ip', cc_cfg($cc_cfg, 'tts_ip', ''))) ?>"<?= cc_markierung('tts_ip') ?> placeholder="192.168.1.50">
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_PORT'); ?></label>
-<input data-role="none" type="number" name="tts_port" min="1" max="65535" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_port', '7091')) ?>">
+<input data-role="none" type="number" name="tts_port" min="1" max="65535" value="<?= cc_e(cc_eingabe('settings', 'tts_port', cc_cfg($cc_cfg, 'tts_port', '7091'))) ?>"<?= cc_markierung('tts_port') ?>>
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_ZONEN'); ?></label>
-<input data-role="none" type="text" name="tts_zonen" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_zonen', '1')) ?>" placeholder="2,4,6">
+<input data-role="none" type="text" name="tts_zonen" value="<?= cc_e(cc_eingabe('settings', 'tts_zonen', cc_cfg($cc_cfg, 'tts_zonen', '1'))) ?>"<?= cc_markierung('tts_zonen') ?> placeholder="2,4,6">
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_LAUTSTAERKE'); ?></label>
-<input data-role="none" type="number" name="tts_lautstaerke" min="1" max="100" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_lautstaerke', '8')) ?>">
+<input data-role="none" type="number" name="tts_lautstaerke" min="1" max="100" value="<?= cc_e(cc_eingabe('settings', 'tts_lautstaerke', cc_cfg($cc_cfg, 'tts_lautstaerke', '8'))) ?>"<?= cc_markierung('tts_lautstaerke') ?>>
 </div>
 </div>
 <div id="tts_vorlage_zeile">
 <label><?php echo cc_t('TTS.L_VORLAGE'); ?></label>
-<input data-role="none" type="text" name="tts_vorlage" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_vorlage', '')) ?>" placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}">
+<input data-role="none" type="text" name="tts_vorlage" value="<?= cc_e(cc_eingabe('settings', 'tts_vorlage', cc_cfg($cc_cfg, 'tts_vorlage', ''))) ?>"<?= cc_markierung('tts_vorlage') ?> placeholder="http://{ip}:{port}/tts?text={text}&amp;zone={zones}&amp;vol={vol}">
 <div class="sm-small"><?php echo cc_t('TTS.H_VORLAGE'); ?></div>
 </div>
 </div>
@@ -788,19 +835,19 @@ if ($cc_frame) {
 
 <h2><?php echo cc_t('SCHNELL.H'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-<input data-role="none" type="checkbox" name="beschleunigung" value="1"<?= cc_cfg($cc_cfg, 'beschleunigung', '0') === '1' ? ' checked' : '' ?>> <?php echo cc_t('SCHNELL.L'); ?>
+<input data-role="none" type="checkbox" name="beschleunigung" value="1"<?= cc_eingabe_an('settings', 'beschleunigung', cc_cfg($cc_cfg, 'beschleunigung', '0') === '1') ? ' checked' : '' ?>> <?php echo cc_t('SCHNELL.L'); ?>
 </label>
 <div class="sm-alert sm-warn"><?php echo cc_t('SCHNELL.HINWEIS'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
 <label><?php echo cc_t('TTS.L_GONG'); ?></label>
-<input data-role="none" type="text" name="tts_gong" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_gong', '')) ?>" placeholder="http://…/gong.mp3">
+<input data-role="none" type="text" name="tts_gong" value="<?= cc_e(cc_eingabe('settings', 'tts_gong', cc_cfg($cc_cfg, 'tts_gong', ''))) ?>"<?= cc_markierung('tts_gong') ?> placeholder="http://…/gong.mp3">
 <div class="sm-small"><?php echo cc_t('TTS.H_GONG'); ?></div>
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_BASIS'); ?></label>
-<input data-role="none" type="text" name="tts_lokal_basis" value="<?= cc_e(cc_cfg($cc_cfg, 'tts_lokal_basis', '')) ?>" placeholder="http://<?= cc_e($cc_ip) ?>/plugins/<?= cc_e($cc_p['plugin']) ?>">
+<input data-role="none" type="text" name="tts_lokal_basis" value="<?= cc_e(cc_eingabe('settings', 'tts_lokal_basis', cc_cfg($cc_cfg, 'tts_lokal_basis', ''))) ?>"<?= cc_markierung('tts_lokal_basis') ?> placeholder="http://<?= cc_e($cc_ip) ?>/plugins/<?= cc_e($cc_p['plugin']) ?>">
 <div class="sm-small"><?php echo cc_t('TTS.H_BASIS'); ?></div>
 </div>
 </div>
@@ -809,26 +856,26 @@ if ($cc_frame) {
 <div class="sm-row">
 <div>
 <label><?php echo cc_t('RUHE.L_MAX'); ?></label>
-<input data-role="none" type="number" name="lautstaerke_max" min="0" max="100" value="<?= cc_e(cc_cfg($cc_cfg, 'lautstaerke_max', '100')) ?>">
+<input data-role="none" type="number" name="lautstaerke_max" min="0" max="100" value="<?= cc_e(cc_eingabe('settings', 'lautstaerke_max', cc_cfg($cc_cfg, 'lautstaerke_max', '100'))) ?>"<?= cc_markierung('lautstaerke_max') ?>>
 </div>
 <div>
 <label><?php echo cc_t('RUHE.L_VON'); ?></label>
-<input data-role="none" type="text" name="ruhe_von" maxlength="5" value="<?= cc_e(cc_cfg($cc_cfg, 'ruhe_von', '')) ?>" placeholder="22:00">
+<input data-role="none" type="text" name="ruhe_von" maxlength="5" value="<?= cc_e(cc_eingabe('settings', 'ruhe_von', cc_cfg($cc_cfg, 'ruhe_von', ''))) ?>"<?= cc_markierung('ruhe_von') ?> placeholder="22:00">
 </div>
 <div>
 <label><?php echo cc_t('RUHE.L_BIS'); ?></label>
-<input data-role="none" type="text" name="ruhe_bis" maxlength="5" value="<?= cc_e(cc_cfg($cc_cfg, 'ruhe_bis', '')) ?>" placeholder="07:00">
+<input data-role="none" type="text" name="ruhe_bis" maxlength="5" value="<?= cc_e(cc_eingabe('settings', 'ruhe_bis', cc_cfg($cc_cfg, 'ruhe_bis', ''))) ?>"<?= cc_markierung('ruhe_bis') ?> placeholder="07:00">
 </div>
 <div>
 <label><?php echo cc_t('RUHE.L_RUHEMAX'); ?></label>
-<input data-role="none" type="number" name="ruhe_max" min="0" max="100" value="<?= cc_e(cc_cfg($cc_cfg, 'ruhe_max', '30')) ?>">
+<input data-role="none" type="number" name="ruhe_max" min="0" max="100" value="<?= cc_e(cc_eingabe('settings', 'ruhe_max', cc_cfg($cc_cfg, 'ruhe_max', '30'))) ?>"<?= cc_markierung('ruhe_max') ?>>
 </div>
 </div>
 <div class="sm-small"><?php echo cc_t('RUHE.HINWEIS'); ?></div>
 
 <h2><?php echo cc_t('TTS.H_GRUPPEN'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
-<input data-role="none" type="checkbox" name="gruppen" value="1"<?= cc_cfg($cc_cfg, 'gruppen', '1') === '1' ? ' checked' : '' ?>> <?php echo cc_t('TTS.L_GRUPPEN'); ?>
+<input data-role="none" type="checkbox" name="gruppen" value="1"<?= cc_eingabe_an('settings', 'gruppen', cc_cfg($cc_cfg, 'gruppen', '1') === '1') ? ' checked' : '' ?>> <?php echo cc_t('TTS.L_GRUPPEN'); ?>
 </label>
 <div class="sm-small"><?php echo cc_t('TTS.H_GRUPPEN_TEXT'); ?></div>
 
@@ -839,6 +886,9 @@ if ($cc_frame) {
 <h2><?= cc_t('TEXT.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= cc_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= cc_t('TEXT.SICH_WARNUNG') ?></div>
+<?php $cc_altwerte = cc_rueckspiel_altwerte(); if ($cc_altwerte) { ?>
+<div class="sm-warnung"><?= sprintf(cc_t('TEXT.SICH_ALTWERT'), cc_e(implode(', ', $cc_altwerte))) ?></div>
+<?php } ?>
 <div class="sm-knopfreihe">
   <!-- ZWEI GETRENNTE Formulare. Das Sichern schickt einen Download und ruft
        exit auf; das Zurueckspielen braucht enctype="multipart/form-data".
@@ -867,13 +917,13 @@ if ($cc_frame) {
 <span><i class="sm-punkt sm-b-aktion"></i> <?php echo cc_t('LEGENDE.AKTION'); ?></span>
 </div>
 <h2><?php echo cc_t('MQTT.H_WEG'); ?></h2>
-<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? ' checked' : '' ?>> <b><?php echo cc_t('TEXT.T018'); ?></b> <?php echo cc_t('TEXT.T019'); ?></label>
+<label class="sm-check"><input data-role="none" type="checkbox" name="mqtt_ein" value="1"<?= cc_eingabe_an('mqtt', 'mqtt_ein', cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('TEXT.T018'); ?></b> <?php echo cc_t('TEXT.T019'); ?></label>
 <div class="sm-small"><?php echo cc_t('TEXT.T020'); ?></div>
 
 <div class="sm-row" style="margin-top:12px;">
 <div>
 <label><?php echo cc_t('TEXT.T024'); ?></label>
-<input data-role="none" type="text" name="mqtt_topic" value="<?= cc_e($cc_praefix) ?>">
+<input data-role="none" type="text" name="mqtt_topic" value="<?= cc_e(cc_eingabe('mqtt', 'mqtt_topic', $cc_praefix)) ?>"<?= cc_markierung('mqtt_topic') ?>>
 <div class="sm-small"><?php echo cc_t('TEXT.T025'); ?></div>
 </div>
 </div>

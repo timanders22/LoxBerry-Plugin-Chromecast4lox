@@ -254,6 +254,11 @@ fi
 # --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
 chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
+# Die JSON-Dateien sind Daten, keine Programme, und tragen keine Geheimnisse:
+# 0644 (Verbesserungsbau 30.09.2026, a2). Bis 1.3.14 kamen sie aus dem Archiv
+# mit 0755. Die Konfiguration (Aktionstoken) und die Einmalmeldung der
+# Oberflaeche bleiben 0600.
+chmod 644 "$PBIN"/cc_themen.json "$PBIN"/cc_vorgaben.json 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie
 # eingerichtet haben; schlaegt das fehl, laeuft der Dienst nicht und der
@@ -280,6 +285,17 @@ fi
 # (in WSL gemessen 25.09.2026, Faelle I3/I5).
 if grep -Eq '^[[:space:]]*geraete[[:space:]]*=[[:space:]]*[^[:space:]]' "$CCCFG" 2>/dev/null; then
     echo "<OK> Einstellungen uebernommen - es sind Geraete eingerichtet."
+    # b1 (Verbesserungsbau 30.09.2026): eine alte Kommaliste aus 1.3.12 ist seit
+    # 1.3.13 EIN Geraet ("Bad, Kueche"). Fragen, nicht aendern - ein Name darf
+    # ein Komma tragen. Die Liste steht mit ";" auf einer Zeile.
+    CC_KOMMA=$(grep -E '^[[:space:]]*geraete[[:space:]]*=' "$CCCFG" 2>/dev/null | head -1 \
+        | cut -d= -f2- | sed 's/^[[:space:]]*"//; s/"[[:space:]]*$//' | tr ';' '\n' | grep ',' | head -5)
+    if [ -n "$CC_KOMMA" ]; then
+        echo "<WARNING> Die Geraeteliste enthaelt einen Namen mit Komma:"
+        echo "$CC_KOMMA" | sed 's/^[[:space:]]*/<WARNING>   /'
+        echo "<WARNING> Seit 1.3.13 trennt ein Komma keine Geraete mehr. Sind es mehrere Lautsprecher,"
+        echo "<WARNING> bitte im Reiter Einstellungen einen je Zeile eintragen und speichern."
+    fi
 else
     echo "<INFO> Naechster Schritt: Reiter Test -> Chromecasts im Netz suchen,"
     echo "<INFO> dann die gefundenen Namen im Reiter Einstellungen eintragen."

@@ -421,6 +421,30 @@ function cc_selbstpruefung()
         }
     }
 
+    /* --- 6b. Stehen retained Befehle im Broker? --------------------
+     * (Verbesserungsbau 30.09.2026, a1) Der Dienst raeumt retained Befehle
+     * unter cmd/ beim Verbinden am Broker ab und liest nach; was nach drei
+     * Versuchen noch steht, nennt er in zustand.json. Gemessen hat es der
+     * Dienst an seinem Abonnement - ohne laufenden, verbundenen Dienst oder
+     * mit einer Zustandsdatei ohne diese Angabe ist nichts gemessen (Strich). */
+    $zb = is_file($zdatei) ? json_decode((string) @file_get_contents($zdatei), true) : null;
+    if (cc_cfg($cfg, 'mqtt_ein', '1') !== '1') {
+        cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), null, cc_t('TEST.A_MQTT_AUS'));
+    } elseif (!$an || $pid <= 0 || !is_array($zb) || !array_key_exists('befehle_stehen', $zb)
+              || empty($zb['mqtt_verbunden'])) {
+        cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+    } else {
+        $zb_stehen = is_array($zb['befehle_stehen']) ? array_map('strval', $zb['befehle_stehen']) : array();
+        $zb_weg = isset($zb['befehle_abgeraeumt']) ? (int) $zb['befehle_abgeraeumt'] : 0;
+        if ($zb_stehen) {
+            cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), false,
+                sprintf(cc_t('TEST.A_BEFEHLE_STEHEN'), count($zb_stehen), implode(', ', $zb_stehen)));
+        } else {
+            cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), true,
+                $zb_weg > 0 ? sprintf(cc_t('TEST.A_BEFEHLE_WEG'), $zb_weg) : cc_t('TEST.A_BEFEHLE_KEINE'));
+        }
+    }
+
     /* --- 7. Themenliste gegen den Dienst ---------------------------
      * Zwei Listen in zwei Sprachen halten sich nicht von selbst gleich,
      * und ein Kommentar ist kein Nachweis.

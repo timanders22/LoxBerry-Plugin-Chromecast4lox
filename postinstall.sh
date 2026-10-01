@@ -113,6 +113,11 @@ echo "<INFO> Plugin BIN folder is: $PBIN"
 # --- Chromecast 4 Lox NG ---------------------------------------------------
 # Ausfuehrbar machen. Ohne das startet der Daemon beim Systemstart nicht.
 chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
+# Die JSON-Dateien sind Daten, keine Programme, und tragen keine Geheimnisse:
+# 0644 (Verbesserungsbau 30.09.2026, a2). Bis 1.3.14 kamen sie aus dem Archiv
+# mit 0755. Die Konfiguration (Aktionstoken) und die Einmalmeldung der
+# Oberflaeche bleiben 0600.
+chmod 644 "$PBIN"/cc_themen.json "$PBIN"/cc_vorgaben.json 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie
 # eingerichtet haben; schlaegt das fehl, laeuft der Dienst nicht und der

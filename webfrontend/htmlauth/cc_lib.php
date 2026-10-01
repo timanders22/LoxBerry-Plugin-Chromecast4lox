@@ -674,6 +674,31 @@ function cc_sicherung_bauen()
 }
 
 /**
+ * X-3 (Verbesserungsbau 30.09.2026): Welche gespeicherten Werte bestuenden
+ * das eigene Zurueckspielen nicht? Die Sicherung wird gebaut und durch
+ * cc_sicherung_lesen() geschickt - dieselbe Pruefung wie beim Zurueckspielen.
+ * Rueckgabe: Liste der NAMEN, nie der Werte; leer = die Sicherung liesse sich
+ * zurueckspielen. Der Name traegt bewusst kein "sicherung" (siehe
+ * Werkzeuge/sicherung_pruefen.py: es nimmt die erste Funktion *_sicherung*
+ * mit json_encode fuer die Ausfuhr).
+ */
+function cc_rueckspiel_altwerte($ausfuhr = null)
+{
+    $s = is_array($ausfuhr) ? $ausfuhr : cc_sicherung_bauen();
+    $js = json_encode($s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false) {
+        // Nicht kodierbar: der Knopf meldet das selbst (TEXT.SICH_SCHREIBFEHLER).
+        return array();
+    }
+    $namen = array();
+    list($neu) = cc_sicherung_lesen($js, $namen);
+    if ($neu !== null) {
+        return array();
+    }
+    return $namen ? array_values(array_unique($namen)) : array('?');
+}
+
+/**
  * Die Einmalmeldung (seit 1.3.13, O4; Bauform BLE-Scanner NG 1.3.20,
  * Regeln/04 "Jeder POST-Handler endet mit einer Umleitung" samt Nachtrag
  * Raumklima 0.11.8). data/plugins/<ordner>/einmalmeldung.json, 0600, nur beim
@@ -695,6 +720,126 @@ function cc_einmal_schreiben($daten)
     $js = json_encode($daten, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
                               | JSON_INVALID_UTF8_SUBSTITUTE);
     return $js !== false && cc_datei_schreiben(cc_einmal_datei(), $js, 0600);
+}
+
+/* ==================================================================
+ * Eingaben nach einer Beanstandung (Verbesserungsbau 30.09.2026, X-2;
+ * Regeln/04 "Nach einer Beanstandung stehen die eingetippten Werte wieder
+ * im Formular")
+ *
+ * Nur nach einer Beanstandung, nur das eine Formular und nur seine Felder.
+ * Geheimnisse fuehren die beiden Formulare nicht (das Aktionstoken steht in
+ * keinem Feld). Die Einmalmeldung bleibt 0600 (a2).
+ * ================================================================== */
+
+/** Die Felder je Formular: array(text => [...], haken => [...]). */
+function cc_eingabe_felder($form)
+{
+    $felder = array(
+        'settings' => array(
+            'text'  => array('geraete', 'udp_port', 'intervall', 'aktualisierung',
+                             'lautstaerke_schritt', 'favoriten', 'tts_modus', 'tts_sprache',
+                             'tts_pegel', 'tts_ip', 'tts_port', 'tts_zonen', 'tts_lautstaerke',
+                             'tts_vorlage', 'tts_gong', 'tts_lokal_basis', 'lautstaerke_max',
+                             'ruhe_von', 'ruhe_bis', 'ruhe_max'),
+            'haken' => array('enabled', 'udp', 'tts_fortsetzen', 'beschleunigung', 'gruppen'),
+        ),
+        'mqtt' => array(
+            'text'  => array('mqtt_topic'),
+            'haken' => array('mqtt_ein'),
+        ),
+    );
+    return isset($felder[$form]) ? $felder[$form] : null;
+}
+
+/**
+ * Die eingetippten Werte eines Formulars aus $_POST, fuer die Einmalmeldung.
+ * Ein Wert, der kein gueltiges UTF-8 ist oder laenger als 4096 Byte (die
+ * Grenze von cc_wert_pruefen()), reist nicht mit - sonst scheiterte
+ * json_encode und mit ihm die Umleitung; das Feld zeigt dann den
+ * gespeicherten Stand.
+ */
+function cc_eingaben_sammeln($form, $beanstandet)
+{
+    $f = cc_eingabe_felder($form);
+    if ($f === null || !$beanstandet) {
+        return null;
+    }
+    $werte = array();
+    foreach ($f['text'] as $feld) {
+        if (isset($_POST[$feld]) && is_string($_POST[$feld]) && strlen($_POST[$feld]) <= 4096
+            && preg_match('//u', $_POST[$feld]) === 1) {
+            $werte[$feld] = $_POST[$feld];
+        }
+    }
+    foreach ($f['haken'] as $feld) {
+        $werte[$feld] = isset($_POST[$feld]) ? '1' : '';
+    }
+    return array('form' => $form, 'werte' => $werte,
+                 'beanstandet' => array_values(array_unique(array_map('strval', $beanstandet))));
+}
+
+/** Die Eingaben aus der Einmalmeldung annehmen (nur bekannte Felder, nur Text). */
+function cc_eingaben_setzen($roh = null)
+{
+    static $ein = array('form' => '', 'werte' => array(), 'beanstandet' => array());
+    if ($roh === null) {
+        return $ein;
+    }
+    if (!is_array($roh) || !isset($roh['form']) || !is_string($roh['form'])
+        || cc_eingabe_felder($roh['form']) === null) {
+        return $ein;
+    }
+    $f = cc_eingabe_felder($roh['form']);
+    $erlaubt = array_merge($f['text'], $f['haken']);
+    $werte = array();
+    if (isset($roh['werte']) && is_array($roh['werte'])) {
+        foreach ($roh['werte'] as $k => $v) {
+            if (in_array((string) $k, $erlaubt, true) && is_string($v)) {
+                $werte[(string) $k] = $v;
+            }
+        }
+    }
+    $bean = array();
+    if (isset($roh['beanstandet']) && is_array($roh['beanstandet'])) {
+        foreach ($roh['beanstandet'] as $b) {
+            if (is_string($b) && in_array($b, $erlaubt, true)) {
+                $bean[] = $b;
+            }
+        }
+    }
+    if ($bean) {
+        $ein = array('form' => $roh['form'], 'werte' => $werte, 'beanstandet' => $bean);
+    }
+    return $ein;
+}
+
+/** Wert eines Textfelds: die Eingabe nach einer Beanstandung, sonst der gespeicherte. */
+function cc_eingabe($form, $feld, $gespeichert)
+{
+    $ein = cc_eingaben_setzen();
+    if ($ein['form'] === $form && array_key_exists($feld, $ein['werte'])) {
+        return $ein['werte'][$feld];
+    }
+    return $gespeichert;
+}
+
+/** Haken: nach einer Beanstandung der abgeschickte Stand, sonst der gespeicherte. */
+function cc_eingabe_an($form, $feld, $gespeichert)
+{
+    $ein = cc_eingaben_setzen();
+    if ($ein['form'] === $form && array_key_exists($feld, $ein['werte'])) {
+        return $ein['werte'][$feld] === '1';
+    }
+    return (bool) $gespeichert;
+}
+
+/** Das beanstandete Feld wird rot umrandet (Klasse sm-beanstandet). */
+function cc_markierung($feld)
+{
+    $ein = cc_eingaben_setzen();
+    return in_array($feld, $ein['beanstandet'], true)
+        ? ' class="sm-beanstandet" aria-invalid="true"' : '';
 }
 
 function cc_einmal_lesen()
@@ -719,6 +864,9 @@ function cc_einmal_lesen()
     }
     $aus['saved'] = !empty($d['saved']);
     $aus['gesucht'] = !empty($d['gesucht']);
+    // X-2: die eingetippten Werte nach einer Beanstandung (geprueft wird in
+    // cc_eingaben_setzen()).
+    $aus['eingaben'] = isset($d['eingaben']) && is_array($d['eingaben']) ? $d['eingaben'] : null;
     $aus['gefunden'] = array();
     if (isset($d['gefunden']) && is_array($d['gefunden'])) {
         foreach ($d['gefunden'] as $g) {
@@ -1874,9 +2022,12 @@ function cc_t($schluessel)
  *
  * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
  */
-function cc_sicherung_lesen($roh)
+function cc_sicherung_lesen($roh, &$namen = null)
 {
     $mangel = array();
+    // X-3 (Verbesserungsbau 30.09.2026): die Namen der beanstandeten
+    // Schluessel, nie ihre Werte.
+    $namen = array();
     $daten = json_decode((string) $roh, true);
     if (!is_array($daten)) {
         return array(null, array(cc_t('TEXT.SICH_KEIN_JSON')), 0);
@@ -1895,12 +2046,14 @@ function cc_sicherung_lesen($roh)
         if (!in_array($k, $bekannt, true)) {
             $mangel[] = sprintf(cc_t('TEXT.SICH_FREMD'),
                                  htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
+            $namen[] = (string) $k;
             continue;
         }
         // Jeder WERT wird geprueft wie beim Speichern (seit 1.3.13, C2).
         list($gut, $fehler) = cc_wert_pruefen($k, $w, $bisher);
         if ($fehler !== '') {
             $mangel[] = $fehler;
+            $namen[] = (string) $k;
             continue;
         }
         $neu[$k] = $gut;
@@ -1933,6 +2086,7 @@ function cc_sicherung_lesen($roh)
         }
     }
     if ($fehlend) {
+        $namen = array_merge($namen, $fehlend);
         $mangel[] = sprintf(cc_t('TEXT.SICH_FEHLEND'), count($fehlend),
             htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
     }
