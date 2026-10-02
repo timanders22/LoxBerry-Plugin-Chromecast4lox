@@ -15,6 +15,16 @@ Chromecast-Stick:
 An echten Geräten im Haus des Autors ist das noch nicht gemessen;
 Rückmeldungen mit Modellangabe sind willkommen.
 
+## Neu in 1.3.17
+
+Gleiche Lautstärke wird nicht wiederholt (Nachzug B: X-7, Entscheidung 19).
+Gemessen am Dienst mit einem Attrappen-Lautsprecher unter Windows-Python 3.14 und WSL-Python 3.12; nicht am Gerät, nicht an einem echten Lautsprecher.
+
+* **Gleiche Lautstärke wird nicht wiederholt.** `volume` bzw. `set_volume` mit demselben wirksamen Pegel wie vor weniger als 60 s geht nicht erneut an den Lautsprecher. Der wirksame Pegel ist der Wert nach Obergrenze und Ruhezeit. Das Protokoll zeigt das mit `UNVERAENDERT=1`, `last_error` bleibt leer. Damit entfällt das wiederholte Senden aus einem Loxone-Analogausgang.
+* **Vergleich je Lautsprecher:** Verglichen wird mit dem zuletzt gesendeten Pegel. Auch `volume_step`, `volume_up` und `volume_down` merken ihren Pegel; die Folge „40, lauter, 40“ setzt beim zweiten Mal also wieder 40. Nach einer neuen Verbindung zum Lautsprecher und nach einer Ansage mit eigener Lautstärke wird wieder gesendet.
+* **Nicht gebremst** werden Schritte, lauter/leiser, `mute`, die Tasten (`play`, `pause`, `stop`, `next` …), Favoriten und Ansagen.
+* Eine Änderung der Lautstärke in der Google-App sieht die Bremse nicht. Derselbe Wert aus Loxone geht dann erst nach 60 s wieder hinaus.
+
 ## Neu in 1.3.16
 
 Nur Beschreibung, kein geänderter Code.
@@ -821,6 +831,12 @@ Befehle unter `chromecast4lox/<Gerät>/cmd/<Befehl>`: `play`, `pause`, `stop`,
 `prev`, `seek`. Über MQTT braucht jeder Befehl einen Wert (z. B. `1`); eine
 leere Nachricht wird nie ausgeführt – so sieht die Löschung eines retained
 Themas aus. Die Ausgangsvorlage sendet immer einen Wert.
+
+`volume` (absolute Lautstärke) mit demselben wirksamen Pegel – nach
+Obergrenze und Ruhezeit – wie vor weniger als 60 s wird nicht erneut an den
+Lautsprecher gesendet; das Protokoll nennt es mit `UNVERAENDERT=1`.
+`volume_step`, `volume_up`, `volume_down`, `mute` und die Tasten gehen immer
+hinaus.
 
 Der Gerätename im Thema entsteht aus dem Anzeigenamen: Umlaute umgeschrieben,
 alles übrige außer Buchstaben, Ziffern, Strich und Unterstrich wird zu `_`.

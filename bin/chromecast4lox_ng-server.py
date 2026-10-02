@@ -1716,6 +1716,9 @@ class Geraet:
         # dem Arbeitsfaden. Ein Schloss kostet nichts und spart eine Klasse
         # von Fehlern, die sich hinterher nicht mehr nachstellen laesst.
         self.schloss = threading.Lock()
+        # X-7 (Entscheidung Nr. 19, seit 1.3.17): zuletzt GESENDETER Pegel
+        # (0-100) und Zeitpunkt (time.monotonic) - siehe _x7_gleich().
+        self.x7_laut = None
 
     # -- Verbindung ---------------------------------------------------------
 
@@ -1790,6 +1793,9 @@ class Geraet:
         log.info("Verbunden mit '%s' (%s%s)", self.name,
                  getattr(self.cast, "model_name", "?"),
                  ", Lautsprechergruppe" if self.ist_gruppe else "")
+        # X-7: nach einer (Neu-)Verbindung ist der gemerkte Pegel nichts mehr
+        # wert - das Geraet kann neu gestartet sein.
+        self.x7_laut = None
         self._lauscher_anmelden()
         return True
 
@@ -1949,6 +1955,34 @@ class Geraet:
             return host
         uri = str(getattr(self.cast, "uri", "") or "")
         return uri.split(":")[0] if ":" in uri else ""
+
+    # -- X-7: Gleichwert-Bremse der absoluten Lautstaerke (seit 1.3.17) ------
+    #
+    # Entscheidung Nr. 19 (X-7): ein Sollwert-Befehl mit demselben Wert geht
+    # innerhalb von 60 s nicht erneut hinaus. Bei diesem Plugin ist das die
+    # absolute Lautstaerke (volume/set_volume): ein Analogausgang in Loxone,
+    # der denselben Wert wiederholt, setzte sonst jedes Mal die Lautstaerke am
+    # Lautsprecher. Verglichen wird der WIRKSAME Pegel (nach Obergrenze und
+    # Ruhezeit) mit dem zuletzt gesendeten. Ereignisse und Tasten (Schritte,
+    # lauter/leiser, mute, play/pause, Favorit, Ansage) bremst X-7 nicht; die
+    # Schritte schreiben aber ihren gesetzten Pegel in den Merker, sonst ginge
+    # "40, lauter, 40" beim zweiten 40 nicht hinaus. Der Merker lebt nur im
+    # Speicher, je Geraet; die Befehle eines Geraets laufen nacheinander im
+    # Arbeitsfaden. Er verfaellt bei einer neuen Verbindung und wenn eine
+    # Ansage die Lautstaerke stellt. Eine Aenderung in der Google-App sieht er
+    # nicht - die Regel vergleicht mit dem zuletzt GESENDETEN Wert.
+
+    def _x7_gleich(self, pegel):
+        """Ging derselbe Pegel vor weniger als 60 s hinaus? Rueckgabe:
+        Sekunden seitdem, oder None."""
+        merker = self.x7_laut
+        if merker is None or merker[0] != int(pegel):
+            return None
+        seit = time.monotonic() - merker[1]
+        return seit if 0 <= seit < 60 else None
+
+    def _x7_merken(self, pegel):
+        self.x7_laut = (int(pegel), time.monotonic())
 
     def _gedeckelt(self, pegel, cfg):
         """Die Obergrenze anwenden und es sagen, wenn sie greift."""
@@ -2145,6 +2179,7 @@ class Geraet:
         try:
             if lage.get("lautstaerke") is not None:
                 lautstaerke_setzen(self.cast, lage["lautstaerke"])
+                self.x7_laut = None  # X-7: die Ansage hat den Pegel gestellt
             if lage["art"] != "medium":
                 return
             mc = self.cast.media_controller
@@ -2232,6 +2267,7 @@ class Geraet:
                              "gesenkt", self.name, stufe, grenze)
                     stufe = grenze
                 lautstaerke_setzen(self.cast, stufe / 100.0)
+                self.x7_laut = None  # X-7: die Ansage hat den Pegel gestellt
             gong = str(cfg.get("tts_gong", "") or "").strip()
             if gong != "":
                 # Ein Klang vor der Ansage. Wer ohne Vorwarnung angesprochen
@@ -2359,14 +2395,26 @@ class Geraet:
                 pegel, fehlertext = befehlszahl(wert, jetzt_proz, 0, 100, befehl)
                 if fehlertext:
                     return fehlertext
-                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
+                # X-7 (Entscheidung Nr. 19): derselbe wirksame Pegel innerhalb
+                # von 60 s geht nicht erneut hinaus - siehe _x7_gleich().
+                seit = self._x7_gleich(min(pegel, lautstaerke_grenze(cfg or {})))
+                if seit is not None:
+                    log.info("'%s': %s %s - UNVERAENDERT=1, derselbe Pegel ging vor "
+                             "%.0f s hinaus (X-7), nichts gesendet", self.name, befehl,
+                             pegel, seit)
+                    return "OK"
+                gesetzt = self._gedeckelt(pegel, cfg)
+                lautstaerke_setzen(self.cast, gesetzt / 100.0)
+                self._x7_merken(gesetzt)
             elif befehl in ("volume_step", "adjust_volume"):
                 delta, fehlertext = befehlszahl(wert, schrittweite, -100, 100, befehl)
                 if fehlertext:
                     return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = max(0, min(100, int(round(jetzt * 100)) + delta))
-                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
+                gesetzt = self._gedeckelt(pegel, cfg)
+                lautstaerke_setzen(self.cast, gesetzt / 100.0)
+                self._x7_merken(gesetzt)
             elif befehl in ("volume_up", "lauter"):
                 # Ein negativer Schritt wird abgewiesen: "lauter -60" war bis
                 # 1.3.12 ein zweiter Weg, leiser zu werden.
@@ -2375,7 +2423,9 @@ class Geraet:
                     return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = int(round(min(1.0, jetzt + delta / 100.0) * 100))
-                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
+                gesetzt = self._gedeckelt(pegel, cfg)
+                lautstaerke_setzen(self.cast, gesetzt / 100.0)
+                self._x7_merken(gesetzt)
             elif befehl in ("volume_down", "leiser"):
                 # Ueber _gedeckelt() wie jeder andere Lautstaerkebefehl, und ein
                 # negativer Schritt wird abgewiesen (seit 1.3.13, C8). Bis 1.3.12
@@ -2387,7 +2437,9 @@ class Geraet:
                     return fehlertext
                 jetzt = self.cast.status.volume_level if self.cast.status else 0
                 pegel = max(0, int(round(jetzt * 100)) - delta)
-                lautstaerke_setzen(self.cast, self._gedeckelt(pegel, cfg) / 100.0)
+                gesetzt = self._gedeckelt(pegel, cfg)
+                lautstaerke_setzen(self.cast, gesetzt / 100.0)
+                self._x7_merken(gesetzt)
             elif befehl == "mute":
                 stumm_setzen(self.cast, str(wert).strip() not in ("0", "", "false", "aus"))
             elif befehl == "next":
