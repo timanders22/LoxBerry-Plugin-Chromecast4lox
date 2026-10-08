@@ -676,13 +676,22 @@ if ($cc_frame) {
 <?php echo cc_t('TEXT.W_KONFIG'); ?> <span class="sm-mono"><?= cc_e($cc_p['config']) ?></span></div>
 <?php } ?>
 
-<div class="sm-alert sm-info">
-<?php echo cc_t('TEXT.T003'); ?> <b><?= $cc_pid ? cc_t('TEXT.S_LAEUFT') : cc_t('TEXT.S_LAEUFT_NICHT') ?></b><?= $cc_pid ? ' (PID ' . $cc_pid . ') ' : ' ' ?>
-<?php echo cc_t('TEXT.T004'); ?> <b><?= count($cc_geraete) ?></b>
-<?php echo cc_t('TEXT.T005'); ?> <b><?= cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS') ?></b>
-<?php echo cc_t('TEXT.T006'); ?> <b><?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? cc_t('TEXT.S_PORT') . ' ' . cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) : cc_t('TEXT.S_AUS') ?></b>
-<?php echo cc_t('TEXT.T007'); ?> <span class="sm-mono"><?= cc_e($cc_ip) ?></span>
-</div>
+<?php /* Kopf (Entscheidung Nr. 43, seit 1.3.18): Statusuebersicht ueber den
+   Reitern, immer sichtbar. Bis 1.3.17 stand dasselbe als Fliesszeile in einem
+   Meldungskasten. Nur Werte, die oben schon berechnet sind. */ ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= cc_e(cc_t('TEXT.KOPF_EIGENSCHAFT')) ?></th><th><?= cc_e(cc_t('TEXT.KOPF_WERT')) ?></th></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_DIENST')) ?></td>
+    <td class="<?= $cc_pid ? 'sm-an' : 'sm-aus' ?>"><?= cc_e($cc_pid ? cc_t('TEXT.S_LAEUFT') : cc_t('TEXT.S_LAEUFT_NICHT')) ?><?= $cc_pid ? ' (PID ' . (int) $cc_pid . ')' : '' ?></td></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_GERAETE')) ?></td>
+    <td><?= count($cc_geraete) ?></td></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_MQTT')) ?></td>
+    <td><?= cc_e(cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?></td></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_UDP')) ?></td>
+    <td><?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? cc_e(cc_t('TEXT.S_PORT')) . ' ' . cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) : cc_e(cc_t('TEXT.S_AUS')) ?></td></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_LOXBERRY')) ?></td>
+    <td><span class="sm-mono"><?= cc_e($cc_ip) ?></span></td></tr>
+</table>
 
 <div class="sm-tabs">
     <a class="sm-tab<?= $cc_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?tab=settings"><?php echo cc_t('REITER.EINSTELLUNGEN'); ?></a>
@@ -694,6 +703,8 @@ if ($cc_frame) {
 
 <!-- ================= Reiter: <?php echo cc_t('TEXT.T041'); ?> ================= -->
 <div class="sm-seite<?= $cc_tab === 'tab-settings' ? ' sm-active' : '' ?>" id="tab-settings">
+<div class="sm-hinweis"><?= cc_t('TEXT.WAS_IST_DAS') ?></div>
+
 <form method="post" action="index.php" name="suchformular">
 <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
 <div class="sm-legende">
