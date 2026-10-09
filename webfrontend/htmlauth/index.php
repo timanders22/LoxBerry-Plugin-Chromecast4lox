@@ -1162,10 +1162,10 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <tr><td>5</td><td><?php echo cc_t('TEXT.T124'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T125'); ?></td><td><?php echo cc_t('TEXT.T126'); ?></td><td>&mdash;</td></tr>
 <tr><td>6</td><td><?php echo cc_t('TEXT.T127'); ?></td><td>Chromecast</td><td><?php echo cc_t('TEXT.T129'); ?> <span class="sm-mono">/dev/udp/<?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span><?php echo cc_t('TEXT.T130'); ?></td><td><?php echo cc_t('TEXT.T131'); ?></td></tr>
 <tr><td>7</td><td><?php echo cc_t('TEXT.T132'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('TEXT.T135'); ?></td></tr>
-<tr><td>8</td><td><?php echo cc_t('TEXT.T136'); ?></td><td><?php echo cc_t('TEXT.T137'); ?></td><td>&mdash;</td><td><?php echo cc_t('TEXT.T138'); ?> <span class="sm-mono">play</span></td></tr>
-<tr><td>9</td><td><?php echo cc_t('TEXT.T140'); ?></td><td><?php echo cc_t('TEXT.T141'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?> <?php echo cc_t('TEXT.S_ZU_9'); ?></td></tr>
-<tr><td>10</td><td><?php echo cc_t('TEXT.T143'); ?></td><td><?php echo cc_t('TEXT.T144'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_up</span></td></tr>
-<tr><td>11</td><td><?php echo cc_t('TEXT.T143'); ?></td><td><?php echo cc_t('TEXT.T146'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_down</span></td></tr>
+<tr><td>8</td><td><?php echo cc_t('TEXT.T136'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">play</span></td><td><?php echo cc_t('TEXT.T137'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?></td></tr>
+<tr><td>9</td><td><?php echo cc_t('TEXT.T140'); ?> <?php echo cc_t('TEXT.S_ZU_9'); ?></td><td><?php echo cc_t('TEXT.T141'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?></td></tr>
+<tr><td>10</td><td><?php echo cc_t('TEXT.T143'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_up</span></td><td><?php echo cc_t('TEXT.T144'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td>&mdash;</td></tr>
+<tr><td>11</td><td><?php echo cc_t('TEXT.T143'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_down</span></td><td><?php echo cc_t('TEXT.T146'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td>&mdash;</td></tr>
 <?php /* Ausfallerkennung ueber den DIENST (seit 1.3.13, O15): server/online
         kommt retained mit Letztem Willen, server/zaehler aendert sich in jedem
         Takt. Bis 1.3.12 hing #12/#13 an <G>_online - das Thema ist fluechtig,
@@ -1173,11 +1173,11 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
         #13 meldete nie etwas (Oberflaechen-Befund 15). */
       $cc_aender = max(60, 3 * (int) cc_cfg($cc_cfg, 'intervall', '10')); ?>
 <tr><td>12</td><td><?php echo cc_t('TEXT.T147'); ?></td><td><?php echo cc_t('BAUSTEIN.N12'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.E12'); ?></td></tr>
-<tr><td>13</td><td><?php echo cc_t('TEXT.T150'); ?></td><td><?php echo cc_t('TEXT.T151'); ?></td><td><?php echo cc_t('BAUSTEIN.P13'); ?></td><td><?php echo cc_t('TEXT.T153'); ?></td></tr>
+<tr><td>13</td><td><?php echo cc_t('TEXT.T150'); ?> <?php echo cc_t('BAUSTEIN.BENACHR'); ?></td><td><?php echo cc_t('TEXT.T151'); ?></td><td><?php echo cc_t('BAUSTEIN.P13'); ?></td><td><?php echo cc_t('BAUSTEIN.E13'); ?></td></tr>
 <tr><td>14</td><td><?php echo cc_t('BAUSTEIN.STATUS'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T154'); ?></td><td><?php echo cc_t('BAUSTEIN.V1V2'); ?></td></tr>
 <tr><td>15</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_online</td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T118'); ?></td></tr>
 <tr><td>16</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_zaehler</td><td><?php echo cc_t('BAUSTEIN.P16'); ?></td><td>&mdash;</td></tr>
-<tr><td>17</td><td><?php echo cc_t('BAUSTEIN.AENDER'); ?></td><td><?php echo cc_t('BAUSTEIN.N17'); ?></td><td><?= cc_e(sprintf(cc_t('BAUSTEIN.P17'), $cc_aender)) ?></td><td><?php echo cc_t('BAUSTEIN.E17'); ?></td></tr>
+<tr><td>17</td><td><?php echo cc_t('BAUSTEIN.AENDER'); ?> <?php echo cc_t('BAUSTEIN.BENACHR'); ?></td><td><?php echo cc_t('BAUSTEIN.N17'); ?></td><td><?= cc_e(sprintf(cc_t('BAUSTEIN.P17'), $cc_aender)) ?></td><td><?php echo cc_t('BAUSTEIN.E17'); ?></td></tr>
 </table>
 <div class="sm-alert sm-info">
 <b><?php echo cc_t('BAUSTEIN.ZU_6'); ?></b> <?php echo cc_t('TEXT.S_ZU_6'); ?>

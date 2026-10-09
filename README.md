@@ -15,6 +15,21 @@ Chromecast-Stick:
 An echten Geräten im Haus des Autors ist das noch nicht gemessen;
 Rückmeldungen mit Modellangabe sind willkommen.
 
+## Neu in 1.3.19
+
+Baustein-Liste in der Schreibweise des Leitungswerkzeugs.
+
+* **Baustein-Liste (Reiter Einbindung in Loxone):** Der Folgebaustein steht jetzt in der Spalte
+  „Baustein (Typ)“, etwa `Flankenerkennung (steigend) → Ausgangsbefehl play` und
+  `Einschaltverzögerung → Benachrichtigung`; die Spalte „Eingänge verbinden mit“ nennt nur noch
+  die Quelle (`Eingang = #7`, `Eingang = #12`). Gleiche Bausteine, gleiche Verbindungen.
+* **Ausfallerkennung (#17): Analogwertvalidierung statt „Änderungsüberwachung“** – diesen Baustein
+  gibt es in Loxone Config nicht. Parameter Tmc wie die bisherige Schwelle (dreifacher Takt, mindestens
+  60 s), Min 0, Max 999; der Zähler `<G>_server_zaehler` (#16) an V, an En eine Konstante 1; der
+  Ausgang E (error) geht an die Benachrichtigung. Beendet sich der Dienst, sendet er -1 und löst damit
+  ebenfalls aus.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.3.18
 
 Kopf wie alle Hausplugins: Statusübersicht über den Reitern, Zusammenfassung oben im ersten Reiter.
