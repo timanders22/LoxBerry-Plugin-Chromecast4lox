@@ -15,6 +15,30 @@ Chromecast-Stick:
 An echten Geräten im Haus des Autors ist das noch nicht gemessen;
 Rückmeldungen mit Modellangabe sind willkommen.
 
+Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
+der Seite „Chromecast4lox“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
+
+## Neu in 1.3.20
+
+Reiter „Einbindung in Loxone“ zeigt ein Bild der Bausteine aus dem gemeinsamen Musterprojekt und
+verlinkt die Projektdatei; die Baustein-Liste ist die dort in Loxone Config gebaute.
+
+* Unter der Baustein-Liste (Schritt 6) steht das Bild der Seite „Chromecast4lox“ aus dem
+  [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt); das Bild liegt im Plugin,
+  nachgeladen wird nichts. Config kürzt lange Bausteinnamen, die vollen Namen stehen in der Tabelle.
+  Das Musterprojekt zeigt das Beispielgerät „Wohnzimmer“, die Liste den Platzhalter `<G>`.
+* **Baustein-Liste neu (19 statt 17 Zeilen):** eine Zeile = ein Baustein, nur die Hauptvariante, so wie
+  im Musterprojekt gebaut und verbunden. Die Eingänge `<G>_playing`, `<G>_volume`, `server_online` und
+  `server_zaehler` kommen aus der Eingangsvorlage „Chromecast 4 Lox“, die Befehle
+  `chromecast4lox_<G>_play`, `_stop`, `_volume_up` und `_volume_down` aus der Ausgangsvorlage
+  „Chromecast 4 Lox“ (MQTT, über den UDP-Eingang des MQTT-Gateways). Ohne MQTT-Gateway bleibt die
+  Vorlage „Chromecast 4 Lox UDP“ der Weg. „Musik <G>“ ist ein virtueller Eingang (Schalter), eine
+  Flankenerkennung schickt play und stop. Die Konstante 1 an En der Analogwertvalidierung hat eine
+  eigene Zeile; beide Störungen laufen über ein ODER in eine Benachrichtigung. Unter der Tabelle drei
+  neue Hinweise, die Erläuterung auf die neuen Nummern.
+* Gerendert unter PHP 7.4, 8.4 und 8.5, nicht am Gerät angesehen.
+
 ## Neu in 1.3.19
 
 Baustein-Liste in der Schreibweise des Leitungswerkzeugs.

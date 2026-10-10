@@ -661,6 +661,10 @@ if ($cc_frame) {
    nach einer Beanstandung rot umrandet. */
 .sm-wrap input.sm-beanstandet, .sm-wrap select.sm-beanstandet, .sm-wrap textarea.sm-beanstandet {
   border: 2px solid #c62828 !important; background-color: #fff5f5; }
+/* Ergaenzung (Welle Bild, Entscheidung 45): Bild der Bausteine aus dem gemeinsamen Musterprojekt. */
+.sm-bild { margin: 12px 0; }
+.sm-bild img { max-width: 100%; height: auto; border: 1px solid #ccc; border-radius: 4px; background: #fff; }
+.sm-bild figcaption { font-size: .9em; color: #555; margin-top: 4px; }
 
 </style>
 <div class="sm-wrap">
@@ -1155,33 +1159,48 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <div class="sm-small"><?php echo cc_t('TEXT.S_LOGIK_EINLEITUNG'); ?></div>
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo cc_t('TEXT.T111'); ?></th><th><?php echo cc_t('TEXT.T112'); ?></th><th><?php echo cc_t('TEXT.T113'); ?></th><th><?php echo cc_t('TEXT.T114'); ?></th></tr>
-<tr><td>1</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T116'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T118'); ?></td></tr>
-<tr><td>2</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T119'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T120'); ?></td></tr>
-<tr><td>3</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T121'); ?></td><td><?php echo cc_t('TEXT.T122'); ?></td><td>&mdash;</td></tr>
-<tr><td>4</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T123'); ?></td><td><?php echo cc_t('TEXT.T117'); ?></td><td>&mdash;</td></tr>
-<tr><td>5</td><td><?php echo cc_t('TEXT.T124'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T125'); ?></td><td><?php echo cc_t('TEXT.T126'); ?></td><td>&mdash;</td></tr>
-<tr><td>6</td><td><?php echo cc_t('TEXT.T127'); ?></td><td>Chromecast</td><td><?php echo cc_t('TEXT.T129'); ?> <span class="sm-mono">/dev/udp/<?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span><?php echo cc_t('TEXT.T130'); ?></td><td><?php echo cc_t('TEXT.T131'); ?></td></tr>
-<tr><td>7</td><td><?php echo cc_t('TEXT.T132'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td><?php echo cc_t('TEXT.T135'); ?></td></tr>
-<tr><td>8</td><td><?php echo cc_t('TEXT.T136'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">play</span></td><td><?php echo cc_t('TEXT.T137'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?></td></tr>
-<tr><td>9</td><td><?php echo cc_t('TEXT.T140'); ?> <?php echo cc_t('TEXT.S_ZU_9'); ?></td><td><?php echo cc_t('TEXT.T141'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.EINGANG_7'); ?></td></tr>
-<tr><td>10</td><td><?php echo cc_t('TEXT.T143'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_up</span></td><td><?php echo cc_t('TEXT.T144'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td>&mdash;</td></tr>
-<tr><td>11</td><td><?php echo cc_t('TEXT.T143'); ?> <?php echo cc_t('BAUSTEIN.AUSGANGSBEFEHL'); ?> <span class="sm-mono">volume_down</span></td><td><?php echo cc_t('TEXT.T146'); ?></td><td><?php echo cc_t('TEXT.T134'); ?></td><td>&mdash;</td></tr>
+<?php /* Welle Bild 6 (1.3.20, Entscheidung A): die Liste ist die im LoxBerry-Plugins
+         Musterprojekt in Loxone Config gebaute und mit leitungen_setzen.py verbundene
+         (Musterprojekt/baustein_listen.txt, Abschnitt Chromecast4lox) - eine Zeile = ein
+         Baustein, nur die Hauptvariante. Das Musterprojekt nutzt das Beispielgeraet
+         "Wohnzimmer"; hier steht der Platzhalter <G>. Namen #1 bis #4 mit dem Themenpraefix
+         wie in cc_vorlage('mqtt_in'), #8/#9/#11/#13 wie die Titel von cc_vorlage('mqtt_out')
+         (Befehle ueber MQTT, Entscheidung Hausherr 10.10.2026). */ ?>
+<tr><td>1</td><td><?php echo cc_t('BAUSTEIN.B1_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_playing</td><td><?php echo cc_t('BAUSTEIN.B1_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B1_VERB'); ?></td></tr>
+<tr><td>2</td><td><?php echo cc_t('BAUSTEIN.B2_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_volume</td><td><?php echo cc_t('BAUSTEIN.B2_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B2_VERB'); ?></td></tr>
+<tr><td>3</td><td><?php echo cc_t('BAUSTEIN.B3_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_online</td><td><?php echo cc_t('BAUSTEIN.B3_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B3_VERB'); ?></td></tr>
+<tr><td>4</td><td><?php echo cc_t('BAUSTEIN.B4_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_zaehler</td><td><?php echo cc_t('BAUSTEIN.B4_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B4_VERB'); ?></td></tr>
+<tr><td>5</td><td><?php echo cc_t('BAUSTEIN.B5_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B5_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B5_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B5_VERB'); ?></td></tr>
+<tr><td>6</td><td><?php echo cc_t('BAUSTEIN.B6_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B6_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B6_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B6_VERB'); ?></td></tr>
+<tr><td>7</td><td><?php echo cc_t('BAUSTEIN.B7_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B7_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B7_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B7_VERB'); ?></td></tr>
+<tr><td>8</td><td><?php echo cc_t('BAUSTEIN.B8_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_play</td><td><?php echo cc_t('BAUSTEIN.B8_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B8_VERB'); ?></td></tr>
+<tr><td>9</td><td><?php echo cc_t('BAUSTEIN.B9_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_stop</td><td><?php echo cc_t('BAUSTEIN.B9_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B9_VERB'); ?></td></tr>
+<tr><td>10</td><td><?php echo cc_t('BAUSTEIN.B10_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B10_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B10_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B10_VERB'); ?></td></tr>
+<tr><td>11</td><td><?php echo cc_t('BAUSTEIN.B11_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_volume_up</td><td><?php echo cc_t('BAUSTEIN.B11_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B11_VERB'); ?></td></tr>
+<tr><td>12</td><td><?php echo cc_t('BAUSTEIN.B12_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B12_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B12_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B12_VERB'); ?></td></tr>
+<tr><td>13</td><td><?php echo cc_t('BAUSTEIN.B13_TYP'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_&lt;G&gt;_volume_down</td><td><?php echo cc_t('BAUSTEIN.B13_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B13_VERB'); ?></td></tr>
+<tr><td>14</td><td><?php echo cc_t('BAUSTEIN.B14_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B14_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B14_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B14_VERB'); ?></td></tr>
+<tr><td>15</td><td><?php echo cc_t('BAUSTEIN.B15_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B15_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B15_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B15_VERB'); ?></td></tr>
 <?php /* Ausfallerkennung ueber den DIENST (seit 1.3.13, O15): server/online
         kommt retained mit Letztem Willen, server/zaehler aendert sich in jedem
-        Takt. Bis 1.3.12 hing #12/#13 an <G>_online - das Thema ist fluechtig,
-        und stirbt der Dienst, behaelt der virtuelle Eingang seine letzte 1:
-        #13 meldete nie etwas (Oberflaechen-Befund 15). */
+        Takt. Tmc wie bisher dreimal der Takt, mindestens 60 s (Musterprojekt: 60 s). */
       $cc_aender = max(60, 3 * (int) cc_cfg($cc_cfg, 'intervall', '10')); ?>
-<tr><td>12</td><td><?php echo cc_t('TEXT.T147'); ?></td><td><?php echo cc_t('BAUSTEIN.N12'); ?></td><td>&mdash;</td><td><?php echo cc_t('BAUSTEIN.E12'); ?></td></tr>
-<tr><td>13</td><td><?php echo cc_t('TEXT.T150'); ?> <?php echo cc_t('BAUSTEIN.BENACHR'); ?></td><td><?php echo cc_t('TEXT.T151'); ?></td><td><?php echo cc_t('BAUSTEIN.P13'); ?></td><td><?php echo cc_t('BAUSTEIN.E13'); ?></td></tr>
-<tr><td>14</td><td><?php echo cc_t('BAUSTEIN.STATUS'); ?></td><td><?php echo cc_t('TEXT.T133'); ?></td><td><?php echo cc_t('TEXT.T154'); ?></td><td><?php echo cc_t('BAUSTEIN.V1V2'); ?></td></tr>
-<tr><td>15</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_online</td><td><?php echo cc_t('TEXT.T117'); ?></td><td><?php echo cc_t('TEXT.T118'); ?></td></tr>
-<tr><td>16</td><td><?php echo cc_t('TEXT.T115'); ?></td><td class="sm-mono"><?= cc_e($cc_praefix) ?>_server_zaehler</td><td><?php echo cc_t('BAUSTEIN.P16'); ?></td><td>&mdash;</td></tr>
-<tr><td>17</td><td><?php echo cc_t('BAUSTEIN.AENDER'); ?> <?php echo cc_t('BAUSTEIN.BENACHR'); ?></td><td><?php echo cc_t('BAUSTEIN.N17'); ?></td><td><?= cc_e(sprintf(cc_t('BAUSTEIN.P17'), $cc_aender)) ?></td><td><?php echo cc_t('BAUSTEIN.E17'); ?></td></tr>
+<tr><td>16</td><td><?php echo cc_t('BAUSTEIN.B16_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B16_NAME'); ?></td><td><?= cc_e(sprintf(cc_t('BAUSTEIN.B16_PARAM'), $cc_aender)) ?></td><td><?php echo cc_t('BAUSTEIN.B16_VERB'); ?></td></tr>
+<tr><td>17</td><td><?php echo cc_t('BAUSTEIN.B17_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B17_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B17_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B17_VERB'); ?></td></tr>
+<tr><td>18</td><td><?php echo cc_t('BAUSTEIN.B18_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B18_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B18_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B18_VERB'); ?></td></tr>
+<tr><td>19</td><td><?php echo cc_t('BAUSTEIN.B19_TYP'); ?></td><td><?php echo cc_t('BAUSTEIN.B19_NAME'); ?></td><td><?php echo cc_t('BAUSTEIN.B19_PARAM'); ?></td><td><?php echo cc_t('BAUSTEIN.B19_VERB'); ?></td></tr>
 </table>
 <div class="sm-alert sm-info">
-<b><?php echo cc_t('BAUSTEIN.ZU_6'); ?></b> <?php echo cc_t('TEXT.S_ZU_6'); ?>
+<?php printf(cc_t('BAUSTEIN.H_MUSIK'), cc_e($cc_praefix), cc_e($cc_praefix)); ?><br>
+<?php echo cc_t('BAUSTEIN.H_ODER'); ?><br>
+<?php echo cc_t('BAUSTEIN.H_KONSTANTE'); ?><br>
+<?php echo cc_t('TEXT.S_ZU_6'); ?>
 </div>
+<figure class="sm-bild">
+<img src="einbindung_loxone.png" alt="<?= cc_e(cc_t('TEXT.BILD_ALT')) ?>" loading="lazy">
+<figcaption><?= cc_e(cc_t('TEXT.BILD_UNTERSCHRIFT')) ?></figcaption>
+</figure>
+<div class="sm-small"><?php echo cc_t('TEXT.MUSTERPROJEKT'); ?></div>
 
 <div class="sm-small">
 <?php echo cc_t('TEXT.T165'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T166'); ?></span><?php echo cc_t('TEXT.T167'); ?> <span class="sm-mono"><?php echo cc_t('TEXT.T168'); ?></span> <?php echo cc_t('TEXT.T169'); ?>
