@@ -15,9 +15,18 @@ Chromecast-Stick:
 An echten Geräten im Haus des Autors ist das noch nicht gemessen;
 Rückmeldungen mit Modellangabe sind willkommen.
 
-Die Bausteine der Baustein-Liste aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden auf
-der Seite „Chromecast4lox“ im [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
+Die Bausteine der beiden Baustein-Listen aus dem Reiter *Einbindung in Loxone* stehen fertig verbunden
+auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
+
+## Neu in 1.3.21
+
+Vollausstattung aus dem [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt): Der Reiter „Einbindung in
+Loxone“ zeigt zwei Baustein-Listen – Werte, Meldungen und Wiedergabe (mit Titel, Interpret und App über
+Virtuelle Texteingänge) sowie Steuerung, Ansage und Automatik (Lautstärke, Favoriten, Befehle an alle
+Lautsprecher, Türklingel-Ansage, alles aus beim Verlassen des Hauses) –, je mit Bild und
+Schritt-für-Schritt-Anleitung (44 und 35 Zeilen statt 19).
 
 ## Neu in 1.3.20
 
