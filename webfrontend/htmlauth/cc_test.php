@@ -624,6 +624,11 @@ function cc_selbstpruefung()
     $cc_sz = cc_sprechen_pruefzeile();
     cc_pruefzeile($z, $cc_sz[0], $cc_sz[1], $cc_sz[2]);
 
+    /* --- 12b. Sperre aus Loxone (B1, 1.3.22) ------------------------
+     * Auch "kein Wert nach dem Update" ist sichtbar - wie bei Alexa-NG. */
+    $cc_lz = cc_loxsperre_pruefzeile();
+    cc_pruefzeile($z, $cc_lz[0], $cc_lz[1], $cc_lz[2]);
+
     /* --- Bilanz ---------------------------------------------------- */
     $gut = $schlecht = $unbekannt = 0;
     foreach ($z as $zeile) {

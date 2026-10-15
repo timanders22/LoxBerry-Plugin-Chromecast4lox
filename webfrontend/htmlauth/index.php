@@ -400,6 +400,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
     }
     $neu['gruppen']         = isset($_POST['gruppen']) ? '1' : '0';
     $neu['beschleunigung']  = isset($_POST['beschleunigung']) ? '1' : '0';
+    // B1 (1.3.22): Sperre aus Loxone annehmen - ab Werk aus.
+    $neu['sperre_ein']      = isset($_POST['sperre_ein']) ? '1' : '0';
 
     if ($cc_beanstandet) {
         // Entscheidung 16 (30.09.2026; Regeln/04): bei einer Beanstandung wird
@@ -917,6 +919,14 @@ if ($cc_komma) { ?>
 </div>
 <div class="sm-small"><?php echo cc_t('RUHE.HINWEIS'); ?></div>
 
+<?php /* B1 (1.3.22): Sperre aus Loxone - ab Werk ohne Wirkung; Zustand aus
+         derselben Funktion wie die Zeile im Reiter Test. */
+list(, , $cc_sperre_text) = cc_loxsperre_pruefzeile(); ?>
+<h2 id="sperre"><?php echo cc_t('SPERRE.H'); ?></h2>
+<label class="sm-check"><input data-role="none" type="checkbox" name="sperre_ein" value="1"<?= cc_eingabe_an('settings', 'sperre_ein', cc_cfg($cc_cfg, 'sperre_ein', '0') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('SPERRE.L_EIN'); ?></b></label>
+<div class="sm-small"><?= sprintf(cc_t('SPERRE.HILFE'), cc_e($cc_praefix)) ?></div>
+<div class="sm-small"><?= cc_e(sprintf(cc_t('SPERRE.JETZT'), $cc_sperre_text)) ?></div>
+
 <h2><?php echo cc_t('TTS.H_GRUPPEN'); ?></h2>
 <label style="display:inline-flex;align-items:center;gap:6px;">
 <input data-role="none" type="checkbox" name="gruppen" value="1"<?= cc_eingabe_an('settings', 'gruppen', cc_cfg($cc_cfg, 'gruppen', '1') === '1') ? ' checked' : '' ?>> <?php echo cc_t('TTS.L_GRUPPEN'); ?>
@@ -1083,6 +1093,7 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 <td><?= cc_e($cc_i1[0]) ?></td></tr>
 <?php } ?>
 </table>
+<div class="sm-small"><?= sprintf(cc_t('SPERRE.MQTT_HINWEIS'), cc_e($cc_praefix)) ?></div>
 
 <h2><?php echo cc_t('TEXT.T104'); ?></h2>
 <table class="sm-tbl">

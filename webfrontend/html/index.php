@@ -5,7 +5,10 @@
  *
  *   ?aktion=status                        frei, lesend   Statuszeile (auch ohne aktion)
  *   ?selftest=1&token=T                   nur lokal      SELFTEST;OK=1;TOKEN=OK - prueft nur das Token
- *   aktion=sprechen&token=T&geraet=..&text=..[&laut=0-100]   nur lokal, POST empfohlen
+ *   aktion=sprechen&token=T&geraet=..&text=..[&laut=0-100][&dringend=1]   nur lokal, POST empfohlen
+ *   aktion=lautstaerke&token=T&geraet=..&wert=0-100          nur lokal (B2, 1.3.22)
+ *   aktion=geraete&token=T                                   nur lokal, lesend (B2, 1.3.22)
+ *   aktion=sperre&token=T&wert=0|1                           nur lokal (B1, 1.3.22; ab Werk 409)
  *
  * DIESELBE Schnittstelle wie Alexa-NG (/plugins/alexang/index.php): gleiche
  * Felder, gleiche Antwortform (KOPF;OK=1;...;GRUND=...), gleiche Codes
@@ -58,7 +61,7 @@ try {
     /* Parameter einmal zentral: nur GET und POST, erst is_string, dann Laenge. */
     $cc_par = array();
     $cc_falsch = array();
-    foreach (array('aktion', 'token', 'geraet', 'text', 'laut', 'ssml', 'dringend', 'selftest') as $cc_k) {
+    foreach (array('aktion', 'token', 'geraet', 'text', 'laut', 'ssml', 'dringend', 'selftest', 'wert') as $cc_k) {
         $cc_w = null;
         if (isset($_POST[$cc_k])) { $cc_w = $_POST[$cc_k]; } elseif (isset($_GET[$cc_k])) { $cc_w = $_GET[$cc_k]; }
         if ($cc_w === null) { continue; }
@@ -67,7 +70,8 @@ try {
     }
     $cc_wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
     $cc_aktion = isset($cc_par['aktion']) ? $cc_par['aktion'] : (isset($cc_par['selftest']) ? 'selftest' : 'status');
-    $cc_kopf = array('status' => 'CHROMECAST4LOX', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN');
+    $cc_kopf = array('status' => 'CHROMECAST4LOX', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
+                     'lautstaerke' => 'LAUTSTAERKE', 'geraete' => 'GERAET', 'sperre' => 'SPERRE');
     if (!isset($cc_kopf[$cc_aktion])) {
         cc_ende_roh(400, 'CHROMECAST4LOX;OK=0;GRUND=AKTION');
     }
@@ -106,6 +110,22 @@ try {
         cc_ende_roh(200, cc_zeile('SELFTEST', array('OK' => 1, 'TOKEN' => 'OK',
             'SPRECHEN' => (string) cc_cfg($cc_cfg, 'sprechen_ein', '0') === '1' ? 1 : 0,
             'DIENST' => $cc_herz ? 1 : 0, 'GRUND' => '-')));
+    }
+
+    /* B1/B2 (1.3.22): dieselben Pruefungen wie sprechen - nur lokal, das eine
+     * Sprechtoken, geschrieben wird erst nach der Tokenpruefung. */
+    if ($cc_aktion === 'sperre') {
+        list($cc_h, $cc_f) = cc_loxsperre_setzen(isset($cc_par['wert']) ? $cc_par['wert'] : null,
+                                                 'http:' . $cc_wer);
+        cc_ende_roh($cc_h, cc_zeile($K, $cc_f));
+    }
+    if ($cc_aktion === 'lautstaerke') {
+        list($cc_h, $cc_f) = cc_lautstaerke_ausfuehren($cc_par, 'http', $cc_wer);
+        cc_ende_roh($cc_h, cc_zeile($K, $cc_f));
+    }
+    if ($cc_aktion === 'geraete') {
+        list($cc_h, $cc_zl) = cc_geraete_antwort();
+        cc_ende_roh($cc_h, implode("\n", $cc_zl));
     }
 
     list($cc_h, $cc_f) = cc_sprechen_ausfuehren($cc_par, 'http', $cc_wer);

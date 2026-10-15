@@ -29,7 +29,11 @@
     "'nur_oberflaeche' nennt die Schluessel, die der Dienst nicht braucht:",
     "'enabled' liest der Waechter unmittelbar aus der Datei, 'aktionstoken'",
     "ist ein Merkmal der Oberflaeche. Sie stehen trotzdem hier - eine Liste",
-    "mit Loechern waere wieder eine zweite Wahrheit."
+    "mit Loechern waere wieder eine zweite Wahrheit.",
+    "",
+    "sperre_ein (B1, 1.3.22: Sperre aus Loxone, ab Werk 0) steht ebenfalls VOR",
+    "aktionstoken. Der Dienst liest ihn (Ansagen aus Loxone), deshalb steht er",
+    "nicht in nur_oberflaeche."
   ],
   "fassung": 1,
 
@@ -64,6 +68,7 @@
     "ruhe_max": "30",
     "gruppen": "1",
     "beschleunigung": "0",
+    "sperre_ein": "0",
     "sprechen_ein": "0",
     "sprechen_geraet": "",
     "sprechen_stunde": "60",

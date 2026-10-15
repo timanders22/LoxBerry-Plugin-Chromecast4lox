@@ -134,6 +134,8 @@ ZUSTAND_FILE = os.path.join(DATA_DIR, "zustand.json")
 # Endpunkts webfrontend/html/index.php und das Ergebnis der letzten Ansage.
 SPRECHEN_ORDNER = os.path.join(DATA_DIR, "sprechen") if DATA_DIR else ""
 SPRECHEN_ERGEBNIS = os.path.join(DATA_DIR, "sprechen_ergebnis.json") if DATA_DIR else ""
+# Sperre aus Loxone (B1, 1.3.22): der zuletzt gesetzte Zustand, fuer Dienst und Endpunkt.
+LOXSPERRE_FILE = os.path.join(DATA_DIR, "loxsperre.json") if DATA_DIR else ""
 THEMEN_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "cc_themen.json")
 
@@ -1357,6 +1359,9 @@ def eigenes_thema(praefix, thema):
     if not thema.startswith(praefix + "/"):
         return False
     teile = thema[len(praefix) + 1:].split("/")
+    # B1 (1.3.22): der einzige Dienstbefehl, server/cmd/sperre.
+    if len(teile) == 3 and teile[0] == "server" and teile[1] == "cmd":
+        return teile[2] == "sperre"
     if len(teile) == 3 and teile[0] not in ("", "server") and teile[1] == "cmd":
         return thema_info("befehle", teile[2]) is not None
     if len(teile) != 2 or teile[0] == "":
@@ -2568,7 +2573,8 @@ class UdpEmpfaenger(threading.Thread):
                 stueck = teil.split(" ", 1)
                 befehl = stueck[0].strip()
                 wert = stueck[1].strip() if len(stueck) > 1 else ""
-                self.dienst.befehl_ausfuehren(geraet, befehl, wert)
+                self.dienst.befehl_ausfuehren(geraet, befehl, wert,
+                                              quelle="udp:" + str(absender[0]))
 
     def stop(self):
         self.laeuft = False
@@ -2577,6 +2583,109 @@ class UdpEmpfaenger(threading.Thread):
                 self.sock.close()
         except Exception:  # noqa: BLE001
             pass
+
+
+# ---------------------------------------------------------------------------
+# Sperre aus Loxone (B1, 1.3.22; Muster Alexa-NG 1.0.4, ax_loxsperre_*)
+# ---------------------------------------------------------------------------
+#
+# Loxone haelt die Ansagen an, etwa bei Abwesend, Gaesten oder Schlafen:
+# <praefix>/server/cmd/sperre mit 1 (sperren) oder 0 (aufheben), per UDP
+# "server/SPERRE 1;", am Endpunkt aktion=sperre (webfrontend/html/index.php,
+# Sprechtoken, nur von diesem LoxBerry). Ab Werk ohne Wirkung: nur mit dem
+# Haken sperre_ein (Reiter Einstellungen) wird ein Wert angenommen, und nur
+# dann wirkt er. Gesperrt werden Ansagen - tts aus Loxone und aktion=sprechen;
+# am Endpunkt geht dringend=1 durch. Musik, Lautstaerke und alle uebrigen
+# Befehle bleiben frei, wie bei Alexa-NG. Der Zustand liegt in
+# data/plugins/<ordner>/loxsperre.json - EINE Datei fuer Dienst und Endpunkt
+# (cc_loxsperre_lesen() in cc_lib.php liest dieselbe Form). Kein Wert (frische
+# Installation; der Datenordner ist nach einem Update leer) heisst "offen",
+# bis Loxone ihn setzt; der Reiter Test zeigt das an. Ein MQTT-Zustandsthema
+# dazu gibt es bewusst nicht: die Vorlagen und das Musterprojekt bleiben
+# unveraendert, und Loxone kennt den Wert, den es selbst gesetzt hat.
+
+LOXSPERRE_WERTE = ("0", "1")
+
+
+def _loxsperre_quelle(text):
+    return re.sub(r"[^A-Za-z0-9_.:\-]", "", str(text))[:60]
+
+
+def loxsperre_lesen():
+    """Der zuletzt gesetzte Zustand: dict(bekannt, gesperrt, seit, zuletzt, quelle)."""
+    aus = {"bekannt": False, "gesperrt": 0, "seit": 0, "zuletzt": 0, "quelle": ""}
+    if not LOXSPERRE_FILE:
+        return aus
+    try:
+        with open(LOXSPERRE_FILE, "r", encoding="utf-8") as fh:
+            d = json.loads(fh.read(4096))
+    except (OSError, ValueError):
+        return aus
+    if not isinstance(d, dict):
+        return aus
+    g = d.get("gesperrt")
+    if isinstance(g, bool) or g not in (0, 1):
+        return aus
+    aus["bekannt"] = True
+    aus["gesperrt"] = g
+    for k in ("seit", "zuletzt"):
+        v = d.get(k)
+        aus[k] = v if isinstance(v, int) and not isinstance(v, bool) else 0
+    aus["quelle"] = _loxsperre_quelle(d.get("quelle", ""))
+    return aus
+
+
+def loxsperre_wirkt(cfg):
+    """Wirkt die Sperre jetzt? Nur mit Haken und einem gesetzten Wert 1."""
+    if str((cfg or {}).get("sperre_ein", "0")).strip() != "1":
+        return False
+    s = loxsperre_lesen()
+    return s["bekannt"] and s["gesperrt"] == 1
+
+
+def loxsperre_setzen(cfg, wert, quelle):
+    """Die Sperre setzen (MQTT server/cmd/sperre, UDP server/SPERRE). Wert '0'
+    oder '1' - alles andere wird abgewiesen, nie umgedeutet. Rueckgabe
+    (grund, gesperrt): grund '' heisst gesetzt."""
+    herkunft = _loxsperre_quelle(quelle)
+    if str((cfg or {}).get("sperre_ein", "0")).strip() != "1":
+        log.warning("Sperre aus Loxone ist ausgeschaltet (Reiter Einstellungen) - "
+                    "Befehl sperre von %s verworfen", herkunft)
+        return "SPERRE_AUS", None
+    w = "" if wert is None else str(wert).strip()
+    if w not in LOXSPERRE_WERTE:
+        log.warning("Befehl sperre von %s: Wert '%s' ist nicht 0 oder 1 - abgewiesen",
+                    herkunft, w[:20])
+        return "WERT_SPERRE", None
+    if not LOXSPERRE_FILE:
+        return "SPEICHERN", None
+    alt = loxsperre_lesen()
+    neu = int(w)
+    gleich = alt["bekannt"] and alt["gesperrt"] == neu
+    jetzt = int(time.time())
+    daten = {"gesperrt": neu, "seit": alt["seit"] if gleich else jetzt,
+             "zuletzt": jetzt, "quelle": herkunft}
+    vorlaeufig = "%s.tmp.%d" % (LOXSPERRE_FILE, os.getpid())
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        # 0644: die Datei traegt keine Geheimnisse, und die Oberflaeche liest
+        # sie. Rechte VOR dem Inhalt, dann umbenennen (Regeln/03).
+        fd = os.open(vorlaeufig, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(daten, fh)
+        os.replace(vorlaeufig, LOXSPERRE_FILE)
+    except OSError as fehler:
+        try:
+            os.remove(vorlaeufig)
+        except OSError:
+            pass
+        log.warning("Sperre aus Loxone nicht speicherbar: %s", fehler)
+        return "SPEICHERN", None
+    if not gleich:
+        log.info("Sperre aus Loxone: %s (von %s)", "gesperrt" if neu else "offen", herkunft)
+    return "", neu
 
 
 # ---------------------------------------------------------------------------
@@ -2689,6 +2798,9 @@ class SprechEingang(threading.Thread):
             aus["grund"] = "AUFTRAG_KAPUTT"
             log.warning("Sprechauftrag %s nicht lesbar - verworfen", kennung)
             return aus
+        # B2 (1.3.22): aktion=lautstaerke kommt ueber denselben Eingang.
+        if d.get("art") == "lautstaerke":
+            return self.annehmen_lautstaerke(kennung, d, aus)
         text = d.get("text")
         geraete = d.get("geraete")
         laut = d.get("laut")
@@ -2738,6 +2850,58 @@ class SprechEingang(threading.Thread):
                  "" if laut is None else ", Lautstaerke %d" % laut,
                  ", ".join(aus["eingereiht"]) or "keinem Geraet", aus["nicht_verbunden"],
                  len(aus["unbekannt"]))
+        return aus
+
+    def annehmen_lautstaerke(self, kennung, d, aus):
+        """B2 (1.3.22): Lautstaerke vom Endpunkt (aktion=lautstaerke).
+
+        Eingereiht wird "volume" - derselbe Weg wie cmd/volume aus Loxone:
+        Obergrenze und Ruhezeit (_gedeckelt) und die Gleichwert-Bremse X-7.
+        X-7 wird HIER schon gefragt, damit die Antwort UNVERAENDERT nennen
+        kann; der Arbeitsfaden fragt beim Ausfuehren noch einmal. Ein nicht
+        verbundenes Geraet wird ausgelassen und gezaehlt wie bei der Ansage."""
+        aus["unveraendert"] = []
+        geraete = d.get("geraete")
+        wert = d.get("wert")
+        zeit = d.get("zeit")
+        herkunft = "%s %s" % (str(d.get("quelle", "?"))[:20], str(d.get("wer", "?"))[:46])
+        if (not isinstance(geraete, list) or not geraete or len(geraete) > 64
+                or any(not isinstance(g, str) or g == "" for g in geraete)
+                or isinstance(wert, bool) or not isinstance(wert, int) or not 0 <= wert <= 100
+                or isinstance(zeit, bool) or not isinstance(zeit, (int, float))):
+            aus["grund"] = "AUFTRAG_KAPUTT"
+            log.warning("Lautstaerkeauftrag %s (%s) hat eine unerwartete Form - verworfen",
+                        kennung, herkunft)
+            return aus
+        alter = time.time() - float(zeit)
+        if alter > SPRECHEN_HOECHSTALTER or alter < -60:
+            aus["grund"] = "VERALTET"
+            log.warning("Lautstaerkeauftrag %s (%s) ist %.0f s alt - verworfen",
+                        kennung, herkunft, alter)
+            return aus
+        cfg = self.dienst.cfg
+        grenze = lautstaerke_grenze(cfg)
+        wirksam = min(wert, grenze)
+        aus["grenze"] = grenze
+        nach_name = dict((g.name, g) for g in list(self.dienst.geraete.values()))
+        schritt = self.dienst._zahl("lautstaerke_schritt", 5)
+        for name in geraete:
+            geraet = nach_name.get(name)
+            if geraet is None:
+                aus["unbekannt"].append(name[:60])
+                continue
+            if not geraet.verbunden():
+                aus["nicht_verbunden"] += 1
+                continue
+            if geraet._x7_gleich(wirksam) is not None:
+                aus["unveraendert"].append(name)
+                continue
+            geraet.einreihen("volume", str(wert), schritt, cfg)
+            aus["eingereiht"].append(name)
+        log.info("Lautstaerkeauftrag %s (%s): %d (wirksam %d) - eingereiht bei %s, "
+                 "unveraendert %d, nicht verbunden %d, unbekannt %d", kennung, herkunft,
+                 wert, wirksam, ", ".join(aus["eingereiht"]) or "keinem Geraet",
+                 len(aus["unveraendert"]), aus["nicht_verbunden"], len(aus["unbekannt"]))
         return aus
 
     @staticmethod
@@ -2999,6 +3163,10 @@ class Dienst:
                     "fassung": version(),
                     # Ansage-3: dieser Dienst nimmt Sprechauftraege an.
                     "sprechen_eingang": 1 if self.sprechen is not None else 0,
+                    # B2 (1.3.22): Lautstaerke ueber den Endpunkt, und der Stand
+                    # je Geraet fuer aktion=geraete (Name, kein Netzwert).
+                    "lautstaerke_eingang": 1 if self.sprechen is not None else 0,
+                    "geraete_stand": self.geraete_stand(),
                 }, fh)
             # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
             # Oberflaeche irgendwann eine halbe Datei und meldet einen
@@ -3007,6 +3175,22 @@ class Dienst:
         except OSError as fehler:
             log.warning("Zustandsdatei %s nicht schreibbar: %s",
                         ZUSTAND_FILE, fehler)
+
+    def geraete_stand(self):
+        """B2 (1.3.22): je Geraet Name, Thema, verbunden, zuletzt gemeldete
+        Lautstaerke und Zustand - aus dem, was der Dienst ohnehin meldet
+        (letzter_stand). Keine Adresse, kein Token."""
+        aus = []
+        for g in list(self.geraete.values()):
+            st = str(g.letzter_stand.get("state", "") or "")
+            if st.startswith("\0platzhalter:"):
+                st = st[len("\0platzhalter:"):]
+            laut = str(g.letzter_stand.get("volume", "") or "")
+            aus.append({"name": g.name, "thema": g.thema,
+                        "online": 1 if g.verbunden() else 0,
+                        "laut": int(laut) if laut.isdigit() else -1,
+                        "state": st or "-"})
+        return aus
 
     def geraete_aufbauen(self):
         namen = geraeteliste(self.cfg)
@@ -3093,12 +3277,27 @@ class Dienst:
                 return geraet
         return None
 
-    def befehl_ausfuehren(self, kennung, befehl, wert):
+    def befehl_ausfuehren(self, kennung, befehl, wert, quelle="mqtt"):
+        b = str(befehl or "").strip().lower()
+        # B1 (1.3.22): der Dienstbefehl sperre - <praefix>/server/cmd/sperre
+        # bzw. UDP "server/SPERRE 1;". Nur dieser eine Befehl unter "server";
+        # jeder andere geht den bisherigen Weg.
+        if b == "sperre" and str(kennung or "").strip().lower() == "server":
+            loxsperre_setzen(self.cfg, wert, quelle)
+            return
         ziele = self.geraete_fuer(kennung)
         if not ziele:
             log.warning("Kein Geraet fuer '%s' - konfiguriert sind: %s "
                         "(Sammelziel: %s)", kennung,
                         ", ".join(self.geraete) or "keine", "/".join(SAMMELZIEL))
+            return
+        # B1: eine Ansage aus Loxone haelt die Sperre an (ein dringend gibt es
+        # nur am Endpunkt). tts_stop und alle uebrigen Befehle gehen weiter.
+        if b in ("tts", "say", "ansage") and loxsperre_wirkt(self.cfg):
+            s = loxsperre_lesen()
+            log.info("Ansage aus Loxone (%s) an %s uebersprungen: Sperre aus Loxone "
+                     "(gesetzt von %s)", quelle,
+                     ", ".join(g.name for g in ziele), s["quelle"] or "-")
             return
         if len(ziele) > 1:
             log.info("Sammelbefehl '%s' an %d Geraete", befehl, len(ziele))

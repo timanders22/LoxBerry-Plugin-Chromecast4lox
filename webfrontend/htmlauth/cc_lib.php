@@ -603,7 +603,7 @@ function cc_wert_pruefen($k, $w, $bisher)
         return cc_token_taugt($s) ? array($s, '') : array(null, cc_t('PRUEF.TOKEN'));
     }
     if (in_array($k, array('enabled', 'mqtt_ein', 'udp', 'tts_fortsetzen', 'gruppen',
-                           'beschleunigung', 'sprechen_ein'), true)) {
+                           'beschleunigung', 'sprechen_ein', 'sperre_ein'), true)) {
         return ($s === '0' || $s === '1') ? array($s, '')
             : array(null, sprintf(cc_t('PRUEF.SCHALTER'), $name));
     }
@@ -763,7 +763,8 @@ function cc_eingabe_felder($form)
                              'tts_pegel', 'tts_ip', 'tts_port', 'tts_zonen', 'tts_lautstaerke',
                              'tts_vorlage', 'tts_gong', 'tts_lokal_basis', 'lautstaerke_max',
                              'ruhe_von', 'ruhe_bis', 'ruhe_max'),
-            'haken' => array('enabled', 'udp', 'tts_fortsetzen', 'beschleunigung', 'gruppen'),
+            'haken' => array('enabled', 'udp', 'tts_fortsetzen', 'beschleunigung', 'gruppen',
+                             'sperre_ein'),
         ),
         'mqtt' => array(
             'text'  => array('mqtt_topic'),
@@ -2110,8 +2111,9 @@ function cc_sicherung_lesen($roh, &$namen = null)
      * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
     /* Ansage-3: die vier Schluessel der Sprachausgabe kennt eine Sicherung
      * bis 1.3.15 nicht. Fehlen sie, bleibt der GELTENDE Wert (nicht die
-     * Werkseinstellung) - das Sprechtoken fehlt in jeder Sicherung. */
-    foreach (cc_sprechen_schluessel() as $sk) {
+     * Werkseinstellung) - das Sprechtoken fehlt in jeder Sicherung. Dasselbe
+     * gilt fuer sperre_ein (B1, 1.3.22), den Sicherungen bis 1.3.21 nicht kennen. */
+    foreach (cc_sicherung_spaet() as $sk) {
         if (!array_key_exists($sk, $daten)) {
             $neu[$sk] = (string) cc_cfg($bisher, $sk, isset($neu[$sk]) ? $neu[$sk] : '');
         }
@@ -2126,7 +2128,7 @@ function cc_sicherung_lesen($roh, &$namen = null)
     }
     $fehlend = array();
     foreach (array_keys(cc_defaults()) as $fk) {
-        if (in_array($fk, cc_sprechen_schluessel(), true)) {
+        if (in_array($fk, cc_sicherung_spaet(), true)) {
             continue;
         }
         if (!is_array($daten) || !array_key_exists($fk, $daten)) {
@@ -2145,6 +2147,13 @@ function cc_sicherung_lesen($roh, &$namen = null)
 function cc_sprechen_schluessel()
 {
     return array('sprechen_ein', 'sprechen_geraet', 'sprechen_stunde', 'sprechtoken');
+}
+
+/** Schluessel, die aeltere Sicherungen nicht kennen: die der Sprachausgabe (bis
+ *  1.3.15) und sperre_ein (B1, bis 1.3.21). Fehlen sie, gilt der GELTENDE Wert. */
+function cc_sicherung_spaet()
+{
+    return array_merge(cc_sprechen_schluessel(), array('sperre_ein'));
 }
 
 /* ==================================================================
@@ -2432,11 +2441,15 @@ function cc_sprechen_ausfuehren(array $par, $quelle, $wer)
         }
         $laut = (int) $par['laut'];
     }
-    // dringend: angenommen wie bei Alexa-NG, ohne Wirkung - die Ruhezeit
-    // dieses Plugins sperrt keine Ansage, sie begrenzt nur die Lautstaerke.
+    // dringend: 0 oder 1 wie bei Alexa-NG. Seit 1.3.22 (B1) uebergeht
+    // dringend=1 die Sperre aus Loxone; die Ruhezeit dieses Plugins sperrt
+    // weiterhin keine Ansage, sie begrenzt nur die Lautstaerke.
     if (isset($par['dringend']) && !in_array($par['dringend'], array('0', '1'), true)) {
         $f['GRUND'] = 'DRINGEND';
         return $ende(400, $f);
+    }
+    if (cc_loxsperre_wirkt($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
+        return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
     }
     $gp = (isset($par['geraet']) && $par['geraet'] !== '') ? $par['geraet']
         : (string) cc_cfg($cfg, 'sprechen_geraet', '');
@@ -2771,4 +2784,342 @@ function cc_sprechen_pruefzeile()
                                (string) $l['grund'], max(0, time() - (int) $l['zeit']));
     }
     return array($frage, $zustand, $text);
+}
+
+/* ==================================================================
+ * Sperre aus Loxone (B1, 1.3.22; Muster Alexa-NG 1.0.4, ax_loxsperre_*)
+ *
+ * Loxone haelt Ansagen an (Abwesend, Gaeste, Schlafen): MQTT
+ * <praefix>/server/cmd/sperre bzw. UDP server/SPERRE mit 1 oder 0 - das nimmt
+ * der Dienst an (loxsperre_setzen() im Dienst) -, oder am Endpunkt
+ * aktion=sperre&wert=1|0 mit dem Sprechtoken, nur von diesem LoxBerry. Es gibt
+ * an dieser Schnittstelle ein Token (README "Unterschiede zu Alexa-NG"); das
+ * Aktionstoken bleibt das Merkwort der Oberflaeche. Ab Werk ohne Wirkung
+ * (sperre_ein=0). Gesperrt werden Ansagen; dringend=1 am Endpunkt geht durch.
+ * Musik, Lautstaerke und alle uebrigen Befehle bleiben frei. Der Zustand liegt
+ * in data/plugins/<ordner>/loxsperre.json (0644, keine Geheimnisse); kein Wert
+ * heisst "offen" (nach einem Update ist der Datenordner leer).
+ * ================================================================== */
+
+function cc_loxsperre_datei()
+{
+    return cc_paths()['datadir'] . '/loxsperre.json';
+}
+
+/** Der zuletzt gesetzte Zustand: bekannt, gesperrt (0/1), seit, zuletzt, quelle. */
+function cc_loxsperre_lesen()
+{
+    $aus = array('bekannt' => false, 'gesperrt' => 0, 'seit' => 0, 'zuletzt' => 0, 'quelle' => '');
+    $f = cc_loxsperre_datei();
+    if (!is_file($f)) {
+        return $aus;
+    }
+    $d = json_decode((string) @file_get_contents($f), true);
+    if (is_array($d) && isset($d['gesperrt']) && ($d['gesperrt'] === 0 || $d['gesperrt'] === 1)) {
+        $aus['bekannt'] = true;
+        $aus['gesperrt'] = $d['gesperrt'];
+        $aus['seit'] = (isset($d['seit']) && is_int($d['seit'])) ? $d['seit'] : 0;
+        $aus['zuletzt'] = (isset($d['zuletzt']) && is_int($d['zuletzt'])) ? $d['zuletzt'] : 0;
+        $aus['quelle'] = (isset($d['quelle']) && is_string($d['quelle']))
+            ? (string) preg_replace('/[^A-Za-z0-9_.:\-]/', '', substr($d['quelle'], 0, 60)) : '';
+    }
+    return $aus;
+}
+
+/** Wirkt die Sperre jetzt? Nur mit Haken und einem gesetzten Wert 1. */
+function cc_loxsperre_wirkt(array $cfg)
+{
+    if ((string) cc_cfg($cfg, 'sperre_ein', '0') !== '1') {
+        return false;
+    }
+    $l = cc_loxsperre_lesen();
+    return $l['bekannt'] && $l['gesperrt'] === 1;
+}
+
+/**
+ * Die Sperre setzen (Endpunkt aktion=sperre). $wert '0' oder '1' - alles
+ * andere wird abgewiesen, nie umgedeutet. Die Tokenpruefung macht der
+ * Aufrufer; erst danach wird geschrieben. Rueckgabe array(http, felder).
+ */
+function cc_loxsperre_setzen($wert, $quelle)
+{
+    $cfg = cc_config_read();
+    $f = array('OK' => 0);
+    if (cc_upgrade_laeuft()) {
+        $f['GRUND'] = 'AKTUALISIERUNG';
+        return array(503, $f);
+    }
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer', 'gekuerzt'), true)) {
+        $f['GRUND'] = 'KONFIGURATION';
+        return array(503, $f);
+    }
+    if ((string) cc_cfg($cfg, 'sperre_ein', '0') !== '1') {
+        $f['GRUND'] = 'SPERRE_AUS';
+        return array(409, $f);
+    }
+    if (!is_string($wert) || ($wert !== '0' && $wert !== '1')) {
+        $f['GRUND'] = 'WERT_SPERRE';
+        return array(400, $f);
+    }
+    $alt = cc_loxsperre_lesen();
+    $neu = (int) $wert;
+    $gleich = $alt['bekannt'] && $alt['gesperrt'] === $neu;
+    $d = array('gesperrt' => $neu, 'seit' => $gleich ? $alt['seit'] : time(), 'zuletzt' => time(),
+               'quelle' => (string) preg_replace('/[^A-Za-z0-9_.:\-]/', '', substr((string) $quelle, 0, 60)));
+    $dir = cc_paths()['datadir'];
+    $js = json_encode($d, JSON_UNESCAPED_SLASHES);
+    if ((!is_dir($dir) && !@mkdir($dir, 0775, true) && !is_dir($dir))
+        || $js === false || !cc_datei_schreiben(cc_loxsperre_datei(), $js, 0644)) {
+        $f['GRUND'] = 'SPEICHERN';
+        return array(503, $f);
+    }
+    return array(200, array('OK' => 1, 'GESPERRT' => $neu, 'UNVERAENDERT' => $gleich ? 1 : 0, 'GRUND' => '-'));
+}
+
+/**
+ * Zeile fuer Einstellungen und Reiter Test: Zustand der Sperre aus Loxone.
+ * Rueckgabe array(Frage, true|null, Antwort) - ein Kreuz gibt es nicht: aus,
+ * unbekannt und gesperrt sind Zustaende, kein Fehler.
+ */
+function cc_loxsperre_pruefzeile()
+{
+    $cfg = cc_config_read();
+    $frage = cc_t('SPERRE.F_PRUEF');
+    if ((string) cc_cfg($cfg, 'sperre_ein', '0') !== '1') {
+        return array($frage, null, cc_t('SPERRE.A_AUS'));
+    }
+    $l = cc_loxsperre_lesen();
+    if (!$l['bekannt']) {
+        return array($frage, null, cc_t('SPERRE.A_UNBEKANNT'));
+    }
+    $seit = $l['seit'] > 0 ? date('d.m.Y H:i:s', $l['seit']) : '-';
+    $von = $l['quelle'] !== '' ? $l['quelle'] : '-';
+    if ($l['gesperrt'] === 1) {
+        return array($frage, null, sprintf(cc_t('SPERRE.A_GESPERRT'), $seit, $von));
+    }
+    return array($frage, true, sprintf(cc_t('SPERRE.A_OFFEN'), $seit, $von));
+}
+
+/* ==================================================================
+ * HTTP-Gleichstand mit Alexa-NG (B2, 1.3.22): aktion=lautstaerke und
+ * aktion=geraete am Endpunkt webfrontend/html/index.php - dieselben
+ * Pruefungen wie aktion=sprechen: nur von diesem LoxBerry, Sprechtoken,
+ * Schalter sprechen_ein, dieselbe Stundengrenze (wie Alexa-NG zaehlt eine
+ * Lautstaerke dort mit), derselbe Auftragsweg zum Dienst.
+ * ================================================================== */
+
+/**
+ * Lautstaerke setzen: geraet wie bei sprechen (leer = Standardgeraet, nie ein
+ * Rueckfall auf alle), wert 0 bis 100. Der Dienst reiht "volume" ein - mit
+ * Obergrenze, Ruhezeit und der Gleichwert-Bremse X-7 (UNVERAENDERT).
+ * Rueckgabe array(http, felder); felder beginnt mit OK und endet mit GRUND.
+ */
+function cc_lautstaerke_ausfuehren(array $par, $quelle, $wer)
+{
+    $cfg = cc_config_read();
+    $f = array('OK' => 0);
+    if (cc_upgrade_laeuft()) {
+        $f['GRUND'] = 'AKTUALISIERUNG';
+        return array(503, $f);
+    }
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer', 'gekuerzt'), true)) {
+        $f['GRUND'] = 'KONFIGURATION';
+        return array(503, $f);
+    }
+    if ((string) cc_cfg($cfg, 'sprechen_ein', '0') !== '1') {
+        $f['GRUND'] = 'SPRECHEN_AUS';
+        return array(409, $f);
+    }
+    if (!isset($par['wert']) || !preg_match('/^[0-9]{1,3}\z/', $par['wert']) || (int) $par['wert'] > 100) {
+        $f['GRUND'] = 'WERT';
+        return array(400, $f);
+    }
+    $wert = (int) $par['wert'];
+    $gp = (isset($par['geraet']) && $par['geraet'] !== '') ? $par['geraet']
+        : (string) cc_cfg($cfg, 'sprechen_geraet', '');
+    if ($gp === '') {
+        $f['GRUND'] = 'KEIN_GERAET';
+        return array(400, $f);
+    }
+    if (strlen($gp) > 400 || preg_match('/[\x00-\x1F\x7F]/', $gp) || preg_match('//u', $gp) !== 1) {
+        $f['GRUND'] = 'GERAET';
+        return array(400, $f);
+    }
+    list($h, $g, $ziele, $unbek) = cc_sprechen_ziele($gp, cc_geraete($cfg));
+    if ($h !== 200) {
+        $f['GRUND'] = $g;
+        if ($unbek !== '') {
+            $f['NAME'] = $unbek;
+        }
+        return array($h, $f);
+    }
+    list($herz, , $zu) = cc_dienst_herz($cfg);
+    if (!$herz) {
+        $f['GRUND'] = 'DIENST_LAEUFT_NICHT';
+        return array(503, $f);
+    }
+    if (empty($zu['lautstaerke_eingang'])) {
+        $f['GRUND'] = 'DIENST_OHNE_LAUTSTAERKE';
+        return array(503, $f);
+    }
+    $ordner = cc_sprechen_ordner();
+    if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
+        $f['GRUND'] = 'ORDNER';
+        return array(503, $f);
+    }
+    // Dieselbe Sperre und dieselbe Stundenliste wie aktion=sprechen.
+    $sp = @fopen(cc_paths()['datadir'] . '/sprechen.lock', 'c');
+    $gesperrt = false;
+    if ($sp !== false) {
+        $bis = microtime(true) + 3.0;
+        do {
+            if (flock($sp, LOCK_EX | LOCK_NB)) {
+                $gesperrt = true;
+                break;
+            }
+            usleep(100000);
+        } while (microtime(true) < $bis);
+    }
+    if (!$gesperrt) {
+        if ($sp !== false) {
+            fclose($sp);
+        }
+        $f['GRUND'] = 'BESCHAEFTIGT';
+        return array(503, $f);
+    }
+    $frei = function () use ($sp) {
+        flock($sp, LOCK_UN);
+        fclose($sp);
+    };
+    $b = cc_sprechen_bremse_lesen();
+    $grenze = (int) cc_cfg($cfg, 'sprechen_stunde', '60');
+    if ($grenze < 10 || $grenze > 240) {
+        $grenze = 60;
+    }
+    if (count($b['stunde']) >= $grenze) {
+        $frei();
+        $f['GRUND'] = 'STUNDENGRENZE';
+        return array(429, $f);
+    }
+    $id = bin2hex(random_bytes(10));
+    $auftrag = $ordner . '/' . $id . '.auftrag';
+    $antwort = $ordner . '/' . $id . '.antwort';
+    $js = json_encode(array('id' => $id, 'art' => 'lautstaerke', 'zeit' => time(), 'geraete' => $ziele,
+                            'wert' => $wert, 'quelle' => (string) $quelle,
+                            'wer' => cc_zeichen_kuerzen((string) $wer, 46)),
+                      JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false || !cc_datei_schreiben($auftrag, $js, 0600)) {
+        $frei();
+        $f['GRUND'] = 'SCHREIBFEHLER';
+        return array(503, $f);
+    }
+    $warten = function ($sekunden) use ($antwort) {
+        $bis = microtime(true) + $sekunden;
+        while (microtime(true) < $bis) {
+            usleep(50000);
+            clearstatcache(true, $antwort);
+            if (is_file($antwort)) {
+                $d = json_decode((string) @file_get_contents($antwort), true);
+                @unlink($antwort);
+                return is_array($d) ? $d : array();
+            }
+        }
+        return null;
+    };
+    $a = $warten(CC_SPRECHEN_FRIST);
+    if ($a === null) {
+        if (@unlink($auftrag)) {
+            // Zurueckgezogen: der Dienst hat ihn nie gesehen, gesetzt wird nichts.
+            $frei();
+            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+            return array(503, $f);
+        }
+        $a = $warten(1.5);
+        if ($a === null) {
+            $frei();
+            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+            $f['UNKLAR'] = 1;
+            return array(503, $f);
+        }
+    }
+    $eingereiht = (isset($a['eingereiht']) && is_array($a['eingereiht'])) ? $a['eingereiht'] : array();
+    $gleich = (isset($a['unveraendert']) && is_array($a['unveraendert'])) ? count($a['unveraendert']) : 0;
+    $offline = isset($a['nicht_verbunden']) ? (int) $a['nicht_verbunden'] : 0;
+    $agrund = (isset($a['grund']) && is_string($a['grund'])) ? $a['grund'] : 'ANTWORT_KAPUTT';
+    if (!isset($a['eingereiht'])) {
+        $agrund = 'ANTWORT_KAPUTT';
+    }
+    if ($eingereiht) {
+        $b['stunde'][] = time();
+        $bjs = json_encode($b, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($bjs !== false) {
+            cc_datei_schreiben(cc_paths()['datadir'] . '/sprechen_bremse.json', $bjs, 0600);
+        }
+    }
+    $frei();
+    if ($agrund !== '') {
+        $f['GRUND'] = $agrund;
+        return array(503, $f);
+    }
+    if (!$eingereiht && $gleich === 0) {
+        if (!empty($a['unbekannt']) && $offline === 0) {
+            $f['GRUND'] = 'GERAET_UNBEKANNT';
+            return array(404, $f);
+        }
+        $f['GRUND'] = 'GERAETE_OFFLINE';
+        $f['OFFLINE'] = $offline;
+        return array(503, $f);
+    }
+    $aus = array('OK' => 1, 'GERAETE' => count($eingereiht), 'UNVERAENDERT' => $gleich, 'OFFLINE' => $offline);
+    // Die Obergrenze (mit Ruhezeit) deckelt den Wert - die Antwort sagt es.
+    if (isset($a['grenze']) && is_int($a['grenze']) && $wert > $a['grenze']) {
+        $aus['GRENZE'] = $a['grenze'];
+    }
+    $aus['GRUND'] = $eingereiht ? 'EINGEREIHT' : 'UNVERAENDERT';
+    return array(200, $aus);
+}
+
+/**
+ * Die Geraeteliste: eine Zeile je eingetragenem Geraet in der Reihenfolge der
+ * Einstellungen, GERAET;NAME=..;THEMA=..;ONLINE=0|1|-1;LAUT=0-100|-1;STATE=..
+ * Stand aus zustand.json des laufenden Dienstes; keine Adresse, kein Token.
+ * -1 und - heissen: der Dienst kennt den Wert (noch) nicht.
+ * Rueckgabe array(http, zeilen).
+ */
+function cc_geraete_antwort()
+{
+    $cfg = cc_config_read();
+    if ((string) cc_cfg($cfg, 'sprechen_ein', '0') !== '1') {
+        return array(409, array(cc_zeile('GERAET', array('OK' => 0, 'GRUND' => 'SPRECHEN_AUS'))));
+    }
+    $namen = cc_geraete($cfg);
+    if (!$namen) {
+        return array(200, array(cc_zeile('GERAET', array('OK' => 1, 'ANZAHL' => 0, 'GRUND' => '-'))));
+    }
+    list($herz, , $zu) = cc_dienst_herz($cfg);
+    if (!$herz) {
+        return array(503, array(cc_zeile('GERAET', array('OK' => 0, 'GRUND' => 'DIENST_LAEUFT_NICHT'))));
+    }
+    if (!isset($zu['geraete_stand']) || !is_array($zu['geraete_stand'])) {
+        return array(503, array(cc_zeile('GERAET', array('OK' => 0, 'GRUND' => 'DIENST_OHNE_GERAETELISTE'))));
+    }
+    $stand = array();
+    foreach ($zu['geraete_stand'] as $e) {
+        if (is_array($e) && isset($e['name']) && is_string($e['name'])) {
+            $stand[$e['name']] = $e;
+        }
+    }
+    $zeilen = array();
+    foreach ($namen as $n) {
+        $e = isset($stand[$n]) ? $stand[$n] : array();
+        $zeilen[] = cc_zeile('GERAET', array(
+            'NAME'   => $n,
+            'THEMA'  => cc_thema($n),
+            'ONLINE' => (isset($e['online']) && is_int($e['online'])) ? $e['online'] : -1,
+            'LAUT'   => (isset($e['laut']) && is_int($e['laut'])) ? $e['laut'] : -1,
+            'STATE'  => (isset($e['state']) && is_string($e['state']) && $e['state'] !== '')
+                        ? cc_zeichen_kuerzen($e['state'], 20) : '-',
+        ));
+    }
+    return array(200, $zeilen);
 }

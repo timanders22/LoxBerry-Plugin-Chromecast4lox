@@ -11,6 +11,9 @@ Chromecast-Stick:
 * **Google Home / Nest Speaker** (Google Home, Home Mini, Nest Mini, Nest Audio,
   Nest Hub) und Lautsprechergruppen aus der Google-Home-App
 * **Google TV Streamer (4K)** und Fernseher mit **Chromecast built-in**
+* **Google Home Speaker**: Googles Gerätespezifikationen nennen bei ihm kein Google Cast; ob er
+  sich über dieses Plugin ansprechen lässt, ist nicht gemessen. Als Matter-Hub ist er von Google
+  belegt (Abschnitt „Google ↔ Loxone“).
 
 An echten Geräten im Haus des Autors ist das noch nicht gemessen;
 Rückmeldungen mit Modellangabe sind willkommen.
@@ -19,6 +22,29 @@ Die Bausteine der beiden Baustein-Listen aus dem Reiter *Einbindung in Loxone* s
 auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
+
+## Neu in 1.3.22
+
+Gleichstand mit Alexa-NG für die Richtung Loxone → Google (Bauschritte B1 bis B3 aus dem Entwurf
+vom 15.10.2026). Gemessen an Attrappen für
+Lautsprecher und Dienst unter PHP 7.4, 8.4 und 8.5 und Windows-Python; nicht am Gerät, nicht an einem
+echten Lautsprecher.
+
+* **Sperre aus Loxone** (ab Werk aus, Haken im Reiter *Einstellungen*): Loxone hält Ansagen an, etwa bei
+  Abwesend, Gäste oder Schlafen – MQTT `chromecast4lox/server/cmd/sperre` mit `1` bzw. `0`, UDP
+  `server/SPERRE 1;`, oder für andere Plugins `aktion=sperre&wert=1|0` mit dem Sprechtoken. Gesperrt
+  werden Ansagen aus Loxone und über die Sprachausgabe für andere Plugins übersprungen
+  (`200 UEBERSPRUNGEN=1;GRUND=GESPERRT`); `dringend=1` geht durch und hat damit erstmals eine Wirkung.
+  Musik, Lautstärke und alle übrigen Befehle bleiben frei. Der Reiter *Test* zeigt den Zustand.
+* **Lautstärke und Geräteliste über HTTP** wie bei Alexa-NG: `aktion=lautstaerke&geraet=…&wert=0-100`
+  und `aktion=geraete` – nur von diesem LoxBerry, mit dem Sprechtoken, nur mit eingeschalteter
+  Sprachausgabe, dieselbe Stundengrenze. Die Lautstärke geht über denselben Weg wie `cmd/volume` aus
+  Loxone: Obergrenze, Ruhezeit und die Gleichwert-Bremse (`UNVERAENDERT`) gelten.
+* **Neuer Abschnitt „Google ↔ Loxone“** in Hilfe und README: was dieses Plugin für Google leistet und was
+  nur über die Matter-Bridge in Matter2Lox und Google-Home-Automationen geht.
+* Der **Google Home Speaker** ist genannt: als Matter-Hub von Google belegt; ob er sich per Google Cast
+  ansprechen lässt, ist nicht gemessen.
+* Vorlagen, Baustein-Listen und Musterprojekt sind unverändert.
 
 ## Neu in 1.3.21
 
@@ -789,6 +815,7 @@ von anderswo kommt `403 GRUND=NUR_LOKAL`. Loxone spricht das Plugin weiter
 | `geraet` | Gerätename wie in der Geräteliste (auch das MQTT-Thema, Groß/klein egal), Kommaliste, `gruppe:<Name>` oder `alle`; leer = Standardgerät |
 | `text` | 1–1000 Zeichen UTF-8, ohne Steuerzeichen und ohne `<` `>`; `text=0` oder leer → `200 UEBERSPRUNGEN=1` |
 | `laut` | optional 0–100, gilt nur für diese Ansage (danach gilt wieder die vorherige Lautstärke) |
+| `dringend` | optional `0`/`1`; `1` übergeht die Sperre aus Loxone (seit 1.3.22) |
 
 Dazu `?selftest=1&token=…` (prüft nur das Token, spricht nichts:
 `SELFTEST;OK=1;TOKEN=OK;SPRECHEN=1;DIENST=1`) und `?aktion=status` (ohne
@@ -805,6 +832,7 @@ Eine Zeile `text/plain`, jede Antwort nennt `GRUND`:
 | 200 | `SPRECHEN;OK=1;GERAETE=2;UNVERAENDERT=0;OFFLINE=0;GRUND=EINGEREIHT` | der laufende Dienst hat die Ansage bei 2 verbundenen Lautsprechern eingereiht |
 | 200 | `SPRECHEN;OK=1;GERAETE=0;UNVERAENDERT=1;GRUND=UNVERAENDERT` | derselbe Text ging in den letzten 30 s schon an dieses Gerät |
 | 200 | `SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=TEXT_NULL` | leerer Text oder `0` |
+| 200 | `SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=GESPERRT` | die Sperre aus Loxone ist gesetzt (ohne `dringend=1`) |
 | 400 | `GRUND=TEXT`, `TEXT_FEHLT`, `LAUT`, `GERAET`, `KEIN_GERAET`, `SSML`, `SSML_OHNE_SCHALTER`, `DRINGEND`, `PARAMETER`, `AKTION` | Feld falsch |
 | 403 | `GRUND=TOKEN`, `KEIN_TOKEN_EINGERICHTET`, `NUR_LOKAL` | Token falsch/fehlt, nicht von diesem LoxBerry |
 | 404 | `GRUND=GERAET_UNBEKANNT;NAME=Bad`, `GRUPPE_UNBEKANNT`, `KEINE_GERAETE` | Gerät unbekannt – **nie** ein Rückfall auf „alle“ |
@@ -829,13 +857,30 @@ Ansagemodus, Ruhezeit und Lautstärke-Obergrenze, Klang vorab, Fortsetzen und
 die Warteschlange je Gerät gelten unverändert. `laut` wird durch die
 Obergrenze und die Ruhezeit gedeckelt.
 
+### Lautstärke, Geräteliste und Sperre (seit 1.3.22)
+
+Mit demselben Sprechtoken, nur von diesem LoxBerry, und – bis auf die Sperre – nur mit
+eingeschalteter Sprachausgabe (sonst `409 GRUND=SPRECHEN_AUS`):
+
+| Aufruf | Antwort |
+|---|---|
+| `aktion=lautstaerke&geraet=…&wert=0-100` | `LAUTSTAERKE;OK=1;GERAETE=1;UNVERAENDERT=0;OFFLINE=0;GRUND=EINGEREIHT`; derselbe wirksame Pegel wie vor weniger als 60 s: `GERAETE=0;UNVERAENDERT=1;GRUND=UNVERAENDERT`; über der Obergrenze (mit Ruhezeit) zusätzlich `GRENZE=<n>`; `wert` fehlt oder liegt nicht in 0–100: `400 GRUND=WERT` |
+| `aktion=geraete` | eine Zeile je eingetragenem Gerät, `GERAET;NAME=Wohnzimmer;THEMA=Wohnzimmer;ONLINE=1;LAUT=35;STATE=PLAYING` – ohne Adressen; `-1` bzw. `-` heißt: der Dienst kennt den Wert noch nicht; ohne Gerät `GERAET;OK=1;ANZAHL=0;GRUND=-` |
+| `aktion=sperre&wert=1` bzw. `wert=0` | `SPERRE;OK=1;GESPERRT=1;UNVERAENDERT=0;GRUND=-`; ohne Haken `409 GRUND=SPERRE_AUS` (Abschnitt „Sperre aus Loxone“) |
+
+`geraet` wie bei `sprechen` (leer = Standardgerät, nie ein Rückfall auf „alle“). Die Lautstärke geht
+über denselben Weg wie `cmd/volume` aus Loxone (Auftragsdatei, Antwort binnen 5 s, Obergrenze,
+Ruhezeit, Gleichwert-Bremse) und zählt zur selben Stundengrenze wie die Ansagen. Ein nicht
+verbundener Lautsprecher wird ausgelassen und gezählt (`OFFLINE=n`).
+
 ### Unterschiede zu Alexa-NG
 
 - **Adresse** (`/plugins/chromecast-4lox-ng/index.php` statt `/plugins/alexang/index.php`)
   und **Gerätenamen** (die Namen der Geräteliste dieses Plugins).
-- Es gibt **ein** Token (Sprechtoken); ein Aktionstoken für die Schnittstelle gibt es nicht.
-- `ssml=1` wird mit `400 SSML` abgewiesen. `dringend` wird angenommen, wirkt
-  aber nicht: die Ruhezeit dieses Plugins sperrt keine Ansage, sie begrenzt nur
+- Es gibt **ein** Token (Sprechtoken), auch für Lautstärke, Geräteliste und Sperre; ein
+  Aktionstoken für die Schnittstelle gibt es nicht.
+- `ssml=1` wird mit `400 SSML` abgewiesen. `dringend=1` übergeht seit 1.3.22 die Sperre aus
+  Loxone; die Ruhezeit dieses Plugins sperrt weiterhin keine Ansage, sie begrenzt nur
   die Lautstärke.
 - Kein Mindestabstand zwischen zwei Ansagen (`429 BREMSE` gibt es nicht): jedes
   Gerät spricht seine Warteschlange nacheinander ab.
@@ -866,6 +911,74 @@ $code = (int) curl_getinfo($ch, CURLINFO_RESPONSE_CODE);
 $gesendet = ($code === 200 && strpos($antwort, 'SPRECHEN;OK=1') === 0);
 ```
 
+## Sperre aus Loxone
+
+Ab Werk aus (Reiter **Einstellungen**, Haken „Sperre aus Loxone annehmen“). Loxone hält damit Ansagen
+an, etwa bei Abwesend, Gäste oder Schlafen:
+
+| Weg | Sperren | Aufheben |
+|---|---|---|
+| MQTT (virtueller Ausgang über den UDP-Eingang des MQTT-Gateways) | `chromecast4lox/server/cmd/sperre 1` | `chromecast4lox/server/cmd/sperre 0` |
+| UDP an dieses Plugin (Port aus den Einstellungen, ab Werk 7090) | `server/SPERRE 1;` | `server/SPERRE 0;` |
+| andere Plugins auf diesem LoxBerry | `aktion=sperre&wert=1` mit dem Sprechtoken | `aktion=sperre&wert=0` |
+
+* Gesperrt werden **Ansagen** übersprungen: `tts` aus Loxone (Protokoll „Ansage aus Loxone …
+  übersprungen“) und `aktion=sprechen` (`200 SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=GESPERRT`).
+  `dringend=1` am Endpunkt geht durch. Über MQTT und UDP gibt es kein `dringend`; wer aus Loxone trotz
+  Sperre sprechen will, hebt sie vorher auf.
+* Musik, Lautstärke, `tts_stop` und alle übrigen Befehle bleiben frei – wie bei Alexa-NG.
+* Ohne Haken wird kein Wert angenommen (Endpunkt `409 GRUND=SPERRE_AUS`, Dienst: Protokollzeile), und
+  ein früher gesetzter Wert wirkt nicht. Ein anderer Wert als `0`/`1` wird abgewiesen
+  (`400 GRUND=WERT_SPERRE`).
+* Antwort am Endpunkt: `SPERRE;OK=1;GESPERRT=1;UNVERAENDERT=0;GRUND=-`.
+* Der letzte Wert steht in `data/plugins/<Ordner>/loxsperre.json`. Nach einem Update ist er weg; dann gilt
+  „offen“, bis Loxone ihn neu setzt. Einstellungen und Reiter *Test* zeigen den Zustand.
+* Ein zurückbehaltener (retained) Befehl `server/cmd/sperre` wird wie jeder Befehl verworfen und am Broker
+  abgeräumt. Ein MQTT-Zustandsthema für die Sperre gibt es nicht: Loxone kennt den Wert, den es selbst
+  gesetzt hat, und Vorlagen und Musterprojekt bleiben unverändert.
+* Die Ruhezeit sperrt weiterhin nicht, sie begrenzt nur die Lautstärke.
+
+## Google ↔ Loxone
+
+Stand 15.10.2026. Was hier „nicht gemessen“ heißt, ist an keinem echten Gerät erprobt.
+
+**Loxone → Google – dieses Plugin.** Ansagen auf einem Gerät, einer Google-Lautsprechergruppe oder
+allen, mit eigener Lautstärke; Lautstärke, Wiedergabe, Favoriten (Radio-Adressen), Stopp und der
+Zustand mit Titel und Interpret über MQTT oder UDP; die Sprachausgabe für andere Plugins mit derselben
+Schnittstelle wie Alexa-NG (dazu Lautstärke und Geräteliste); die Sperre aus Loxone. Geräte: Chromecast,
+Google Home und Nest, Fernseher mit Chromecast built-in. An einem echten Google-Gerät ist das Plugin
+bisher nicht gemessen.
+
+**Google Home Speaker.** In Googles Gerätespezifikationen (Google Home-Hilfe, „Google Nest and Home
+device specifications“) steht beim Google Home Speaker keine Angabe zu Google Cast, anders als bei Nest
+Audio oder Nest Mini. Ob er sich über dieses Plugin als Ansageziel ansprechen lässt, ist **nicht
+gemessen**. Als **Matter-Hub** ist er belegt: der Google Store nennt in den technischen Daten
+„Kann mit Google Home als Hub für Matter verwendet werden“
+([technische Daten](https://store.google.com/de/product/google_home_speaker_specs?hl=de)), und die
+Google Home-Hilfe führt ihn unter den Matter-Hubs
+([Prepare your smart home for Matter](https://support.google.com/googlehome/answer/12391458)).
+
+**Google → Loxone und Google-Routinen – nicht mit diesem Plugin.** Das gehört zur Matter-Bridge in
+**Matter2Lox**. Sie ist in Arbeit; die Kopplung an Google ist noch nicht gemessen. Für eine Bridge mit
+Test-Herstellerkennung verlangt Google ein Projekt in der *Google Home Developer Console* (VID `0xFFF1`,
+PID `0x8000`), und wer koppelt, muss Mitglied dieses Projekts sein. Den Matter-Hub stellt ein
+Google-Gerät im Haus – nach der Google Home-Hilfe unter anderem Nest Audio, Nest Mini, Nest Hub, Google TV
+Streamer und der Google Home Speaker.
+
+Was danach Google-Home-Automationen leisten sollen (**nicht gemessen**):
+
+* **Routine oder Durchsage aus Loxone:** Loxone legt einen Schalter der Bridge um; eine Automation in der
+  Google-Home-App startet daraufhin eine Durchsage an die Google-Lautsprecher, einen Sprachbefehl oder
+  eine Routine.
+* **Satz → Loxone:** ein eigener Satz („Hey Google, Abendlicht“) löst eine Automation aus, die einen
+  Schalter der Bridge umlegt – den sieht Loxone.
+
+**Nicht vorgesehen.** Chromecasts und Google-Lautsprecher als Matter-Mediengerät: Alexa und Apple Home
+bedienen diesen Gerätetyp nicht, und Google kennt die Geräte ohnehin. Eine Anbindung an die Google-Cloud
+(Assistant SDK) gibt es nicht. Für Alexa- oder Apple-Haushalte lassen sich die Loxone-Bausteine „Musik“
+und Lautstärke als Steckdose über die Bridge freigeben (ab Werk nichts freigegeben, nicht gemessen); für
+Google nicht freigeben, sonst stünde jeder Lautsprecher doppelt in der Google-Home-App.
+
 ## MQTT-Themen
 
 Zustände, retained, je Gerät unter `chromecast4lox/<Gerät>/`:
@@ -881,7 +994,8 @@ Zustände, retained, je Gerät unter `chromecast4lox/<Gerät>/`:
 | `title`, `artist`, `album` | Text | Metadaten |
 | `duration`, `position` | analog | Sekunden |
 
-Dazu `chromecast4lox/server/online` für den Dienst selbst.
+Dazu `chromecast4lox/server/online` für den Dienst selbst und der Befehl
+`chromecast4lox/server/cmd/sperre` (`1`/`0`, Abschnitt „Sperre aus Loxone“).
 
 Befehle unter `chromecast4lox/<Gerät>/cmd/<Befehl>`: `play`, `pause`, `stop`,
 `quit`, `volume`, `volume_step`, `volume_up`, `volume_down`, `mute`, `next`,
