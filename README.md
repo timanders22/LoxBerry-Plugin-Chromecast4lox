@@ -23,6 +23,13 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.23
+
+Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild); ohne diese Korrektur löste die Ausfallmeldung nie aus.
+Config legt den Eingang En negiert an – die Konstante 1 kam dann als 0 an, und „Dienst zählt nicht mehr“ (#16 der Seite „Chromecast4lox“) prüfte
+die Zeit Tmc nicht. Wer die Seite schon gebaut hat: Haken bei ‚En‘ entfernen (Eigenschaftsfenster, Parameter). Das Bild zeigt den Eingang
+jetzt ohne Negation. Plugin-Verhalten unverändert.
+
 ## Neu in 1.3.22
 
 Gleichstand mit Alexa-NG für die Richtung Loxone → Google (Bauschritte B1 bis B3 aus dem Entwurf

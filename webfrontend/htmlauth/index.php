@@ -1261,6 +1261,7 @@ $cc_bs_seiten = array(
             sprintf(cc_t('BAUSTEIN.H_MUSIK'), cc_e($cc_praefix), cc_e($cc_praefix)),
             cc_t('BAUSTEIN.H_ODER'),
             cc_t('BAUSTEIN.H_KONSTANTE'),
+            cc_t('BAUSTEIN.H_EN_NEGIERT'),
             cc_t('BAUSTEIN.H_RUHE'),
             sprintf(cc_t('BAUSTEIN.H_RUECKMELDUNG'), $cc_bs_g . 'last_error'),
         )),
