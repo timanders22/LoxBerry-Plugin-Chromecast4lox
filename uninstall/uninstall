@@ -1,4 +1,14 @@
 #!/bin/sh
+# Gruppe 6b / MQTT (1.3.24, Entwurf cc 3.5; Bauart WOLF ISM NG 3.1.12 uninstall :28): Uninstall-Praefix (am Geraet
+# gemessen 08.10.2026, plugininstall.pl :1570/:1603): beim Deinstallieren ruft der Installer JEDES
+# data/system/uninstall/<name>* - auch dieses Skript, wenn ein Plugin deinstalliert wird, dessen NAME mit
+# "chromecast-4lox-ng" beginnt; $2 ist dann DESSEN Name und $3 DESSEN Ordner. Dann gehoert der Lauf nicht uns:
+# nichts tun - keinen Dienst und keine Bruecke anhalten, nichts leeren, nichts loeschen.
+if [ -n "$2" ] && [ "$2" != "chromecast-4lox-ng" ]; then
+    echo "<INFO> Deinstallation von '$2' - dieses Skript gehoert zu 'chromecast-4lox-ng' und tut nichts."
+    exit 0
+fi
+
 # Rueckfall ohne fest verdrahteten Pfad.
 #
 # Ein fest verdrahteter Systempfad ist aus zwei Gruenden falsch: LoxBerry laesst
@@ -61,6 +71,54 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] \
     exit 0
 fi
 PIDDATEI="$BASE/data/plugins/$PDIR/dienst.pid"
+
+# ---------- Befehlsbruecke anhalten (Gruppe 6b / MQTT, 1.3.24) ----------
+# Entwurf cc 3.5, Muster vb_g1_bruecke_bau/beispiel/uninstall: VOR dem Dienst - sonst reichte sie waehrend der
+# Deinstallation noch Befehle an ihn weiter. stop beendet Dienst und mosquitto_sub (auch ein verwaistes); danach
+# argumentweise nachzaehlen, die Optionsdateien mit dem Broker-Kennwort ueberschreiben und den Ordner befehle/
+# entfernen. Im Broker bleibt nichts: Quittungen und status/befehle sind nie retained.
+BBSH="$BASE/bin/plugins/$PDIR/befehlsbruecke.sh"
+BBPHP="$BASE/bin/plugins/$PDIR/befehlsbruecke.php"
+BBDIR="$BASE/data/plugins/$PDIR/befehle"
+if [ -f "$BBSH" ] && command -v bash >/dev/null 2>&1; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$BBSH" stop 2>&1 9>&- | head -n 1)"
+fi
+BB_REST=0
+for bb_d in /proc/[0-9]*; do
+    grep -qaF "befehlsbruecke.php" "$bb_d/cmdline" 2>/dev/null || continue
+    bb_a0=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | sed -n 1p)
+    bb_a1=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | sed -n 2p)
+    bb_n=$(tr '\0' '\n' < "$bb_d/cmdline" 2>/dev/null | grep -c '')
+    case "${bb_a0##*/}" in php|php[0-9]*) ;; *) continue ;; esac
+    if [ "$bb_n" = 2 ] && [ "$bb_a1" = "$BBPHP" ]; then
+        kill -9 "${bb_d#/proc/}" 2>/dev/null && BB_REST=$((BB_REST + 1))
+    fi
+done
+BB_ABOS=0
+for bb_d in /proc/[0-9]*; do
+    [ "$(cat "$bb_d/comm" 2>/dev/null)" = "mosquitto_sub" ] || continue
+    if tr '\0' '\n' < "$bb_d/environ" 2>/dev/null | grep -qxF "XDG_CONFIG_HOME=$BBDIR/mosquitto"; then
+        kill -9 "${bb_d#/proc/}" 2>/dev/null && BB_ABOS=$((BB_ABOS + 1))
+    fi
+done
+[ "$BB_REST" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_REST Dienst(e) erst mit kill -9 beendet."
+[ "$BB_ABOS" -gt 0 ] && echo "<WARNING> Befehlsbruecke: $BB_ABOS mosquitto_sub erst mit kill -9 beendet."
+if [ -d "$BBDIR" ]; then
+    for bb_f in "$BBDIR/mosquitto/mosquitto_sub" "$BBDIR/mosquitto/mosquitto_pub"; do
+        if [ -f "$bb_f" ] && [ ! -L "$bb_f" ]; then
+            bb_n=$(stat -c %s "$bb_f" 2>/dev/null || echo 64)
+            head -c "$bb_n" /dev/zero > "$bb_f" 2>/dev/null
+        fi
+    done
+    case "$BBDIR" in
+        */data/plugins/?*/befehle) rm -rf "${BBDIR:?}" ;;
+    esac
+fi
+if [ -e "$BBDIR/mosquitto/mosquitto_sub" ] || [ -e "$BBDIR/mosquitto/mosquitto_pub" ]; then
+    echo "<WARNING> Befehlsbruecke: Optionsdateien liegen noch unter $BBDIR/mosquitto - von Hand entfernen."
+elif [ -f "$BBSH" ]; then
+    echo "<OK> Befehlsbruecke angehalten, ihre Zugangsdaten entfernt."
+fi
 
 # ---------- Prozesse des Dienstes finden und beenden ----------
 # Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den

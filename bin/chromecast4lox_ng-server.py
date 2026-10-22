@@ -527,6 +527,17 @@ def befehlszahl(wert, vorgabe, unten, oben, name):
 SAMMELZIEL = ("alle", "all", "*")
 
 
+def befehl_kennung(thema):
+    """Der Befehlsname eines Geraets fuer die Befehlsbruecke (Gruppe 6b, 1.3.24, Entwurf cc E2).
+
+    Das MQTT-Thema des Geraets (thema_saeubern) klein, "-" wird "_", hoechstens 40 Zeichen: die Bruecke erlaubt je
+    Ebene nur [a-z0-9_]{1,40} (befehlsbruecke.php, bb_ebene_gueltig). Aus "Wohnzimmer" wird "wohnzimmer", aus
+    "Bad-Oben" "bad_oben". Die Werte-Themen behalten ihre Schreibweise (chromecast4lox/Wohnzimmer/volume). Dieselbe
+    Funktion steht als cc_befehl_kennung() in cc_lib.php; der Reiter Test haelt beide gegeneinander (--themen)."""
+    k = re.sub(r"[^a-z0-9_]", "_", str(thema or "").lower().replace("-", "_"))[:40]
+    return k or "geraet"
+
+
 def favoriten(cfg):
     """Die Favoritenliste aus der Konfiguration.
 
@@ -710,6 +721,32 @@ def eigene_ip(ziel=None):
                 s.close()
         except OSError:
             pass
+
+
+def webport():
+    """Der Port des LoxBerry-Webservers aus general.json (Abschnitt Webserver bzw. WEBSERVER, Schluessel Port),
+    Rueckfall 80 - wie cc_webport() in cc_lib.php (Fremdbefund C11, 1.3.24). Bis 1.3.23 baute die oertliche
+    Ansage ihre Adresse ohne Port; bei einem Webserver-Port ungleich 80 bekam der Lautsprecher eine Adresse, unter
+    der nichts antwortet (Pruefbericht C11)."""
+    pfad = os.path.join(HOME_DIR, "config", "system", "general.json") if HOME_DIR else ""
+    try:
+        with open(pfad, "r", encoding="utf-8") as fh:
+            daten = json.load(fh)
+    except (OSError, ValueError):
+        return 80
+    if not isinstance(daten, dict):
+        return 80
+    for abschnitt in ("Webserver", "WEBSERVER"):
+        block = daten.get(abschnitt)
+        if not isinstance(block, dict):
+            continue
+        try:
+            port = int(str(block.get("Port") or "0").strip())
+        except (TypeError, ValueError):
+            port = 0
+        if port > 0:
+            return port
+    return 80
 
 
 def ansage_lokal_erzeugen(text, sprache):
@@ -960,9 +997,15 @@ class MqttAnbindung:
     """Duenne Huelle um paho-mqtt. Faellt still aus, wenn die Bibliothek
     oder das Gateway fehlt - der UDP-Weg funktioniert dann weiter."""
 
-    def __init__(self, praefix, befehl_rueckruf):
+    def __init__(self, praefix, befehl_rueckruf, cmd_ein=True):
         self.praefix = praefix
         self.befehl_rueckruf = befehl_rueckruf
+        # Gruppe 6b (1.3.24, Entwurf cc 3.4): der alte Befehlsweg <praefix>/+/cmd/# nur mit dem Haken
+        # befehle_cmd_ein. Ohne ihn wird nicht abonniert (Befehle laufen ueber die Befehlsbruecke), und was im
+        # Fenster beim Abbestellen noch ankommt, wird verworfen. cmd_zuletzt: Zeit des letzten Befehls ueber den
+        # alten Weg (zustand.json, Hinweis im Reiter MQTT).
+        self.cmd_ein = bool(cmd_ein)
+        self.cmd_zuletzt = 0
         self.client = None
         self.verbunden = False
         # Nach einer Neuverbindung muessen ALLE Werte erneut gesendet
@@ -1108,9 +1151,32 @@ class MqttAnbindung:
             self.befehl_versuche = {}
             self.befehle_stehen = []
         thema = self.praefix + "/+/cmd/#"
-        client.subscribe(thema)
-        log.info("MQTT verbunden, Befehle abonniert: %s", thema)
+        if self.cmd_ein:
+            client.subscribe(thema)
+            log.info("MQTT verbunden, Befehle abonniert: %s (alter Befehlsweg)", thema)
+        else:
+            log.info("MQTT verbunden; der alte Befehlsweg %s ist aus (befehle_cmd_ein=0) - Befehle laufen ueber "
+                     "die Befehlsbruecke", thema)
         self.senden("server/online", "1")
+
+    def cmd_umschalten(self, ein):
+        """Den alten Befehlsweg zur Laufzeit an- oder abschalten (Entwurf cc 3.4: verbindungen_nachziehen).
+        Verbunden wird sofort abonniert bzw. abbestellt; sonst gilt der Wert beim naechsten Verbinden."""
+        ein = bool(ein)
+        if ein == self.cmd_ein:
+            return
+        self.cmd_ein = ein
+        thema = self.praefix + "/+/cmd/#"
+        if self.client is not None and self.verbunden:
+            try:
+                if ein:
+                    self.client.subscribe(thema)
+                else:
+                    self.client.unsubscribe(thema)
+            except Exception as fehler:  # noqa: BLE001
+                log.warning("MQTT: alter Befehlsweg liess sich nicht %s: %s",
+                            "abonnieren" if ein else "abbestellen", fehler)
+        log.info("Alter Befehlsweg %s jetzt %s (befehle_cmd_ein)", thema, "an" if ein else "aus")
 
     def _on_disconnect(self, client, userdata, *rest):
         self.verbunden = False
@@ -1122,6 +1188,11 @@ class MqttAnbindung:
             teile = nachricht.topic.split("/")
             # <praefix>/<geraet>/cmd/<befehl>
             if len(teile) < 4 or teile[-2] != "cmd":
+                return
+            # Gruppe 6b (1.3.24): ohne den Haken des alten Wegs nichts annehmen - auch nicht, was im Fenster
+            # beim Abbestellen noch ankommt.
+            if not self.cmd_ein:
+                log.debug("Alter Befehlsweg aus - %s verworfen", nachricht.topic)
                 return
             geraet = teile[-3]
             befehl = teile[-1]
@@ -1162,6 +1233,7 @@ class MqttAnbindung:
                          nachricht.topic)
                 return
             log.info("MQTT-Befehl %s -> %s %s", geraet, befehl, nutzlast)
+            self.cmd_zuletzt = int(time.time())
             self.befehl_rueckruf(geraet, befehl, nutzlast)
         except Exception as fehler:  # noqa: BLE001
             log.error("MQTT-Nachricht nicht verarbeitbar: %s", fehler)
@@ -1872,6 +1944,19 @@ class Geraet:
                                       name="cc-" + self.thema)
         self.faden.start()
 
+    def beenden(self):
+        """Arbeitsfaden anhalten - beim Dienstende und fuer ein entferntes Geraet."""
+        # Fremdbefund C9 (1.3.24, Pruefbericht wortgleich): bis 1.3.23 stand das nur in Dienst.stop(). Ein beim
+        # Neueinlesen entferntes Geraet behielt seinen Faden; eingereihte Auftraege liefen danach noch und verbanden
+        # neu, und nach dem Wiederaufnehmen liefen zwei Faeden cc-<thema> (probe_c9). Mit der Befehlsbruecke wichtiger:
+        # ein Befehl an ein eben entferntes Geraet liefe sonst ueber den alten Faden.
+        self.faden_laeuft = False
+        self.ansage_abbrechen = True
+        try:
+            self.auftraege.put_nowait(None)
+        except Exception:  # noqa: BLE001
+            pass
+
     def _arbeiten(self):
         """Auftraege nacheinander abarbeiten.
 
@@ -2109,7 +2194,9 @@ class Geraet:
 
         if cast_status is not None:
             pegel = cast_status.volume_level
-            self._senden("volume", int(round((pegel or 0) * 100)), erzwingen)
+            # E9 (1.3.24): -1, wenn der Lautsprecher keine Lautstaerke meldet. Bis 1.3.23 stand dort 0 - und 0 % ist
+            # ein echter Wert ("stumm geregelt").
+            self._senden("volume", -1 if pegel is None else int(round(pegel * 100)), erzwingen)
             self._senden("muted", "1" if cast_status.volume_muted else "0", erzwingen)
             self._senden("app", cast_status.display_name or "", erzwingen)
 
@@ -2216,7 +2303,10 @@ class Geraet:
                 if ip == "":
                     return ("Die eigene Adresse liess sich nicht ermitteln - "
                             "im Feld Grundadresse eintragen.")
-                basis = "http://{0}/plugins/{1}".format(ip, PLUGIN_NAME)
+                # C11 (1.3.24): mit dem Port des Webservers, wenn er nicht 80 ist.
+                port = webport()
+                basis = "http://{0}{1}/plugins/{2}".format(
+                    ip, "" if port == 80 else ":%d" % port, PLUGIN_NAME)
             adressen = [basis + "/ansage/" + name]
             modus = "chromecast"   # ab hier derselbe Weg
             # Gemerkt, weil unten anders gemeldet wird: dieser Weg ist an
@@ -2801,6 +2891,9 @@ class SprechEingang(threading.Thread):
         # B2 (1.3.22): aktion=lautstaerke kommt ueber denselben Eingang.
         if d.get("art") == "lautstaerke":
             return self.annehmen_lautstaerke(kennung, d, aus)
+        # Gruppe 6b (1.3.24, E1): Befehle der Befehlsbruecke ueber denselben Eingang.
+        if d.get("art") == "befehl":
+            return self.annehmen_befehl(kennung, d, aus)
         text = d.get("text")
         geraete = d.get("geraete")
         laut = d.get("laut")
@@ -2904,6 +2997,71 @@ class SprechEingang(threading.Thread):
                  len(aus["unveraendert"]), aus["nicht_verbunden"], len(aus["unbekannt"]))
         return aus
 
+    def annehmen_befehl(self, kennung, d, aus):
+        """Gruppe 6b (1.3.24, Entwurf cc 3.3, E1): ein Befehl der Befehlsbruecke (bin/befehlsbruecke.php ->
+        befehle_zuordnung.php -> cc_befehl_bruecke() in cc_lib.php) ueber denselben Eingang wie Ansage und Lautstaerke.
+
+        Ausgefuehrt wird mit Dienst.befehl_ausfuehren() - DERSELBEN Stelle wie der alte cmd-Weg und UDP: die Sperre aus
+        Loxone, X-7, Obergrenze und Ruhezeit bleiben die eine Pruefung im Dienst, eine zweite Logik gibt es nicht. Hier
+        steht nur die Form: geraet ist ein Befehlsname ([a-z0-9_]{1,40}, befehl_kennung) oder "server" fuer die Sperre;
+        befehl steht in der Befehlsliste (bin/cc_themen.json) oder ist server/sperre; wert ist Text bis 4000 Byte ohne
+        Steuerzeichen; der Auftrag ist hoechstens SPRECHEN_HOECHSTALTER s alt. Dazu (Entwurf 3.3): tts leer oder "0"
+        -> uebersprungen TEXT_NULL (die Statusbaustein-Falle wie am Endpunkt), mehr als 1000 Zeichen -> TEXT; play mit
+        "://" -> ADRESSE (ueber die Bruecke nur Fortsetzen, E6). Ein Ansagetext steht nie im Protokoll, nur seine Laenge."""
+        aus["uebersprungen"] = ""
+        geraet = d.get("geraet")
+        befehl = d.get("befehl")
+        wert = d.get("wert")
+        zeit = d.get("zeit")
+        herkunft = "%s %s" % (str(d.get("quelle", "?"))[:20], str(d.get("wer", "?"))[:46])
+        if (not isinstance(geraet, str) or not re.match(r"^[a-z0-9_]{1,40}$", geraet)
+                or not isinstance(befehl, str) or not re.match(r"^[a-z_]{1,20}$", befehl)
+                or not isinstance(wert, str) or len(wert.encode("utf-8")) > 4000
+                or re.search(r"[\x00-\x1f\x7f]", wert)
+                or isinstance(zeit, bool) or not isinstance(zeit, (int, float))):
+            aus["grund"] = "AUFTRAG_KAPUTT"
+            log.warning("Befehlsauftrag %s (%s) hat eine unerwartete Form - verworfen", kennung, herkunft)
+            return aus
+        if not ((geraet == "server" and befehl == "sperre") or thema_info("befehle", befehl) is not None):
+            aus["grund"] = "BEFEHL_UNBEKANNT"
+            log.warning("Befehlsauftrag %s (%s): Befehl '%s' gibt es nicht - verworfen", kennung, herkunft, befehl)
+            return aus
+        alter = time.time() - float(zeit)
+        if alter > SPRECHEN_HOECHSTALTER or alter < -60:
+            aus["grund"] = "VERALTET"
+            log.warning("Befehlsauftrag %s (%s) ist %.0f s alt - verworfen, nicht ausgefuehrt",
+                        kennung, herkunft, alter)
+            return aus
+        if befehl == "tts":
+            text = wert.strip()
+            if text in ("", "0"):
+                aus["uebersprungen"] = "TEXT_NULL"
+                log.info("Befehlsauftrag %s (%s): %s/tts ohne Text (leer oder 0) - nichts gesprochen",
+                         kennung, herkunft, geraet)
+                return aus
+            if len(text) > 1000:
+                aus["grund"] = "TEXT"
+                log.warning("Befehlsauftrag %s (%s): Ansage mit %d Zeichen - hoechstens 1000, abgewiesen",
+                            kennung, herkunft, len(text))
+                return aus
+            wert = text
+        if befehl == "play" and "://" in wert:
+            aus["grund"] = "ADRESSE"
+            log.warning("Befehlsauftrag %s (%s): play mit Adresse - ueber MQTT nur Fortsetzen (Favoriten nehmen)",
+                        kennung, herkunft)
+            return aus
+        erg = self.dienst.befehl_ausfuehren(geraet, befehl, wert, quelle="mqtt-bruecke")
+        for k in ("eingereiht", "nicht_verbunden", "unbekannt", "uebersprungen", "grund", "sperre"):
+            if k in erg:
+                aus[k] = erg[k]
+        log.info("Befehlsauftrag %s (%s): %s/%s %s - eingereiht bei %s, davon nicht verbunden %d%s%s", kennung,
+                 herkunft, geraet, befehl,
+                 ("%d Zeichen" % len(wert)) if befehl == "tts" else ("'%s'" % wert[:20]),
+                 ", ".join(aus["eingereiht"]) or "keinem Geraet", aus["nicht_verbunden"],
+                 (", uebersprungen " + aus["uebersprungen"]) if aus["uebersprungen"] else "",
+                 (", Grund " + aus["grund"]) if aus["grund"] else "")
+        return aus
+
     @staticmethod
     def _schreiben(pfad, daten, rechte):
         vorlaeufig = "%s.tmp.%d" % (pfad, os.getpid())
@@ -2950,7 +3108,7 @@ class Dienst:
         self.cfg = konfiguration_lesen()
         self.praefix = self.cfg.get("mqtt_topic", "chromecast4lox") or "chromecast4lox"
         self.geraete = {}
-        self.mqtt = MqttAnbindung(self.praefix, self.befehl_ausfuehren)
+        self.mqtt = MqttAnbindung(self.praefix, self.befehl_ausfuehren, self.cmd_ein_lesen())
         self.udp = None
         self.laeuft = True
         # Unterbrechbares Warten (seit 1.3.13, C11): SIGTERM beendet den Takt
@@ -3054,6 +3212,9 @@ class Dienst:
         praefix = self.cfg.get("mqtt_topic", "chromecast4lox") or "chromecast4lox"
         mqtt_ein = self.cfg.get("mqtt_ein", "1") == "1"
         mqtt_vorher = vorher.get("mqtt_ein", "1") == "1"
+        # Gruppe 6b (1.3.24): der Haken des alten Befehlswegs gilt ohne Neustart. Bei einem Neuaufbau der
+        # Verbindung (unten) abonniert _on_connect nach diesem Wert.
+        self.mqtt.cmd_umschalten(self.cmd_ein_lesen())
         self.udp_absender = miniserver_adressen()
         geleert = None
         if praefix != self.praefix or mqtt_ein != mqtt_vorher:
@@ -3166,6 +3327,11 @@ class Dienst:
                     # B2 (1.3.22): Lautstaerke ueber den Endpunkt, und der Stand
                     # je Geraet fuer aktion=geraete (Name, kein Netzwert).
                     "lautstaerke_eingang": 1 if self.sprechen is not None else 0,
+                    # Gruppe 6b (1.3.24): Befehle der Befehlsbruecke ueber denselben Eingang, und der alte
+                    # Befehlsweg (Haken, letzter Befehl) fuer den Hinweis im Reiter MQTT.
+                    "befehl_eingang": 1 if self.sprechen is not None else 0,
+                    "cmd_ein": 1 if self.mqtt.cmd_ein else 0,
+                    "cmd_zuletzt": int(self.mqtt.cmd_zuletzt),
                     "geraete_stand": self.geraete_stand(),
                 }, fh)
             # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
@@ -3200,6 +3366,7 @@ class Dienst:
         for alt in list(self.geraete):
             if alt not in namen:
                 weg = self.geraete[alt]
+                weg.beenden()      # C9 (1.3.24): Arbeitsfaden anhalten, eingereihte Auftraege verfallen
                 weg.trennen()
                 del self.geraete[alt]
                 self.geraet_abraeumen(weg, namen)
@@ -3217,7 +3384,7 @@ class Dienst:
     def geraet_abraeumen(self, weg, namen):
         """Ein entferntes Geraet (seit 1.3.13, M4; Entscheidung 5).
 
-        Einmal "-" retained fuer jeden retained Zustand - Loxone sieht
+        Einmal der Fehlwert retained fuer jeden retained Zustand - Loxone sieht
         "keine Aussage" statt des letzten Stands -, dann wird unter
         <praefix>/<geraet>/ abgeraeumt und nachgelesen. Bis 1.3.12 blieben
         neun retained Zustaende stehen (state IDLE, volume 100 ...), und nach
@@ -3232,23 +3399,28 @@ class Dienst:
                         weg.name, self.praefix, weg.thema)
             return
         gesendet = 0
+        # E9 (1.3.24): der Fehlwert je Art aus bin/cc_themen.json - Zahl -1 (volume, duration, favorit), Ja/Nein 0
+        # (playing, muted, group, tts_active: "spielt nicht" ist fuer einen entfernten Lautsprecher richtig), Text
+        # "-". Bis 1.3.23 ging fuer jedes Thema "-", und Loxone zeigte an einem Zahleneingang 0.
         for eintrag in THEMEN.get("geraet", []):
             if eintrag.get("retain", False):
-                if self.mqtt.senden_und_warten(weg.thema + "/" + eintrag["schluessel"], "-"):
+                art = eintrag.get("art")
+                fehlwert = "-1" if art == "analog" else ("0" if art == "digital" else "-")
+                if self.mqtt.senden_und_warten(weg.thema + "/" + eintrag["schluessel"], fehlwert):
                     gesendet += 1
         try:
             code, geleert, rest, grund = broker_leeren(self.praefix, nur=weg.thema)
         except Exception as fehler:  # noqa: BLE001
             code, geleert, rest, grund = 2, [], [], str(fehler)
         if code == 0:
-            log.info("'%s' entfernt: %d Zustaende als '-' gemeldet, %d Themen unter "
+            log.info("'%s' entfernt: %d Zustaende mit Fehlwert (-1/0/-) gemeldet, %d Themen unter "
                      "%s/%s/ abgeraeumt und nachgelesen", weg.name, gesendet,
                      len(geleert), self.praefix, weg.thema)
         elif code == 1:
             log.warning("'%s' entfernt: unter %s/%s/ stehen noch %d Themen: %s",
                         weg.name, self.praefix, weg.thema, len(rest), ", ".join(rest[:5]))
         else:
-            log.warning("'%s' entfernt: %d Zustaende als '-' gemeldet, Abraeumen nicht "
+            log.warning("'%s' entfernt: %d Zustaende mit Fehlwert (-1/0/-) gemeldet, Abraeumen nicht "
                         "moeglich - %s", weg.name, gesendet, grund)
 
     def geraete_fuer(self, kennung):
@@ -3266,7 +3438,8 @@ class Dienst:
         return []
 
     def geraet_finden(self, kennung):
-        """Geraet nach Name oder nach gesaeubertem Thema suchen."""
+        """Geraet nach Name, nach gesaeubertem Thema oder (seit 1.3.24, Gruppe 6b) nach seinem Befehlsnamen
+        (befehl_kennung) suchen - die Befehlsbruecke nennt Geraete nur klein und mit "_" statt "-"."""
         if not kennung:
             return next(iter(self.geraete.values()), None)
         for geraet in self.geraete.values():
@@ -3275,22 +3448,37 @@ class Dienst:
         for geraet in self.geraete.values():
             if kennung.lower() in (geraet.name.lower(), geraet.thema.lower()):
                 return geraet
+        for geraet in self.geraete.values():
+            if kennung == befehl_kennung(geraet.thema):
+                return geraet
         return None
 
     def befehl_ausfuehren(self, kennung, befehl, wert, quelle="mqtt"):
+        """Einen Befehl annehmen und je Geraet einreihen - die EINE Pruefstelle fuer den alten cmd-Weg, UDP und
+        (seit 1.3.24, Gruppe 6b E1) die Befehlsbruecke ueber den Sprech-Eingang (Art "befehl").
+
+        Rueckgabe (seit 1.3.24): dict eingereiht (Geraetenamen), nicht_verbunden (davon gerade ohne Verbindung - der
+        Arbeitsfaden verbindet wie bisher selbst), unbekannt, uebersprungen (GESPERRT), grund (GERAET_UNBEKANNT,
+        SPERRE_AUS, WERT_SPERRE, SPEICHERN) und sperre (1 = Sperre gesetzt). cmd und UDP verwerfen es wie bisher."""
+        aus = {"eingereiht": [], "nicht_verbunden": 0, "unbekannt": [], "uebersprungen": "", "grund": ""}
         b = str(befehl or "").strip().lower()
         # B1 (1.3.22): der Dienstbefehl sperre - <praefix>/server/cmd/sperre
         # bzw. UDP "server/SPERRE 1;". Nur dieser eine Befehl unter "server";
         # jeder andere geht den bisherigen Weg.
         if b == "sperre" and str(kennung or "").strip().lower() == "server":
-            loxsperre_setzen(self.cfg, wert, quelle)
-            return
+            grund, _gesetzt = loxsperre_setzen(self.cfg, wert, quelle)
+            aus["grund"] = grund
+            if not grund:
+                aus["sperre"] = 1
+            return aus
         ziele = self.geraete_fuer(kennung)
         if not ziele:
             log.warning("Kein Geraet fuer '%s' - konfiguriert sind: %s "
                         "(Sammelziel: %s)", kennung,
                         ", ".join(self.geraete) or "keine", "/".join(SAMMELZIEL))
-            return
+            aus["unbekannt"].append(str(kennung or "")[:60])
+            aus["grund"] = "GERAET_UNBEKANNT"
+            return aus
         # B1: eine Ansage aus Loxone haelt die Sperre an (ein dringend gibt es
         # nur am Endpunkt). tts_stop und alle uebrigen Befehle gehen weiter.
         if b in ("tts", "say", "ansage") and loxsperre_wirkt(self.cfg):
@@ -3298,15 +3486,26 @@ class Dienst:
             log.info("Ansage aus Loxone (%s) an %s uebersprungen: Sperre aus Loxone "
                      "(gesetzt von %s)", quelle,
                      ", ".join(g.name for g in ziele), s["quelle"] or "-")
-            return
+            aus["uebersprungen"] = "GESPERRT"
+            return aus
         if len(ziele) > 1:
             log.info("Sammelbefehl '%s' an %d Geraete", befehl, len(ziele))
         for geraet in ziele:
             # EINREIHEN, nicht aufrufen. Der Aufrufer ist der Netzfaden von
-            # paho oder der UDP-Faden; beide duerfen nicht minutenlang in
-            # einer Ansage stehen bleiben.
+            # paho, der UDP-Faden oder der Sprech-Eingang; keiner darf
+            # minutenlang in einer Ansage stehen bleiben.
+            if not geraet.verbunden():
+                aus["nicht_verbunden"] += 1
             geraet.einreihen(befehl, wert,
                              self._zahl("lautstaerke_schritt", 5), self.cfg)
+            aus["eingereiht"].append(geraet.name)
+        return aus
+
+    def cmd_ein_lesen(self):
+        """Den alten Befehlsweg <praefix>/<Geraet>/cmd/... annehmen? Haken befehle_cmd_ein (Gruppe 6b, 1.3.24,
+        Entwurf cc 3.4, Bauart WOLF ISM NG 3.1.12): bei einem Update an (postupgrade.sh setzt ihn), bei einer
+        Neuinstallation aus - dort laufen Befehle ueber die Befehlsbruecke."""
+        return str(self.cfg.get("befehle_cmd_ein", "0")).strip() == "1"
 
     def start(self):
         log.info("Chromecast 4 Lox NG %s startet", version() or "(Fassung unbekannt)")
@@ -3318,6 +3517,8 @@ class Dienst:
                 self.praefix_merken()
         else:
             log.info("MQTT ist ausgeschaltet")
+        log.info("Alter Befehlsweg %s/+/cmd/# %s (befehle_cmd_ein)", self.praefix,
+                 "an" if self.mqtt.cmd_ein else "aus - Befehle ueber die Befehlsbruecke")
 
         self.geraete_aufbauen()
 
@@ -3371,7 +3572,7 @@ class Dienst:
 
             # a1: retained Befehle, die beim Verbinden ankamen, am Broker
             # abraeumen und nachlesen (nur, wenn welche da sind).
-            if self.mqtt.verbunden:
+            if self.mqtt.verbunden and self.mqtt.cmd_ein:
                 self.mqtt.befehle_abraeumen(self.halt.wait)
 
             for geraet in list(self.geraete.values()):
@@ -3431,12 +3632,7 @@ class Dienst:
         if self.sprechen is not None:
             self.sprechen.laeuft = False
         for geraet in self.geraete.values():
-            geraet.faden_laeuft = False
-            geraet.ansage_abbrechen = True
-            try:
-                geraet.auftraege.put_nowait(None)
-            except Exception:  # noqa: BLE001
-                pass
+            geraet.beenden()   # C9 (1.3.24): dieselbe Stelle wie fuer ein entferntes Geraet
         for geraet in self.geraete.values():
             # tts_active retained auf 0 (seit 1.3.13, C11/M6): eine beim
             # Anhalten abgebrochene Ansage liess bis 1.3.12 "1" stehen.
@@ -3470,6 +3666,12 @@ def main():
             "retain_dienst": {e["schluessel"]: thema_retain("dienst", e["schluessel"])
                               for e in THEMEN.get("dienst", ())},
             "retain_unbekannt": thema_retain("dienst", "_kein_eintrag_"),
+            # Gruppe 6b (1.3.24): Thema und Befehlsname je Name - die Namen der Geraeteliste reicht der Reiter Test
+            # als weitere Argumente hinter --themen herein, dazu feste Proben. Haelt cc_thema()/cc_befehl_kennung()
+            # gegen thema_saeubern()/befehl_kennung().
+            "kennung": [{"name": n, "thema": thema_saeubern(n), "befehl": befehl_kennung(thema_saeubern(n))}
+                        for n in (KENNUNG_PROBEN + [a for a in sys.argv[sys.argv.index("--themen") + 1:]
+                                                    if not a.startswith("--")])],
         }))
         return
 
@@ -3552,6 +3754,9 @@ def main():
 
 
 _SPERRE = None
+
+# Feste Proben fuer "kennung" in --themen (Gruppe 6b): Umlaut, Leerzeichen, Strich, Zeichen ohne Zerlegung.
+KENNUNG_PROBEN = ["Wohnzimmer", "Küche Lautsprecher", "Bad-Oben", "Ræv", "Ålesund Box", "WOHN-zimmer 2"]
 
 
 class _AufzeichnendeHuelle(object):

@@ -8,6 +8,9 @@
  * englische Sprachdatei). Alles auf Deutsch.
  *
  * Kompatibel mit PHP 7.4 und PHP 8.x (LoxBerry 3.x/4.x).
+ *
+ * Gruppe 6b / MQTT (1.3.24): Reiter MQTT mit den drei Haken der Befehle und EINER Themenliste, Reiter Einbindung in
+ * Loxone mit Namenstabelle, Befehlen der Befehlsbruecke und Vorlage MQTT-Befehle; Fremdbefunde C11, C16, C17.
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
@@ -248,6 +251,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['uebernehmen'])) {
             require_once __DIR__ . '/cc_test.php';
             // Und sagen, was mit dem Dienst geschah (O8).
             $cc_hinweis .= ' ' . cc_dienst_nachziehen($cc_c);
+            // Gruppe 6b (1.3.24, E14): Geraetenamen, die Themen stoeren - warnen, nicht abweisen.
+            foreach (cc_geraete_warnungen(cc_geraete($cc_c)) as $cc_gw_t) {
+                $cc_hinweis .= '<br><b>' . cc_t('BEFEHL.W_ACHTUNG') . '</b> ' . $cc_gw_t;
+            }
         } else {
             $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
         }
@@ -263,7 +270,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['uebernehmen'])) {
  */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
     $cc_m = cc_config_read();
+    $cc_pr_alt = (string) cc_cfg($cc_m, 'mqtt_topic', 'chromecast4lox');
     $cc_m['mqtt_ein'] = isset($_POST['mqtt_ein']) ? '1' : '0';
+    // Gruppe 6b (1.3.24, Entwurf cc 3.4): die drei Haken der Befehle - Haken sind 0 oder 1, nichts zu beanstanden.
+    foreach (cc_befehle_haken() as $cc_hk) {
+        $cc_m[$cc_hk] = isset($_POST[$cc_hk]) ? '1' : '0';
+    }
     /* Abweisen statt umschreiben (seit 1.3.13, O5). Bis 1.3.12 machte
      * cc_thema() aus "haus/cast" still "haus_cast", aus "Küche/Wohnzimmer"
      * "Kueche_Wohnzimmer" und aus einem leeren Feld "geraet" - der Rueckfall
@@ -291,6 +303,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_mqtt'])) {
             $cc_saved = true;
             require_once __DIR__ . '/cc_test.php';
             $cc_hinweis = cc_dienst_nachziehen($cc_m);
+            // Gruppe 6b (1.3.24): die Abo-Datei des Gateways V1 nachfuehren (E12) und die Befehlsbruecke gleich
+            // starten bzw. anhalten (Entwurf cc 3.5) - ein neues Praefix heisst neues Abo.
+            cc_abo_datei($cc_m['mqtt_topic'], true);
+            $cc_bs = cc_bruecke_satz(cc_bruecke_schalten($cc_m['mqtt_topic'] !== $cc_pr_alt));
+            if ($cc_bs !== '') {
+                $cc_hinweis .= ' ' . $cc_bs;
+            }
+            if (strlen($cc_m['mqtt_topic']) > 40) {
+                $cc_hinweis .= ' ' . sprintf(cc_t('BEFEHL.W_PRAEFIX_LANG'), cc_e($cc_m['mqtt_topic']));
+            }
         } else {
             $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
         }
@@ -418,6 +440,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save'])) {
         // Meldung sagt, was mit dem Dienst WIRKLICH geschah (O8) - bis 1.3.12
         // stand "angehalten" auch, wenn gar keiner lief.
         $cc_hinweis = cc_dienst_nachziehen($neu);
+        // Gruppe 6b (1.3.24, E14): Geraetenamen, die Themen stoeren - warnen, nicht abweisen. Die Bruecke folgt dem
+        // Haken "Dienst laufen lassen".
+        foreach (cc_geraete_warnungen(cc_geraete($neu)) as $cc_gw_t) {
+            $cc_hinweis .= '<br><b>' . cc_t('BEFEHL.W_ACHTUNG') . '</b> ' . $cc_gw_t;
+        }
+        $cc_bs = cc_bruecke_satz(cc_bruecke_schalten());
+        if ($cc_bs !== '') {
+            $cc_hinweis .= ' ' . $cc_bs;
+        }
     } else {
         $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
     }
@@ -487,6 +518,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
     $cc_js = json_encode($cc_sich,
         JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     if ($cc_js !== false) {
+        // Fremdbefund C16 (1.3.24): den Ausgabepuffer leeren, BEVOR die Kopfzeilen gehen - wie beim Vorlagen-Download.
+        // Eine Warnung davor landete sonst im JSON, und die Sicherung liesse sich nicht mehr zurueckspielen.
+        while (ob_get_level() > 0) {
+            @ob_end_clean();
+        }
         header('Content-Type: application/json; charset=utf-8');
         header('Content-Disposition: attachment; filename="chromecast4lox_einstellungen_'
                . date('Ymd_His') . '.json"');
@@ -670,6 +706,10 @@ if ($cc_frame) {
 /* Welle Bild 11 VOLL: Schritte und Hinweise je Baustein-Liste. */
 .sm-schritte { margin: 6px 0 0 18px; padding: 0; }
 .sm-schritte li { margin: 3px 0; }
+/* Gruppe 6b (1.3.24): Kopierknopf der Namenstabelle (Reiter Einbindung, Schritt 2). */
+.sm-wrap button.sm-kopie { font-size: 0.78em; padding: 1px 7px; margin-left: 6px; border: 1px solid #bbb; border-radius: 4px;
+  background: #f4f4f4 !important; color: #333 !important; cursor: pointer; }
+.sm-wrap details > summary { cursor: pointer; font-weight: 600; margin: 10px 0; }
 
 </style>
 <div class="sm-wrap">
@@ -696,6 +736,8 @@ if ($cc_frame) {
     <td><?= count($cc_geraete) ?></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_MQTT')) ?></td>
     <td><?= cc_e(cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?></td></tr>
+<tr><td><?= cc_e(cc_t('TEXT.KOPF_BEFEHLE')) ?></td>
+    <td><?= cc_e(cc_cfg($cc_cfg, 'befehle_mqtt_ein', '0') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_UDP')) ?></td>
     <td><?= cc_cfg($cc_cfg, 'udp', '1') === '1' ? cc_e(cc_t('TEXT.S_PORT')) . ' ' . cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) : cc_e(cc_t('TEXT.S_AUS')) ?></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_LOXBERRY')) ?></td>
@@ -786,7 +828,7 @@ if ($cc_komma) { ?>
 <div class="sm-row" style="margin-top:12px;">
 <div>
 <label><?php echo cc_t('TEXT.T023'); ?></label>
-<input data-role="none" type="number" name="udp_port" min="1" max="65535" value="<?= cc_e(cc_eingabe('settings', 'udp_port', cc_cfg($cc_cfg, 'udp_port', '7090'))) ?>"<?= cc_markierung('udp_port') ?>>
+<input data-role="none" type="number" name="udp_port" min="1024" max="65535" value="<?= cc_e(cc_eingabe('settings', 'udp_port', cc_cfg($cc_cfg, 'udp_port', '7090'))) ?>"<?= cc_markierung('udp_port') ?>>
 </div>
 </div>
 <div class="sm-small"><?php echo cc_t('MQTT.H_VERWEIS'); ?></div>
@@ -893,7 +935,7 @@ if ($cc_komma) { ?>
 </div>
 <div>
 <label><?php echo cc_t('TTS.L_BASIS'); ?></label>
-<input data-role="none" type="text" name="tts_lokal_basis" value="<?= cc_e(cc_eingabe('settings', 'tts_lokal_basis', cc_cfg($cc_cfg, 'tts_lokal_basis', ''))) ?>"<?= cc_markierung('tts_lokal_basis') ?> placeholder="http://<?= cc_e($cc_ip) ?>/plugins/<?= cc_e($cc_p['plugin']) ?>">
+<input data-role="none" type="text" name="tts_lokal_basis" value="<?= cc_e(cc_eingabe('settings', 'tts_lokal_basis', cc_cfg($cc_cfg, 'tts_lokal_basis', ''))) ?>"<?= cc_markierung('tts_lokal_basis') ?> placeholder="http://<?= cc_e($cc_ip) ?><?= cc_webport() !== 80 ? ':' . (int) cc_webport() : '' ?>/plugins/<?= cc_e($cc_p['plugin']) ?>">
 <div class="sm-small"><?php echo cc_t('TTS.H_BASIS'); ?></div>
 </div>
 </div>
@@ -982,12 +1024,10 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
        Wer beides in ein Formular legt, bekommt entweder keinen Upload oder
        einen Download, der das Speichern verschluckt. -->
   <form action="index.php" method="post">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <button data-role="none" class="sm-btn sm-b-lesen" type="submit" name="cc_sichern" value="1"><?= cc_t('TEXT.K_SICHERN') ?></button>
   </form>
   <form action="index.php" method="post" enctype="multipart/form-data">
-    <input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="cc_sicherung" accept=".json">
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cc_zurueck" value="1"><?= cc_t('TEXT.K_ZURUECK') ?></button>
@@ -997,7 +1037,13 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
 
 <!-- ================= Reiter: MQTT ================= -->
 <div class="sm-seite<?= $cc_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" id="tab-mqtt">
-
+<?php /* Gruppe 6b / MQTT (1.3.24; Entwurf cc 2.4, 3.4, gemeinsam 2.11): die drei Haken der Befehle, das Abo des Gateways
+   (V1: die Datei liegt bei, E12), EINE Themenliste aus cc_mqtt_namen() statt der zwei Tabellen bis 1.3.23, der alte
+   Befehlsweg zugeklappt. */
+$cc_mn = cc_mqtt_namen($cc_cfg);
+$cc_cmd_h = cc_cmd_hinweis($cc_cfg);
+list(, $cc_abo_da) = cc_abo_datei($cc_praefix);
+$cc_jn = function ($w) { return cc_t($w ? 'TEST.A_JA_KURZ' : 'TEST.A_NEIN_KURZ'); }; ?>
 <form method="post" action="index.php">
 <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-mqtt">
 <div class="sm-legende">
@@ -1014,7 +1060,22 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
 <div class="sm-small"><?php echo cc_t('TEXT.T025'); ?></div>
 </div>
 </div>
+<?php if (strlen($cc_praefix) > 40) { ?>
+<div class="sm-warnung"><?= sprintf(cc_t('BEFEHL.W_PRAEFIX_LANG'), cc_e($cc_praefix)) ?></div>
+<?php } ?>
+
+<h2 id="befehle"><?php echo cc_t('BEFEHL.H'); ?></h2>
+<label class="sm-check"><input data-role="none" type="checkbox" name="befehle_mqtt_ein" value="1"<?= cc_eingabe_an('mqtt', 'befehle_mqtt_ein', cc_cfg($cc_cfg, 'befehle_mqtt_ein', '0') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('BEFEHL.L_EIN'); ?></b></label>
+<div class="sm-small"><?php echo cc_t('BEFEHL.H_EIN'); ?></div>
+<label class="sm-check"><input data-role="none" type="checkbox" name="befehle_mqtt_steuern" value="1"<?= cc_eingabe_an('mqtt', 'befehle_mqtt_steuern', cc_cfg($cc_cfg, 'befehle_mqtt_steuern', '0') === '1') ? ' checked' : '' ?>> <b><?php echo cc_t('BEFEHL.L_STEUERN'); ?></b></label>
+<div class="sm-small"><?php echo cc_t('BEFEHL.H_STEUERN'); ?></div>
+<label class="sm-check"><input data-role="none" type="checkbox" name="befehle_cmd_ein" value="1"<?= cc_eingabe_an('mqtt', 'befehle_cmd_ein', cc_cfg($cc_cfg, 'befehle_cmd_ein', '0') === '1') ? ' checked' : '' ?>> <b><?= sprintf(cc_t('BEFEHL.L_CMD'), cc_e($cc_praefix)) ?></b></label>
+<div class="sm-small"><?php echo cc_t('BEFEHL.H_CMD'); ?></div>
+<?php if ($cc_cmd_h !== '') { ?>
+<div class="sm-warnung"><?= $cc_cmd_h ?></div>
+<?php } ?>
 <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_mqtt" value="1"><?php echo cc_t('TEXT.T035'); ?></button>
+<div class="sm-small"><?php echo cc_t('BEFEHL.H_SPEICHERN'); ?></div>
 </form>
 
 <h2><?php echo cc_t('MQTT.H_GATEWAY'); ?></h2>
@@ -1036,76 +1097,57 @@ if ($cc_gw !== null && !$cc_gw['autostart']) { ?><div class="sm-alert sm-warn"><
 
 <h2><?php echo cc_t('MQTT.H_ABO'); ?></h2>
 <?php
-/* Der Satz "Ohne diesen Eintrag kommt am Miniserver nichts an" gilt NUR fuer
- * Gateway V1. Unter V2 schaltet der LoxBerry-Kern auf der Abonnement-Seite
- * die Knoepfe ab - dort ist nichts einzutragen. Ist die Fassung nicht
- * lesbar, stehen BEIDE Saetze da: einen von beiden zu behaupten waere fuer
- * die Haelfte der Anlagen falsch. */
+/* Gateway V1: die Abo-Datei config/plugins/<ordner>/mqtt_subscriptions.cfg liegt bei (E12) - einzutragen ist nichts;
+ * sie wird beim Speichern eines neuen Praefixes nachgefuehrt. V2: Datenpunkte anhaken (Liste im Reiter Einbindung,
+ * Schritt 1). Ist die Fassung nicht lesbar, stehen BEIDE Saetze da. */
 $cc_gwf = cc_gateway_fassung();
 ?>
-<?php if ($cc_gwf >= 2) { ?>
-<div class="sm-alert sm-info"><?php echo cc_t('MQTT.ABO_V2'); ?></div>
-<?php } elseif ($cc_gwf === 1) { ?>
+<?php if ($cc_gwf !== 2 && $cc_gwf < 3) { ?>
 <div class="sm-step"><?php echo cc_t('MQTT.ABO_PFLICHT'); ?>
-<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= cc_e($cc_praefix) ?>/#</div></div>
-<?php } else { ?>
-<div class="sm-step"><?php echo cc_t('MQTT.ABO_PFLICHT'); ?>
-<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= cc_e($cc_praefix) ?>/#</div></div>
+<div class="sm-mono" style="background:#f4f4f4;border:1px solid #ccc;padding:8px;margin-top:6px;"><?= cc_e(cc_abo_zeile($cc_praefix)) ?></div>
+<?php if (!$cc_abo_da && $cc_p['home'] !== '') { ?><div class="sm-warnung"><?php echo cc_t('MQTT.ABO_DATEI_FEHLT'); ?></div><?php } ?>
+</div>
+<?php } ?>
+<?php if ($cc_gwf !== 1) { ?>
 <div class="sm-alert sm-info"><?php echo cc_t('MQTT.ABO_V2'); ?></div>
+<?php } ?>
+<?php if ($cc_gwf === 0) { ?>
 <div class="sm-small"><?php echo cc_t('MQTT.ABO_UNBEKANNT'); ?></div>
 <?php } ?>
+<div class="sm-small"><?php echo cc_t('MQTT.ABO_BEFEHLE'); ?></div>
 
-<h2><?php echo cc_t('TEXT.T096'); ?></h2>
-<?php
-/* Eine Aussage ueber eine Menge wird aus der Menge GERECHNET, nicht
- * getippt. "Alle Themen sind retained" stand bei einer anderen Linie an
- * sieben Stellen und war falsch. */
-$cc_alle = cc_themen();
-$cc_zahl = count($cc_alle['geraet']);
-$cc_ret = 0;
-foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret++; } }
-?>
-<table class="sm-tbl">
-<tr><th style="width:22%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_RETAIN'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
-<?php foreach ($cc_alle['geraet'] as $cc_e1) { ?>
-<tr><td><span class="sm-mono"><?= cc_e($cc_e1['schluessel']) ?></span></td>
-<td><?= cc_e($cc_e1['art']) ?></td>
-<td><?= empty($cc_e1['retain']) ? '&ndash;' : cc_e(cc_t('TEST.A_JA')) ?></td>
-<td><?= cc_e(cc_thema_lang($cc_e1['schluessel'])) ?></td></tr>
+<h2><?php echo cc_t('MQTT.H_THEMEN'); ?></h2>
+<div class="sm-breit">
+<table class="sm-tbl" id="cc_themenliste">
+<tr><th style="width:26%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:24%;"><?php echo cc_t('MQTT.SP_NAME'); ?></th><th style="width:12%;"><?php echo cc_t('MQTT.SP_BEREICH'); ?></th><th style="width:8%;"><?php echo cc_t('MQTT.SP_RETAIN'); ?></th><th style="width:8%;"><?php echo cc_t('MQTT.SP_HAKEN'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
+<?php foreach ($cc_mn as $cc_mz) { ?>
+<tr><td><span class="sm-mono"><?= cc_e($cc_mz['voll']) ?></span></td><td><span class="sm-mono"><?= cc_e($cc_mz['name']) ?></span></td>
+<td><?= cc_e($cc_mz['bereich'] !== '' ? $cc_mz['bereich'] : cc_t('MQTT.A_TEXT')) ?></td>
+<td><?= cc_e($cc_jn($cc_mz['retained'])) ?></td>
+<td><?= cc_e($cc_mz['haken'] ? ($cc_mz['noncached'] ? cc_t('MQTT.A_HAKEN_N') : cc_t('TEST.A_JA_KURZ')) : '–') ?></td>
+<td><?= cc_e($cc_mz['bedeutung']) ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-small"><?= cc_e(sprintf(cc_t('MQTT.A_ZAEHLUNG'), $cc_zahl, $cc_ret)) ?></div>
-
-<div class="sm-alert sm-info sm-small"><?= sprintf(cc_t('MQTT.H_SAMMELZIEL'), cc_e($cc_praefix)) ?></div>
-
-<h2><?php echo cc_t('MQTT.H_DIENST'); ?></h2>
-<table class="sm-tbl">
-<tr><th style="width:22%;"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_RETAIN'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
-<?php /* Ueber die Huelle, nicht ueber eine zweite Schleife: cc_dienst_themen()
-        setzt Beschriftung und Art in derselben Form zusammen wie
-        cc_status_themen() daneben. Zwei Stellen, die dasselbe tun, laufen
-        auseinander. */ ?>
-<?php foreach (cc_dienst_themen() as $cc_k1 => $cc_i1) { ?>
-<tr><td><span class="sm-mono"><?= cc_e($cc_praefix . '/server/' . $cc_k1) ?></span></td>
-<td><?= cc_e($cc_i1[1]) ?></td>
-<?php $cc_d1 = cc_thema_info('dienst', $cc_k1); ?>
-<td><?= empty($cc_d1['retain']) ? '&ndash;' : cc_e(cc_t('TEST.A_JA')) ?></td>
-<td><?= cc_e($cc_i1[0]) ?></td></tr>
-<?php } ?>
-</table>
+</div>
+<?php $cc_ret = count(array_filter($cc_mn, function ($z) { return $z['retained']; })); ?>
+<div class="sm-small"><?= cc_e(sprintf(cc_t('MQTT.A_ZAEHLUNG6B'), count($cc_mn), $cc_ret, count(cc_mqtt_hakenliste($cc_cfg)), count($cc_geraete))) ?></div>
+<?php if (!$cc_geraete) { ?><div class="sm-small"><?php echo cc_t('MQTT.A_OHNE_GERAETE'); ?></div><?php } ?>
 <div class="sm-small"><?= sprintf(cc_t('SPERRE.MQTT_HINWEIS'), cc_e($cc_praefix)) ?></div>
 
 <h2><?php echo cc_t('TEXT.T104'); ?></h2>
+<div class="sm-small"><?= sprintf(cc_t('MQTT.BEFEHLE_KURZ'), cc_e($cc_praefix)) ?></div>
+<details><summary><?php echo cc_t('MQTT.ALT_AUF'); ?></summary>
 <table class="sm-tbl">
 <tr><th style="width:22%;"><?php echo cc_t('TEXT.T105'); ?></th><th style="width:10%;"><?php echo cc_t('MQTT.SP_ART'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
-<?php foreach ($cc_alle['befehle'] as $cc_e1) { ?>
+<?php foreach (cc_themen()['befehle'] as $cc_e1) { ?>
 <tr><td><span class="sm-mono"><?= cc_e($cc_e1['schluessel']) ?></span></td>
 <td><?= cc_e($cc_e1['art']) ?></td>
 <td><?= cc_e(cc_thema_lang('cmd_' . $cc_e1['schluessel'])) ?></td></tr>
 <?php } ?>
 </table>
-<div class="sm-small"><?php echo cc_t('TEXT.T099'); ?>
-<span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T100'); ?></span><?php echo cc_t('TEXT.T101'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T102'); ?></span> <?php echo cc_t('TEXT.T103'); ?></div>
+<div class="sm-small"><?php echo cc_t('TEXT.T165'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T166'); ?></span><?php echo cc_t('TEXT.T167'); ?> <span class="sm-mono"><?php echo cc_t('TEXT.T168'); ?></span> <?php echo cc_t('TEXT.T169'); ?></div>
+<div class="sm-alert sm-info sm-small"><?= sprintf(cc_t('MQTT.H_SAMMELZIEL'), cc_e($cc_praefix)) ?></div>
+</details>
 
 </div>
 
@@ -1114,199 +1156,164 @@ foreach ($cc_alle['geraet'] as $cc_e1) { if (!empty($cc_e1['retain'])) { $cc_ret
 
 <h2><?php echo cc_t('TEXT.T037'); ?></h2>
 <div class="sm-small"><?php echo cc_t('TEXT.T038'); ?></div>
-
-<div class="sm-step"><?php echo cc_t('TEXT.S_SCHRITT1'); ?></div>
-
-<div class="sm-step"><?php echo cc_t('TEXT.S_SCHRITT2_KOPF'); ?> <?php echo cc_t('MQTT.ABO_VERWEIS'); ?></div>
-
-<div class="sm-step"><?php echo cc_t('TEXT.S_SCHRITT3'); ?></div>
-
-<div class="sm-step"><?php echo cc_t('TEXT.S_SCHRITT4'); ?>
-<span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T061'); ?></span> <?php echo cc_t('TEXT.T062'); ?></div>
-
-<div class="sm-step"><?php echo cc_t('TEXT.S_SCHRITT5'); ?></div>
-
-<h2><?php echo cc_t('TEXT.T070'); ?></h2>
-<div class="sm-small" style="margin-bottom:8px;">
-<?php echo cc_t('TEXT.T071'); ?> <b><?php echo cc_t('TEXT.T072'); ?></b>
-(<span class="sm-mono"><?php echo cc_t('TEXT.T073'); ?><?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span><?php echo cc_t('TEXT.T074'); ?>
-</div>
-<div class="sm-small"><?php echo cc_t('MQTT.H_VERWEIS'); ?></div>
-
-<h2><?php echo cc_t('TEXT.T082'); ?></h2>
-<?php if (!$cc_geraete) { ?>
-<div class="sm-alert sm-err"><?php echo cc_t('TEXT.T083'); ?></div>
+<?php /* Gruppe 6b / MQTT (1.3.24; Entwurf cc 2.5, Bauvorschrift Gruppe 1 Nachtrag 2): MQTT ist der Weg des LoxBerry-Plugins
+   Musterprojekts, fuer Werte UND Befehle. Schritt 1 das Gateway nach seiner Fassung (V1: die Abo-Datei liegt bei; V2 und
+   "nicht feststellbar": die Hakenliste aus cc_mqtt_hakenliste(), server/online mit "Noncached"), Schritt 2 die
+   Namenstabelle (KEINE Importvorlage fuer Werte mehr - die localhost-Vorlage entfaellt, Pruefbericht E2), Schritt 3 die
+   Befehle aus der Befehlsbruecke mit der Vorlage "MQTT-Befehle" (mit Sperre, V3), Schritt 4 die Ausfallerkennung,
+   Schritt 5 die Baustein-Listen (wortgleich Musterprojekt/baustein_listen.txt), Schritt 6 die Gegenprobe. Der alte Weg
+   (Ausgang "Chromecast 4 Lox" mit cmd-Themen, UDP) steht darunter, zugeklappt. */
+$cc_ln = cc_mqtt_namen($cc_cfg);
+$cc_lh = cc_mqtt_hakenliste($cc_cfg);
+$cc_lb = cc_befehle_ausgerollt($cc_geraete);
+$cc_lgw = cc_gateway_fassung();
+list(, $cc_labo_da) = cc_abo_datei($cc_praefix);
+$cc_jn = function ($w) { return cc_t($w ? 'TEST.A_JA_KURZ' : 'TEST.A_NEIN_KURZ'); };
+/* Tmc der Ausfallerkennung (E11): dreimal der Takt, mindestens 180 s - der Dienst sendet direkt am Broker (paho), nicht
+ * ueber UDP (gemeinsam E10). Bis 1.3.23 mindestens 60 s. */
+$cc_aender = max(180, 3 * (int) cc_cfg($cc_cfg, 'intervall', '10')); ?>
+<div class="sm-step"><b>0.</b> <?php echo cc_t('LOX.S0'); ?></div>
+<div class="sm-step"><b>1.</b> <?php echo cc_t('LOX.S1'); ?>
+<?php if ($cc_lgw !== 2 && $cc_lgw < 3) { /* V1 oder nicht feststellbar */ ?>
+<?php if ($cc_labo_da || $cc_p['home'] === '') { ?>
+<div class="sm-hinweis"><?= sprintf(cc_t('LOX.S1_V1'), cc_e(cc_abo_zeile($cc_praefix))) ?></div>
 <?php } else { ?>
-<?php /* Die Zahlen aus dem Code, der die Vorlage baut (seit 1.3.13, O14).
-        Bis 1.3.12 stand hier die Zahl aller Zustaende (16) - die Vorlage legt
-        je Geraet 9 an, die Textthemen bleiben draussen (gemessen 30.09.2026,
-        Oberflaechen-Befund 14). Und das Leerzeichen hinter "Geraet(e):" steht
-        ausgeschrieben: PHP verschluckt einen Zeilenumbruch nach dem
-        schliessenden Zeichenpaar (Regeln/04). */
-      list($cc_vz_ein, $cc_vz_aus, $cc_vz_text, $cc_vz_dienst) = cc_vorlage_zahlen(); ?>
-<div class="sm-small"><?php echo cc_t('TEXT.T084'); ?> <b><?= count($cc_geraete) ?></b> <?php echo cc_t('TEXT.T085') . ' '; ?><?= cc_e(implode(', ', $cc_geraete)) ?><?php echo cc_t('TEXT.T086'); ?> <?= (int) $cc_vz_ein ?> <?php echo cc_t('TEXT.T087'); ?> <?= (int) $cc_vz_aus ?> <?php echo cc_t('TEXT.T088') . ' '
-    . cc_e(sprintf(cc_t('TEXT.S_DIENST_EINGAENGE'), $cc_vz_dienst)) . ' '
-    . sprintf(cc_t('TEXT.S_TEXTTHEMEN'), '<span class="sm-mono">' . cc_e(implode(', ', $cc_vz_text)) . '</span>') . ' '
-    . cc_t('TEXT.S_IMPORT_NEU') . ' '
-    . cc_e(sprintf(cc_t('TEXT.S_SCHRITT_VORLAGE'), cc_cfg($cc_cfg, 'lautstaerke_schritt', '5'))); ?></div>
+<div class="sm-warnung"><?= sprintf(cc_t('LOX.S1_V1_FEHLT'), cc_e(cc_abo_zeile($cc_praefix))) ?></div>
 <?php } ?>
+<?php } ?>
+<?php if ($cc_lgw !== 1) { /* V2 oder nicht feststellbar: die Hakenliste, aufgeklappt */ ?>
+<div class="sm-hinweis"><?= sprintf(cc_t('LOX.S1_V2'), cc_e($cc_praefix), count($cc_lh)) ?></div>
+<details open><summary><?= cc_e(sprintf(cc_t('LOX.HAKEN_AUF'), count($cc_lh))) ?></summary>
+<div class="sm-breit">
+<table class="sm-tbl" id="cc_hakenliste">
+<tr><th style="width:5%">#</th><th style="width:34%"><?php echo cc_t('TEXT.T097'); ?></th><th style="width:30%"><?php echo cc_t('MQTT.SP_NAME'); ?></th><th style="width:10%"><?php echo cc_t('LOX.T_NONCACHED'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
+<?php foreach ($cc_lh as $cc_hi => $cc_hz) { ?>
+<tr><td><?= (int) $cc_hi + 1 ?></td><td><span class="sm-mono"><?= cc_e($cc_hz['voll']) ?></span></td><td><span class="sm-mono"><?= cc_e($cc_hz['name']) ?></span></td><td><?= cc_e($cc_jn($cc_hz['noncached'])) ?></td><td><?= cc_e($cc_hz['bedeutung']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+</details>
+<div class="sm-small"><?php echo cc_t('LOX.S1_NONCACHED'); ?></div>
+<?php } ?>
+<div class="sm-small"><?php echo cc_t('LOX.S1_RECONNECT'); ?></div>
+<?php if (cc_cfg($cc_cfg, 'mqtt_ein', '1') !== '1') { ?><div class="sm-warnung"><?php echo cc_t('TEXT.T077'); ?></div><?php } ?>
+</div>
 
+<div class="sm-step"><b>2.</b> <?php echo cc_t('LOX.S2'); ?>
+<?php if (!$cc_geraete) { ?>
+<div class="sm-alert sm-err"><?php echo cc_t('LOX.S2_KEINE_GERAETE'); ?></div>
+<?php } ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="cc_namenstabelle">
+<tr><th style="width:5%">#</th><th style="width:36%"><?php echo cc_t('MQTT.SP_NAME'); ?></th><th style="width:13%"><?php echo cc_t('LOX.T_GERAET'); ?></th><th style="width:12%"><?php echo cc_t('MQTT.SP_BEREICH'); ?></th><th style="width:9%"><?php echo cc_t('LOX.T_ART'); ?></th><th><?php echo cc_t('TEXT.T098'); ?></th></tr>
+<?php $cc_ni = 0;
+foreach ($cc_ln as $cc_nz) {
+    if (!$cc_nz['haken']) { continue; }
+    $cc_ni++; ?>
+<tr><td><?= (int) $cc_ni ?></td><td><span class="sm-mono"><?= cc_e($cc_nz['name']) ?></span> <button data-role="none" type="button" class="sm-kopie" data-kopie="<?= cc_e($cc_nz['name']) ?>"><?php echo cc_t('LOX.KOPIEREN'); ?></button></td><td><?= cc_e($cc_nz['geraet'] !== '' ? $cc_nz['geraet'] . ' (' . cc_befehl_kennung(cc_thema($cc_nz['geraet'])) . ')' : cc_t('LOX.T_DIENST')) ?></td><td><?= cc_e($cc_nz['bereich']) ?></td><td><?= cc_e(cc_t($cc_nz['art'] === 'text' ? 'LOX.ART_TEXT' : 'LOX.ART_ZAHL')) ?></td><td><?= cc_e($cc_nz['bedeutung']) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<div class="sm-small"><?php echo cc_t('LOX.S2_DIGITAL'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S2_TEXT'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S2_FEHLWERT'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S2_RECHTE'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S2_UMBENENNEN'); ?></div>
+<?php $cc_gw_w = cc_geraete_warnungen($cc_geraete); if ($cc_gw_w) { ?>
+<div class="sm-warnung"><?= implode('<br>', $cc_gw_w) ?></div>
+<?php } ?>
+<script>
+(function () {
+    document.querySelectorAll('.sm-kopie').forEach(function (k) {
+        k.addEventListener('click', function () {
+            var n = k.getAttribute('data-kopie');
+            var fertig = function () { k.textContent = <?= json_encode(cc_t('LOX.KOPIERT')) ?>; };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(n).then(fertig);
+            } else {
+                var f = document.createElement('textarea');
+                f.value = n; document.body.appendChild(f); f.select();
+                try { document.execCommand('copy'); fertig(); } catch (e) {}
+                document.body.removeChild(f);
+            }
+        });
+    });
+})();
+</script>
+</div>
+
+<div class="sm-step" id="befehle_loxone"><b>3.</b> <?= sprintf(cc_t('LOX.S3'), cc_e($cc_praefix . '/befehl/#')) ?>
+<?php if ((string) cc_cfg($cc_cfg, 'befehle_mqtt_ein', '0') !== '1' || (string) cc_cfg($cc_cfg, 'befehle_mqtt_steuern', '0') !== '1') { ?>
+<div class="sm-warnung"><?php echo cc_t('LOX.S3_HAKEN'); ?></div>
+<?php } ?>
+<?php if ($cc_lb === null) { ?>
+<div class="sm-warnung"><?php echo cc_t('LOX.S3_KEINE'); ?></div>
+<?php } else { ?>
+<div class="sm-breit">
+<table class="sm-tbl" id="cc_befehle">
+<tr><th style="width:24%"><?php echo cc_t('BEFEHL.T_TITEL'); ?></th><th style="width:34%"><?php echo cc_t('BEFEHL.T_THEMA'); ?></th><th style="width:12%"><?php echo cc_t('BEFEHL.T_WERT'); ?></th><th style="width:10%"><?php echo cc_t('BEFEHL.T_EINGREIFEND'); ?></th><th style="width:8%"><?php echo cc_t('BEFEHL.T_SPERRE'); ?></th><th><?php echo cc_t('BEFEHL.T_QUITTUNG'); ?></th></tr>
+<?php foreach ($cc_lb as $cc_bz) { ?>
+<tr><td><?= cc_e($cc_bz['titel']) ?><?= $cc_bz['geraet'] !== '' ? ' – ' . cc_e($cc_bz['geraet']) : '' ?></td><td><span class="sm-mono"><?= cc_e($cc_bz['thema']) ?></span></td><td><?= cc_e($cc_bz['wert']) ?></td><td><?= cc_e($cc_jn($cc_bz['eingreifend'])) ?></td><td><?= (int) $cc_bz['sperre_s'] ?> s</td><td><?= cc_e(cc_t($cc_bz['quittung'] === 'ausgefuehrt' ? 'BEFEHL.Q_AUSGEFUEHRT' : 'BEFEHL.Q_UEBERGEBEN')) ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+<div class="sm-small"><?php echo cc_t('LOX.S3_NICHTS'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S3_ANSAGE'); ?></div>
+<div class="sm-small"><?php echo cc_t('LOX.S3_SCHRITT'); ?></div>
+<div class="sm-small"><?php echo cc_t('BEFEHL.QUITTUNG'); ?></div>
 <form method="post" action="index.php">
 <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-loxone">
 <div class="sm-legende">
 <span><i class="sm-punkt sm-b-technik"></i> <?php echo cc_t('LEGENDE.TECHNIK_DATEI'); ?></span>
 </div>
-<h3 class="sm-h3"><?php echo cc_t('TEXT.T089'); ?></h3>
 <div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="mqtt_in"><?php echo cc_t('TEXT.T090'); ?></button>
-<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="mqtt_out"><?php echo cc_t('TEXT.T091'); ?></button>
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="bruecke"><?php echo cc_t('BEFEHL.K_VORLAGE'); ?></button>
 </div>
-<h3 class="sm-h3"><?php echo cc_t('TEXT.T092'); ?></h3>
-<div class="sm-knopfreihe">
-<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="udp_out"><?php echo cc_t('TEXT.T093'); ?></button>
-</div>
-<div class="sm-small"><?php echo cc_t('TEXT.T094'); ?> <?= cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) ?> <?php echo cc_t('TEXT.T095'); ?></div>
 </form>
+<div class="sm-small"><?= cc_e(sprintf(cc_t('LOX.S3_VORLAGE'), $cc_ip, $cc_udpin ? (int) $cc_udpin : 11884)) ?></div>
+<?php if (!$cc_geraete) { ?><div class="sm-small"><?php echo cc_t('TEXT.T083'); ?></div><?php } ?>
+</div>
 
-<div class="sm-small"><?php echo cc_t('MQTT.H_VERWEIS_TABELLE'); ?></div>
+<div class="sm-step"><b>4.</b> <?= sprintf(cc_t('LOX.S4'), cc_e(cc_gateway_name($cc_praefix, 'server/zaehler')), (int) $cc_aender, cc_e(cc_gateway_name($cc_praefix, 'server/online'))) ?></div>
+
 <h2><?php echo cc_t('TEXT.T106'); ?></h2>
 <div class="sm-small"><?php echo cc_t('TEXT.S_LOGIK_EINLEITUNG'); ?></div>
-<?php /* Welle Bild 11 VOLL (1.3.21, Hausherr 11.10.2026: Vollausstattung, ein absoluter Laie soll
-         das Maximum leicht uebernehmen koennen): zwei Seiten aus dem LoxBerry-Plugins Musterprojekt,
-         dort in Loxone Config gebaut und mit leitungen_setzen.py verbunden
-         (Musterprojekt/baustein_listen.txt, Abschnitte "Chromecast4lox" 44 und "Chromecast4lox
-         Steuerung" 35 Zeilen). Je Seite: Ueberschrift, Kasten "So uebernehmen Sie diese Seite",
-         Tabelle, Hinweise, Bild, Link - alle immer sichtbar. Bis 1.3.20 stand hier eine Seite mit
-         19 Zeilen (Welle Bild 6). Das Musterprojekt nutzt das Beispielgeraet "Wohnzimmer"; hier
-         steht der Platzhalter <G>. Namen aus den Vorlagen wie in cc_vorlage(): Themenpraefix +
-         Geraet + Schluessel, Dienst mit server_, Sammelbefehle mit cc_sammelziel(); die
-         Virtuellen Texteingaenge tragen den Namen, den das MQTT-Gateway schreibt (gemessen
-         12./13.10.2026). Texte aus [BAUSTEIN] (fertiges HTML); Zeile: array(Nr, Schluessel,
-         Name als HTML oder null = <Schluessel>_NAME, Parameter als HTML oder null = <Schluessel>_PARAM).
-         Texte mit Platzhaltern stehen woertlich als sprintf(cc_t(<Schluessel>), ...) da
-         (Werkzeuge/sprachplatzhalter_pruefen.py zaehlt an der Aufrufstelle nach).
-         Ausfallerkennung ueber den DIENST (seit 1.3.13, O15): Tmc dreimal der Takt, mindestens
-         60 s (Musterprojekt: 60 s). Schrittweite wie die Ausgangsvorlage (lautstaerke_schritt). */
-$cc_aender = max(60, 3 * (int) cc_cfg($cc_cfg, 'intervall', '10'));
-$cc_bs_sw = cc_e(cc_cfg($cc_cfg, 'lautstaerke_schritt', '5'));
-$cc_bs_g = cc_e($cc_praefix) . '_&lt;G&gt;_';
-$cc_bs_d = cc_e($cc_praefix . '_server_');
-$cc_bs_a = cc_e($cc_praefix . '_' . cc_sammelziel() . '_');
-$cc_bs_ziel = cc_e($cc_praefix . '/' . cc_sammelziel());
-$cc_bs_text = array();
-foreach (array('state', 'title', 'artist', 'album', 'app', 'last_error') as $cc_bs_x) {
-    $cc_bs_text[] = $cc_bs_g . $cc_bs_x;
-}
+<?php /* Gruppe 6b (1.3.24): die zwei Seiten "Chromecast4lox" (44 Zeilen) und "Chromecast4lox Steuerung" (37 Zeilen) aus dem
+         LoxBerry-Plugins Musterprojekt, wortgleich Musterprojekt/baustein_listen.txt (Stand 22.10.2026) - Werte als
+         einfache Virtuelle Eingaenge mit Gateway-Namen, Befehle am gemeinsamen Ausgang "LoxBerry MQTT-Gateway". Jede Zelle
+         ist ein Schluessel [BAUSTEIN] <Seite><Nr>_TYP|_NAME|_PARAM|_VERB (fertiges HTML), am Beispielgeraet "Wohnzimmer"
+         des Musterprojekts; die Namen fuer eigene Lautsprecher und ein eigenes Praefix stehen in Schritt 2 und 3. Bis
+         1.3.23 standen hier Platzhalter <G> und die Namen der Importvorlagen. */
 $cc_bs_k = function ($s) { return cc_t('BAUSTEIN.' . $s); };
 $cc_bs_seiten = array(
     array('kopf' => 'UE_WERTE', 'seite' => 'Chromecast4lox', 'bild' => 'einbindung_loxone.png', 'zusatz' => 'TEXT.S_ZU_6',
-        'zeilen' => array(
-            array(1, 'B1', $cc_bs_g . 'playing', null),
-            array(2, 'B2', $cc_bs_g . 'volume', null),
-            array(3, 'B3', $cc_bs_d . 'online', null),
-            array(4, 'B4', $cc_bs_d . 'zaehler', null),
-            array(5, 'B5', null, null),
-            array(6, 'B6', null, null),
-            array(7, 'B7', null, null),
-            array(8, 'B8', $cc_bs_g . 'play', null),
-            array(9, 'B9', $cc_bs_g . 'stop', null),
-            array(10, 'B10', null, sprintf(cc_t('BAUSTEIN.B10_PARAM'), $cc_bs_sw)),
-            array(11, 'B11', $cc_bs_g . 'volume_up', null),
-            array(12, 'B12', null, sprintf(cc_t('BAUSTEIN.B12_PARAM'), $cc_bs_sw)),
-            array(13, 'B13', $cc_bs_g . 'volume_down', null),
-            array(14, 'B14', null, null),
-            array(15, 'B15', null, null),
-            array(16, 'B16', null, sprintf(cc_t('BAUSTEIN.B16_PARAM'), $cc_aender)),
-            array(17, 'B17', null, null),
-            array(18, 'B18', null, null),
-            array(19, 'B19', null, null),
-            array(20, 'B20', $cc_bs_g . 'online', null),
-            array(21, 'B21', $cc_bs_g . 'muted', null),
-            array(22, 'B22', $cc_bs_g . 'tts_active', null),
-            array(23, 'B23', $cc_bs_g . 'group', null),
-            array(24, 'B24', $cc_bs_g . 'favorit', null),
-            array(25, 'B25', null, null),
-            array(26, 'B26', $cc_bs_g . 'duration', null),
-            array(27, 'B27', $cc_bs_g . 'position', null),
-            array(28, 'B28', null, null),
-            array(29, 'B29', $cc_bs_g . 'state', null),
-            array(30, 'B30', $cc_bs_g . 'title', null),
-            array(31, 'B31', $cc_bs_g . 'artist', null),
-            array(32, 'B32', $cc_bs_g . 'album', null),
-            array(33, 'B33', $cc_bs_g . 'app', null),
-            array(34, 'B34', null, null),
-            array(35, 'B35', $cc_bs_g . 'last_error', null),
-            array(36, 'B36', $cc_bs_d . 'geraete', null),
-            array(37, 'B37', $cc_bs_d . 'verluste', null),
-            array(38, 'B38', null, null),
-            array(39, 'B39', null, null),
-            array(40, 'B40', null, null),
-            array(41, 'B41', null, null),
-            array(42, 'B42', null, null),
-            array(43, 'B43', null, null),
-            array(44, 'B44', $cc_bs_g . 'pause', null),
-        ),
+        'kuerzel' => 'B', 'zeilen' => 44,
         'schritte' => array(
             sprintf(cc_t('BAUSTEIN.A_S1'), cc_t('REITER.EINSTELLUNGEN'), cc_t('REITER.TEST'), cc_t('TEXT.T174')),
             sprintf(cc_t('BAUSTEIN.A_S2'), cc_t('REITER.MQTT')),
-            sprintf(cc_t('BAUSTEIN.A_S3'), cc_t('TEXT.T090'), cc_t('TEXT.T091')),
-            cc_t('BAUSTEIN.A_S4'),
-            sprintf(cc_t('BAUSTEIN.A_S5'), implode(', ', $cc_bs_text)),
+            cc_t('BAUSTEIN.A_S3'),
+            sprintf(cc_t('BAUSTEIN.A_S4'), cc_t('LOX.KOPIEREN')),
+            sprintf(cc_t('BAUSTEIN.A_S5'), cc_t('BEFEHL.K_VORLAGE')),
             cc_t('BAUSTEIN.A_S6'),
             cc_t('BAUSTEIN.A_S7'),
             sprintf(cc_t('BAUSTEIN.A_S8'), cc_t('TEXT.T114')),
             cc_t('BAUSTEIN.A_S9'),
         ),
         'hinweise' => array(
-            sprintf(cc_t('BAUSTEIN.H_MUSIK'), cc_e($cc_praefix), cc_e($cc_praefix)),
+            cc_t('BAUSTEIN.H_MUSIK'),
             cc_t('BAUSTEIN.H_ODER'),
             cc_t('BAUSTEIN.H_KONSTANTE'),
             cc_t('BAUSTEIN.H_EN_NEGIERT'),
             cc_t('BAUSTEIN.H_RUHE'),
-            sprintf(cc_t('BAUSTEIN.H_RUECKMELDUNG'), $cc_bs_g . 'last_error'),
+            cc_t('BAUSTEIN.H_RUECKMELDUNG'),
         )),
     array('kopf' => 'UE_STEUERUNG', 'seite' => 'Chromecast4lox Steuerung', 'bild' => 'einbindung_loxone_steuerung.png',
-        'zeilen' => array(
-            array(1, 'S1', null, null),
-            array(2, 'S2', $cc_bs_g . 'volume', null),
-            array(3, 'S3', null, null),
-            array(4, 'S4', $cc_bs_g . 'mute', null),
-            array(5, 'S5', null, null),
-            array(6, 'S6', $cc_bs_g . 'next', null),
-            array(7, 'S7', null, null),
-            array(8, 'S8', $cc_bs_g . 'prev', null),
-            array(9, 'S9', null, null),
-            array(10, 'S10', $cc_bs_g . 'seek', null),
-            array(11, 'S11', null, null),
-            array(12, 'S12', $cc_bs_g . 'play_favorit', null),
-            array(13, 'S13', null, null),
-            array(14, 'S14', $cc_bs_g . 'quit', null),
-            array(15, 'S15', null, null),
-            array(16, 'S16', null, null),
-            array(17, 'S17', null, null),
-            array(18, 'S18', null, null),
-            array(19, 'S19', $cc_bs_a . 'stop', null),
-            array(20, 'S20', null, null),
-            array(21, 'S21', $cc_bs_a . 'pause', null),
-            array(22, 'S22', null, null),
-            array(23, 'S23', $cc_bs_a . 'play', null),
-            array(24, 'S24', null, null),
-            array(25, 'S25', $cc_bs_a . 'volume_up', null),
-            array(26, 'S26', null, null),
-            array(27, 'S27', $cc_bs_a . 'volume_down', null),
-            array(28, 'S28', null, null),
-            array(29, 'S29', $cc_bs_a . 'volume', null),
-            array(30, 'S30', null, null),
-            array(31, 'S31', $cc_bs_a . 'mute', null),
-            array(32, 'S32', null, null),
-            array(33, 'S33', $cc_bs_a . 'tts_stop', null),
-            array(34, 'S34', null, null),
-            array(35, 'S35', null, sprintf(cc_t('BAUSTEIN.S35_PARAM'), $cc_bs_ziel)),
-        ),
+        'kuerzel' => 'S', 'zeilen' => 37,
         'schritte' => array(
             cc_t('BAUSTEIN.B_S1'),
             sprintf(cc_t('BAUSTEIN.B_S2'), cc_t('REITER.EINSTELLUNGEN'), cc_t('FAV.H'), cc_t('RUHE.H')),
-            sprintf(cc_t('BAUSTEIN.B_S3'), $cc_bs_ziel, cc_e(cc_sammelziel())),
+            sprintf(cc_t('BAUSTEIN.B_S3'), cc_t('BEFEHL.K_VORLAGE')),
             cc_t('BAUSTEIN.B_S4'),
             cc_t('BAUSTEIN.B_S5'),
             cc_t('BAUSTEIN.B_S6'),
@@ -1319,7 +1326,8 @@ $cc_bs_seiten = array(
             cc_t('BAUSTEIN.H_ALLE'),
             cc_t('BAUSTEIN.H_RADIO'),
             sprintf(cc_t('BAUSTEIN.H_ANSAGE'), cc_t('REITER.EINSTELLUNGEN'), cc_t('TTS.L_FORTSETZEN')),
-            sprintf(cc_t('BAUSTEIN.H_OHNE_APP'), $cc_bs_g . 'last_error'),
+            cc_t('BAUSTEIN.H_SPERRE'),
+            cc_t('BAUSTEIN.H_OHNE_APP'),
         )),
 );
 ?>
@@ -1334,8 +1342,8 @@ $cc_bs_seiten = array(
 <div class="sm-breit">
 <table class="sm-tbl">
 <tr><th>#</th><th><?php echo cc_t('TEXT.T111'); ?></th><th><?php echo cc_t('TEXT.T112'); ?></th><th><?php echo cc_t('TEXT.T113'); ?></th><th><?php echo cc_t('TEXT.T114'); ?></th></tr>
-<?php foreach ($cc_bs_s['zeilen'] as $cc_bs_r) { ?>
-<tr><td><?= (int) $cc_bs_r[0] ?></td><td><?= $cc_bs_k($cc_bs_r[1] . '_TYP') ?></td><?php if ($cc_bs_r[2] === null) { ?><td><?= $cc_bs_k($cc_bs_r[1] . '_NAME') ?></td><?php } else { ?><td class="sm-mono"><?= $cc_bs_r[2] ?></td><?php } ?><td><?= $cc_bs_r[3] === null ? $cc_bs_k($cc_bs_r[1] . '_PARAM') : $cc_bs_r[3] ?></td><td><?= $cc_bs_k($cc_bs_r[1] . '_VERB') ?></td></tr>
+<?php for ($cc_bs_n = 1; $cc_bs_n <= $cc_bs_s['zeilen']; $cc_bs_n++) { $cc_bs_r = $cc_bs_s['kuerzel'] . $cc_bs_n; ?>
+<tr><td><?= (int) $cc_bs_n ?></td><td><?= $cc_bs_k($cc_bs_r . '_TYP') ?></td><td><?= $cc_bs_k($cc_bs_r . '_NAME') ?></td><td><?= $cc_bs_k($cc_bs_r . '_PARAM') ?></td><td><?= $cc_bs_k($cc_bs_r . '_VERB') ?></td></tr>
 <?php } ?>
 </table>
 </div>
@@ -1355,9 +1363,33 @@ $cc_bs_seiten = array(
 <div class="sm-small"><?php echo cc_t('TEXT.MUSTERPROJEKT'); ?></div>
 <?php } ?>
 
-<div class="sm-small">
-<?php echo cc_t('TEXT.T165'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T166'); ?></span><?php echo cc_t('TEXT.T167'); ?> <span class="sm-mono"><?php echo cc_t('TEXT.T168'); ?></span> <?php echo cc_t('TEXT.T169'); ?>
+<div class="sm-step"><b>6.</b> <?= sprintf(cc_t('LOX.S6'), cc_e(cc_gateway_name($cc_praefix, 'server/zaehler')), (int) cc_cfg($cc_cfg, 'intervall', '10')) ?></div>
+
+<details id="alter_weg"><summary><?php echo cc_t('LOX.ALT_TITEL'); ?></summary>
+<div class="sm-small"><?php echo cc_t('LOX.ALT_TEXT'); ?></div>
+<h3 class="sm-h3"><?php echo cc_t('TEXT.T070'); ?></h3>
+<div class="sm-small" style="margin-bottom:8px;">
+<?php echo cc_t('TEXT.T071'); ?> <b><?php echo cc_t('TEXT.T072'); ?></b>
+(<span class="sm-mono"><?php echo cc_t('TEXT.T073'); ?><?= cc_e($cc_ip) ?>/<?= $cc_udpin ? (int) $cc_udpin : '&lt;Port&gt;' ?></span><?php echo cc_t('TEXT.T074'); ?>
 </div>
+<?php if ($cc_geraete) { ?>
+<div class="sm-small"><?= cc_e(sprintf(cc_t('LOX.ALT_ZAHL'), count($cc_geraete), implode(', ', $cc_geraete), count(cc_vorlagen_befehle()))) ?> <?php echo cc_t('TEXT.S_IMPORT_NEU'); ?> <?= cc_e(sprintf(cc_t('TEXT.S_SCHRITT_VORLAGE'), cc_cfg($cc_cfg, 'lautstaerke_schritt', '5'))) ?></div>
+<?php } ?>
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-loxone">
+<h3 class="sm-h3"><?php echo cc_t('TEXT.T089'); ?></h3>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="mqtt_out"><?php echo cc_t('TEXT.T091'); ?></button>
+</div>
+<h3 class="sm-h3"><?php echo cc_t('TEXT.T092'); ?></h3>
+<div class="sm-knopfreihe">
+<button data-role="none" class="sm-btn sm-b-technik" type="submit" name="download" value="udp_out"><?php echo cc_t('TEXT.T093'); ?></button>
+</div>
+<div class="sm-small"><?php echo cc_t('TEXT.T094'); ?> <?= cc_e(cc_cfg($cc_cfg, 'udp_port', '7090')) ?> <?php echo cc_t('TEXT.T095'); ?></div>
+</form>
+<div class="sm-small"><?php echo cc_t('TEXT.T165'); ?> <span class="sm-mono"><?= cc_e($cc_praefix) ?><?php echo cc_t('TEXT.T166'); ?></span><?php echo cc_t('TEXT.T167'); ?> <span class="sm-mono"><?php echo cc_t('TEXT.T168'); ?></span> <?php echo cc_t('TEXT.T169'); ?></div>
+<div class="sm-small"><?php echo cc_t('MQTT.H_VERWEIS'); ?></div>
+</details>
 
 <?php /* Ansage-3: die Schnittstelle fuer andere Plugins - dieselbe wie Alexa-NG. */
 $cc_s_an = cc_cfg($cc_cfg, 'sprechen_ein', '0') === '1'; ?>
@@ -1469,6 +1501,17 @@ if ($cc_tab === 'tab-test') {
 </div>
 <?php if ($cc_zeilen) { ?>
 <div class="sm-log"><?php foreach ($cc_zeilen as $z) { echo cc_e($z) . "\n"; } ?></div>
+<?php } ?>
+<?php /* Gruppe 6b (1.3.24): die Befehlsbruecke schreibt in ihre eigene Datei befehle_start.log (dieselbe wie
+         befehlsbruecke.sh) - in <plugin>.log schreibt allein der Dienst. */
+$cc_bblog = $cc_p['logdir'] . '/befehle_start.log';
+$cc_bbz = cc_log_tail($cc_bblog, 200); ?>
+<h2><?php echo cc_t('BEFEHL.H_LOG'); ?></h2>
+<div class="sm-small"><?php echo cc_t('TEXT.T183'); ?> <span class="sm-mono"><?= cc_e($cc_bblog) ?></span> &middot; <?php echo cc_t('TEXT.NEUESTE_ZEILE'); ?></div>
+<?php if ($cc_bbz) { ?>
+<div class="sm-log"><?php foreach ($cc_bbz as $z) { echo cc_e($z) . "\n"; } ?></div>
+<?php } else { ?>
+<div class="sm-small"><?php echo cc_t('BEFEHL.LOG_LEER'); ?></div>
 <?php } ?>
 </div>
 

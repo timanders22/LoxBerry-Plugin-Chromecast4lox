@@ -602,8 +602,8 @@ function cc_wert_pruefen($k, $w, $bisher)
         }
         return cc_token_taugt($s) ? array($s, '') : array(null, cc_t('PRUEF.TOKEN'));
     }
-    if (in_array($k, array('enabled', 'mqtt_ein', 'udp', 'tts_fortsetzen', 'gruppen',
-                           'beschleunigung', 'sprechen_ein', 'sperre_ein'), true)) {
+    if (in_array($k, array_merge(array('enabled', 'mqtt_ein', 'udp', 'tts_fortsetzen', 'gruppen',
+                           'beschleunigung', 'sprechen_ein', 'sperre_ein'), cc_befehle_haken()), true)) {
         return ($s === '0' || $s === '1') ? array($s, '')
             : array(null, sprintf(cc_t('PRUEF.SCHALTER'), $name));
     }
@@ -768,7 +768,8 @@ function cc_eingabe_felder($form)
         ),
         'mqtt' => array(
             'text'  => array('mqtt_topic'),
-            'haken' => array('mqtt_ein'),
+            // Gruppe 6b (1.3.24): die drei Haken der Befehle stehen im Formular des Reiters MQTT.
+            'haken' => array('mqtt_ein', 'befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_cmd_ein'),
         ),
         // Ansage-3: 'nur_markierung' wird rot umrandet, reist aber nie mit -
         // das Sprechtoken kommt nicht zurueck ins Formular.
@@ -1118,16 +1119,7 @@ function cc_status_themen()
     return $out;
 }
 
-/** Die Themen des Dienstes selbst, unter <praefix>/server/. */
-function cc_dienst_themen()
-{
-    $out = array();
-    foreach (cc_themen()['dienst'] as $e) {
-        $out[$e['schluessel']] = array(cc_thema_lang('server_' . $e['schluessel']),
-                                       $e['art']);
-    }
-    return $out;
-}
+/* Gruppe 6b (1.3.24): cc_dienst_themen() entfaellt - der Reiter MQTT zeigt EINE Themenliste aus cc_mqtt_namen(). */
 
 /** Alle Befehle, mit Erklaerung. */
 function cc_befehle()
@@ -1635,49 +1627,8 @@ function cc_x($s)
     return htmlspecialchars((string) $s, ENT_QUOTES | ENT_XML1, 'UTF-8');
 }
 
-/** Virtueller HTTP-Eingang - traegt die MQTT-Themennamen. */
-function cc_xml_virtual_in_http($kopf, $cmds)
-{
-    $crlf = "\r\n";
-    $o = '<?xml version="1.0" encoding="utf-8"?>' . $crlf;
-    $o .= '<VirtualInHttp ';
-    $o .= 'HintText="' . cc_x(isset($kopf['hint']) ? $kopf['hint'] : '') . '" ';
-    $o .= 'Title="' . cc_x($kopf['title']) . '" ';
-    $o .= 'Comment="' . cc_x(isset($kopf['comment']) ? $kopf['comment'] : '') . '" ';
-    $o .= 'Address="' . cc_x(isset($kopf['address']) ? $kopf['address'] : '') . '" ';
-    $o .= 'PollingTime="' . cc_x(isset($kopf['polling']) ? $kopf['polling'] : '60') . '"';
-    $o .= '>' . $crlf;
-    // Das <Info>-Element steht als ERSTES Kindelement. templateType
-    // unterscheidet die Bauformen: 1 = UDP-Eingang, 2 = HTTP-Eingang,
-    // 3 = Ausgang.
-    $o .= "\t" . '<Info templateType="2" minVersion="17010727"/>' . $crlf;
-    foreach ($cmds as $c) {
-        $o .= "\t" . '<VirtualInHttpCmd ';
-        $o .= 'Title="' . cc_x($c['title']) . '" ';
-        $o .= 'Comment="' . cc_x(isset($c['comment']) ? $c['comment'] : '') . '" ';
-        $o .= 'Check="' . cc_x(isset($c['check']) ? $c['check'] : ' ') . '" ';
-        $o .= 'Signed="true" ';
-        $o .= 'Analog="' . (isset($c['analog']) && !$c['analog'] ? 'false' : 'true') . '" ';
-        $o .= 'SourceValLow="0" ';
-        $o .= 'DestValLow="0" ';
-        $o .= 'SourceValHigh="100" ';
-        $o .= 'DestValHigh="100" ';
-        $o .= 'DefVal="0" ';
-        // Echte Grenzen statt +-2147483647: Loxone zieht daraus die
-        // Reglergrenzen und die Plausibilitaetspruefung.
-        $o .= 'MinVal="' . cc_x(isset($c['min']) ? $c['min'] : 0) . '" ';
-        $o .= 'MaxVal="' . cc_x(isset($c['max']) ? $c['max'] : 100) . '" ';
-        // Ohne Unit steht am Eingang eine nackte Zahl, und die Einheit findet
-        // nur, wer den Kommentar aufklappt.
-        $o .= 'Unit="' . cc_x(isset($c['unit']) ? $c['unit'] : '') . '" ';
-        // Der Hinweistext traegt die ausfuehrliche Erklaerung (seit 1.3.13,
-        // O16); bis 1.3.12 war er in allen 23 Befehlen leer.
-        $o .= 'HintText="' . cc_x(isset($c['hint']) ? $c['hint'] : '') . '"';
-        $o .= '/>' . $crlf;
-    }
-    $o .= '</VirtualInHttp>' . $crlf;
-    return $o;
-}
+/* Gruppe 6b (1.3.24): cc_xml_virtual_in_http() entfaellt mit der Eingangsvorlage mqtt_in
+ * (Pruefbericht E2) - Gateway-Werte sind einfache Virtuelle Eingaenge (Namenstabelle). */
 
 /** Virtueller Ausgang. */
 function cc_xml_virtual_out($kopf, $cmds)
@@ -1796,36 +1747,13 @@ function cc_vorlagen_befehle()
     return $aus;
 }
 
-/**
- * Wie viele Ein- und Ausgaenge legt die Vorlage je Geraet an? Aus dem Code
- * gerechnet, nicht getippt (seit 1.3.13, O14; bis 1.3.12 stand im Reiter
- * "16 Eingaenge", die Vorlage legte 9 an). Rueckgabe:
- * array(eingaenge je Geraet, ausgaenge je Geraet, ausgelassene Textthemen,
- *       Dienst-Eingaenge).
- */
-function cc_vorlage_zahlen()
-{
-    $ein = 0;
-    $text = array();
-    foreach (cc_themen()['geraet'] as $e) {
-        if ($e['art'] === 'text') {
-            $text[] = $e['schluessel'];
-        } else {
-            $ein++;
-        }
-    }
-    $dienst = 0;
-    foreach (cc_themen()['dienst'] as $e) {
-        if ($e['art'] !== 'text') {
-            $dienst++;
-        }
-    }
-    return array($ein, count(cc_vorlagen_befehle()), $text, $dienst);
-}
+/* Gruppe 6b (1.3.24): cc_vorlage_zahlen() entfaellt - der Reiter Einbindung nennt die Werte in der Namenstabelle
+ * (cc_mqtt_namen()) und die Befehle aus der Befehlsbruecke. */
 
 /**
  * Vorlage erzeugen.
- * $art: mqtt_in | mqtt_out | udp_out
+ * $art: bruecke | mqtt_out | udp_out (seit 1.3.24; die Eingangsvorlage mqtt_in mit http://localhost entfaellt -
+ * Pruefbericht E2, R2_078: je Wert ein einfacher Virtueller Eingang nach der Namenstabelle)
  * Rueckgabe: array(dateiname, inhalt)
  */
 function cc_vorlage($art, $cfg, $geraete)
@@ -1834,49 +1762,47 @@ function cc_vorlage($art, $cfg, $geraete)
     $ip = cc_localip();
     $fuss = 'Erzeugt vom LoxBerry-Plugin Chromecast 4 Lox NG (' . date('d.m.Y') . ')';
 
-    if ($art === 'mqtt_in') {
-        $cmds = array();
-        // Zuerst der Dienst selbst - Lebenszeichen und Zaehler. Textthemen
-        // bleiben auch hier draussen.
-        foreach (cc_themen()['dienst'] as $e) {
-            if ($e['art'] === 'text') {
-                continue;
-            }
-            $cmds[] = array(
-                'title'   => $praefix . '_server_' . $e['schluessel'],
-                'comment' => cc_zeichen_kuerzen(cc_thema_kurz('server_' . $e['schluessel']), 40),
-                'check'   => ' ',
-                'analog'  => $e['art'] === 'analog',
-                'min'     => $e['min'], 'max' => $e['max'],
-                'unit'    => cc_vorlage_einheit($e),
-                'hint'    => cc_hinweis_text('server_' . $e['schluessel']),
-            );
-        }
+    if ($art === 'bruecke') {
+        /* Gruppe 6b (1.3.24, Entwurf cc 3.7): eigener Virtueller Ausgang "Chromecast 4 Lox NG MQTT-Befehle" an den
+         * UDP-Eingang des MQTT-Gateways; je Geraet und "alle" die 14 Nicht-Text-Befehle der Befehlsbruecke
+         * (publish <praefix>/befehl/<Befehlsname>/<befehl>, nie retain), dazu die Sperre (V3: EIN sperre 1, AUS
+         * sperre 0). Titel "Chromecast: <Geraet> <Kurz>" wie im Musterprojekt - kein Titel heisst wie ein
+         * Gateway-Eingang (Doppelpunkt, Leerzeichen; Pruefbericht E1). lauter/leiser senden 1: die Schrittweite
+         * stellt das Plugin ein, die Vorlage muss danach nicht neu erzeugt werden (E6). Kein tts: ein fester
+         * Ansagetext gehoert von Hand in den Ausgang (Reiter Einbindung, Schritt 3). */
+        $port = cc_mqtt_udpinport();
+        $b = $praefix . '/befehl/';
+        $ziele = array();
         foreach ($geraete as $g) {
-            $t = cc_thema($g);
-            foreach (cc_themen()['geraet'] as $e) {
-                // Textthemen bekommen KEINEN virtuellen Eingang: das
-                // nachgebaute Format ist nur fuer Zahlenwerte belegt, und ein
-                // Textthema mit Analog=true zeigt in Loxone dauerhaft 0. Das
-                // MQTT-Gateway legt sie beim ersten Empfang selbst an.
-                if ($e['art'] === 'text') {
-                    continue;
-                }
+            $ziele[] = array($g, cc_befehl_kennung(cc_thema($g)));
+        }
+        $ziele[] = array(cc_sammelziel(), cc_sammelziel());
+        $cmds = array();
+        foreach ($ziele as $z) {
+            foreach (cc_vorlagen_befehle() as $e) {
+                $bf = $e['schluessel'];
+                $analog = cc_befehl_analog($bf);
                 $cmds[] = array(
-                    'title'   => $praefix . '_' . $t . '_' . $e['schluessel'],
-                    'comment' => cc_kommentar($g, cc_thema_kurz($e['schluessel'])),
-                    'check'   => ' ',
-                    'analog'  => $e['art'] === 'analog',
+                    'title'   => 'Chromecast: ' . $z[0] . ' ' . cc_befehl_titel_kurz($bf),
+                    'comment' => cc_kommentar($z[0], cc_thema_kurz('cmd_' . $bf)),
+                    'on'      => 'publish ' . $b . $z[1] . '/' . $bf . ' ' . ($analog ? '<v.0>' : '1'),
+                    'analog'  => $analog,
                     'min'     => $e['min'], 'max' => $e['max'],
-                    'unit'    => cc_vorlage_einheit($e),
-                    'hint'    => cc_hinweis_text($e['schluessel']),
+                    'hint'    => cc_hinweis_text('cmd_' . $bf),
                 );
             }
         }
-        return array('VI_Chromecast4Lox_MQTT.xml', cc_xml_virtual_in_http(array(
-            'title'   => 'Chromecast 4 Lox',
-            'address' => 'http://localhost',
-            'polling' => '604800',
+        $cmds[] = array(
+            'title'   => 'Chromecast: Ansagen sperren',
+            'comment' => cc_zeichen_kuerzen(cc_t('BEFEHL.C_SPERRE'), 40),
+            'on'      => 'publish ' . $b . 'sperre 1',
+            'off'     => 'publish ' . $b . 'sperre 0',
+            'analog'  => false,
+            'hint'    => cc_t('BEFEHL.H_SPERRE_VORLAGE'),
+        );
+        return array('VQ_Chromecast4Lox_Befehle.xml', cc_xml_virtual_out(array(
+            'title'   => 'Chromecast 4 Lox NG MQTT-Befehle',
+            'address' => '/dev/udp/' . $ip . '/' . ($port > 0 ? $port : 11884),
             'comment' => $fuss,
         ), $cmds));
     }
@@ -1888,13 +1814,17 @@ function cc_vorlage($art, $cfg, $geraete)
         // eingetragenen Geraete. Fuer Ansagen ist das der bequeme Weg; fuer
         // Musik bleibt die Google-Lautsprechergruppe richtig, denn nur sie
         // spielt synchron.
+        // Gruppe 6b (1.3.24): der alte Weg <praefix>/<Geraet>/cmd/<befehl> fuer bestehende Anlagen (Haken
+        // befehle_cmd_ein). Titel "Chromecast alt: <Geraet> <Kurz>" statt "<praefix>_<thema>_<befehl>" - bis 1.3.23
+        // hiess der Ausgang volume genau wie der Gateway-Eingang (Pruefbericht E1, Schleifengefahr unter V1).
+        // Die Befehle sind unveraendert.
         foreach (array_merge(array(cc_sammelziel()), $geraete) as $g) {
             $t = cc_thema($g);
             foreach (cc_vorlagen_befehle() as $e) {
                 $b = $e['schluessel'];
                 $analog = cc_befehl_analog($b);
                 $cmds[] = array(
-                    'title'   => $praefix . '_' . $t . '_' . $b,
+                    'title'   => 'Chromecast alt: ' . $g . ' ' . cc_befehl_titel_kurz($b),
                     'comment' => cc_kommentar($g, cc_thema_kurz('cmd_' . $b)),
                     'on'      => $praefix . '/' . $t . '/cmd/' . $b . ' '
                                  . ($analog ? '<v.0>' : cc_vorlage_festwert($b, $cfg)),
@@ -1939,19 +1869,6 @@ function cc_vorlage($art, $cfg, $geraete)
     }
 
     return array('', '');
-}
-
-/**
- * Einheit eines Vorlageneingangs (seit 1.3.13, O16): mit Einheit
- * "<v.1> %", ohne Einheit bei einem Zahlenwert "<v>" - bis 1.3.12 standen
- * favorit, server_zaehler, server_geraete und server_verluste ohne Unit da.
- */
-function cc_vorlage_einheit($e)
-{
-    if ($e['einheit'] !== '') {
-        return '<v.1> ' . $e['einheit'];
-    }
-    return $e['art'] === 'analog' ? '<v>' : '';
 }
 
 /**
@@ -2118,6 +2035,12 @@ function cc_sicherung_lesen($roh, &$namen = null)
             $neu[$sk] = (string) cc_cfg($bisher, $sk, isset($neu[$sk]) ? $neu[$sk] : '');
         }
     }
+    /* Gruppe 6b (1.3.24, Entwurf cc 3.4, Bauart WOLF wi_lib.php): eine Sicherung bis 1.3.23 stammt aus einer Fassung
+     * mit dem alten Befehlsweg - fehlt befehle_cmd_ein, gilt 1, damit ihr Loxone-Projekt weiter schaltet. Fehlen
+     * befehle_mqtt_ein und befehle_mqtt_steuern, bleibt (oben) der geltende Wert. */
+    if (!array_key_exists('befehle_cmd_ein', $daten)) {
+        $neu['befehle_cmd_ein'] = '1';
+    }
     // Das Standardgeraet muss zur Geraeteliste DER SICHERUNG passen.
     if (!in_array('sprechen_geraet', $namen, true) && (string) $neu['sprechen_geraet'] !== '') {
         list($cc_sh) = cc_sprechen_ziele($neu['sprechen_geraet'], cc_geraete($neu));
@@ -2150,10 +2073,11 @@ function cc_sprechen_schluessel()
 }
 
 /** Schluessel, die aeltere Sicherungen nicht kennen: die der Sprachausgabe (bis
- *  1.3.15) und sperre_ein (B1, bis 1.3.21). Fehlen sie, gilt der GELTENDE Wert. */
+ *  1.3.15), sperre_ein (B1, bis 1.3.21) und die drei Haken der Befehle (bis 1.3.23).
+ *  Fehlen sie, gilt der GELTENDE Wert - fuer befehle_cmd_ein 1 (cc_sicherung_lesen). */
 function cc_sicherung_spaet()
 {
-    return array_merge(cc_sprechen_schluessel(), array('sperre_ein'));
+    return array_merge(cc_sprechen_schluessel(), array('sperre_ein'), cc_befehle_haken());
 }
 
 /* ==================================================================
@@ -2544,48 +2468,17 @@ function cc_sprechen_ausfuehren(array $par, $quelle, $wer)
     }
 
     // ---- Auftrag an den Dienst; hoechstens CC_SPRECHEN_FRIST warten ----
-    $id = bin2hex(random_bytes(10));
-    $auftrag = $ordner . '/' . $id . '.auftrag';
-    $antwort = $ordner . '/' . $id . '.antwort';
-    $js = json_encode(array('id' => $id, 'zeit' => time(), 'geraete' => $rest, 'text' => $text,
-                            'laut' => $laut, 'quelle' => (string) $quelle,
-                            'wer' => cc_zeichen_kuerzen((string) $wer, 46)),
-                      JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false || !cc_datei_schreiben($auftrag, $js, 0600)) {
-        $frei();
-        $f['GRUND'] = 'SCHREIBFEHLER';
-        return $ende(503, $f);
-    }
-    $a = null;
-    $warten = function ($sekunden) use ($antwort) {
-        $bis = microtime(true) + $sekunden;
-        while (microtime(true) < $bis) {
-            usleep(50000);
-            clearstatcache(true, $antwort);
-            if (is_file($antwort)) {
-                $d = json_decode((string) @file_get_contents($antwort), true);
-                @unlink($antwort);
-                return is_array($d) ? $d : array();
-            }
-        }
-        return null;
-    };
-    $a = $warten(CC_SPRECHEN_FRIST);
+    // Gruppe 6b (1.3.24): ueber cc_auftrag_senden() - dieselbe Stelle wie Lautstaerke und Befehl.
+    list($a, $agr, $unklar) = cc_auftrag_senden(array('zeit' => time(), 'geraete' => $rest, 'text' => $text,
+        'laut' => $laut, 'quelle' => (string) $quelle, 'wer' => cc_zeichen_kuerzen((string) $wer, 46)));
     if ($a === null) {
-        if (@unlink($auftrag)) {
-            // Zurueckgezogen: der Dienst hat ihn nie gesehen, gesprochen wird nichts.
-            $frei();
-            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
-            return $ende(503, $f);
-        }
-        // Schon abgeholt - die Antwort kommt gleich.
-        $a = $warten(1.5);
-        if ($a === null) {
-            $frei();
-            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+        // Zurueckgezogen oder nicht schreibbar: gesprochen wird nichts (UNKLAR: schon abgeholt, Antwort fehlt).
+        $frei();
+        $f['GRUND'] = $agr;
+        if ($unklar) {
             $f['UNKLAR'] = 1;
-            return $ende(503, $f);
         }
+        return $ende(503, $f);
     }
     $eingereiht = (isset($a['eingereiht']) && is_array($a['eingereiht'])) ? $a['eingereiht'] : array();
     $offline = isset($a['nicht_verbunden']) ? (int) $a['nicht_verbunden'] : 0;
@@ -3001,46 +2894,17 @@ function cc_lautstaerke_ausfuehren(array $par, $quelle, $wer)
         $f['GRUND'] = 'STUNDENGRENZE';
         return array(429, $f);
     }
-    $id = bin2hex(random_bytes(10));
-    $auftrag = $ordner . '/' . $id . '.auftrag';
-    $antwort = $ordner . '/' . $id . '.antwort';
-    $js = json_encode(array('id' => $id, 'art' => 'lautstaerke', 'zeit' => time(), 'geraete' => $ziele,
-                            'wert' => $wert, 'quelle' => (string) $quelle,
-                            'wer' => cc_zeichen_kuerzen((string) $wer, 46)),
-                      JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false || !cc_datei_schreiben($auftrag, $js, 0600)) {
-        $frei();
-        $f['GRUND'] = 'SCHREIBFEHLER';
-        return array(503, $f);
-    }
-    $warten = function ($sekunden) use ($antwort) {
-        $bis = microtime(true) + $sekunden;
-        while (microtime(true) < $bis) {
-            usleep(50000);
-            clearstatcache(true, $antwort);
-            if (is_file($antwort)) {
-                $d = json_decode((string) @file_get_contents($antwort), true);
-                @unlink($antwort);
-                return is_array($d) ? $d : array();
-            }
-        }
-        return null;
-    };
-    $a = $warten(CC_SPRECHEN_FRIST);
+    // Gruppe 6b (1.3.24): ueber cc_auftrag_senden() - dieselbe Stelle wie Ansage und Befehl.
+    list($a, $agr, $unklar) = cc_auftrag_senden(array('art' => 'lautstaerke', 'zeit' => time(), 'geraete' => $ziele,
+        'wert' => $wert, 'quelle' => (string) $quelle, 'wer' => cc_zeichen_kuerzen((string) $wer, 46)));
     if ($a === null) {
-        if (@unlink($auftrag)) {
-            // Zurueckgezogen: der Dienst hat ihn nie gesehen, gesetzt wird nichts.
-            $frei();
-            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
-            return array(503, $f);
-        }
-        $a = $warten(1.5);
-        if ($a === null) {
-            $frei();
-            $f['GRUND'] = 'DIENST_ANTWORTET_NICHT';
+        // Zurueckgezogen oder nicht schreibbar: gesetzt wird nichts.
+        $frei();
+        $f['GRUND'] = $agr;
+        if ($unklar) {
             $f['UNKLAR'] = 1;
-            return array(503, $f);
         }
+        return array(503, $f);
     }
     $eingereiht = (isset($a['eingereiht']) && is_array($a['eingereiht'])) ? $a['eingereiht'] : array();
     $gleich = (isset($a['unveraendert']) && is_array($a['unveraendert'])) ? count($a['unveraendert']) : 0;
@@ -3122,4 +2986,630 @@ function cc_geraete_antwort()
         ));
     }
     return array(200, $zeilen);
+}
+
+/* ==================================================================
+ * Gruppe 6b / MQTT (1.3.24): Namenstabelle, Befehlsbruecke, alter Befehlsweg
+ *
+ * Grundlage: Musterprojekt/entwurf_gruppe6_cc.txt (E1-E20), ENTSCHEIDUNGEN_GRUPPE6_CHROMECAST.md,
+ * Bauvorschrift wz_bild/GRUPPE6B_BAUVORSCHRIFT.md. Werte gehen wie bisher ueber paho direkt an den Broker;
+ * in Loxone ist je Wert ein einfacher Virtueller Eingang anzulegen, Name genau so, wie das MQTT-Gateway ihn
+ * vergibt (cc_gateway_name()). Die Namen kommen aus EINER Funktion (cc_mqtt_namen()) fuer Reiter MQTT,
+ * Namenstabelle, V2-Hakenliste und Selbstpruefung. Befehle laufen ueber die gemeinsame Befehlsbruecke
+ * (bin/befehlsbruecke.php, Stammfassung; Zuordnung bin/befehle_zuordnung.php) und von dort ueber den
+ * Auftragseingang an den Python-Dienst (cc_befehl_bruecke()). Der alte Weg <praefix>/<Geraet>/cmd/... bleibt
+ * hinter dem Haken befehle_cmd_ein (Update an, Neuinstallation aus).
+ * ================================================================== */
+
+/** Die drei Haken der Befehle (Entwurf cc 3.4) - EINE Liste fuer Formular, Pruefung und Sicherung. */
+function cc_befehle_haken()
+{
+    return array('befehle_mqtt_ein', 'befehle_mqtt_steuern', 'befehle_cmd_ein');
+}
+
+/**
+ * Der Befehlsname eines Geraets fuer die Befehlsbruecke (Entwurf cc E2): das MQTT-Thema (cc_thema) klein, "-" wird
+ * "_", hoechstens 40 Zeichen - die Bruecke erlaubt je Ebene nur [a-z0-9_]{1,40}. Muss genau dasselbe liefern wie
+ * befehl_kennung() im Dienst; der Reiter Test haelt beide gegeneinander (--themen).
+ */
+function cc_befehl_kennung($thema)
+{
+    $k = substr((string) preg_replace('/[^a-z0-9_]/', '_', str_replace('-', '_', strtolower((string) $thema))), 0, 40);
+    return $k !== '' ? $k : 'geraet';
+}
+
+/** Der Name, unter dem das MQTT-Gateway ein Thema als Virtuellen Eingang anlegt: / % und Leerzeichen werden _ (Regeln/07). */
+function cc_gateway_name($praefix, $thema)
+{
+    return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $thema);
+}
+
+/** Bereich eines Themas fuer die Namenstabelle, mit Fehlwert (E9): "-1 … 100 %", "0 … 1", Text "". */
+function cc_mqtt_bereich($e)
+{
+    if ($e['art'] === 'text') {
+        return '';
+    }
+    $b = $e['min'] . ' … ' . $e['max'];
+    return isset($e['einheit']) && $e['einheit'] !== '' ? $b . ' ' . $e['einheit'] : $b;
+}
+
+/**
+ * Die Namenstabelle (Entwurf cc 2.4, Bauart ax_mqtt_namen): je Zeile thema (ohne Praefix), name (Gateway), voll
+ * (Thema mit Praefix), bedeutung (Text ohne HTML), bereich, art (zahl|text), retained, haken (V2-Haken = im
+ * Musterprojekt), noncached, geraet (Anzeigename oder ''). Dienst: online (N), zaehler, geraete, verluste mit
+ * Haken; ts, fassung und status/befehle (von der Bruecke) ohne. Je Geraet 16 Themen, 15 mit Haken (type ohne).
+ * Befehls- und Quittungsthemen sind keine Eingaenge.
+ */
+function cc_mqtt_namen($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = cc_config_read();
+    }
+    $p = (string) cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
+    $aus = array();
+    $zeile = function ($thema, $e, $lang, $haken, $nc, $geraet) use (&$aus, $p) {
+        $aus[] = array('thema' => $thema, 'name' => cc_gateway_name($p, $thema), 'voll' => $p . '/' . $thema,
+                       'bedeutung' => cc_hinweis_text($lang), 'bereich' => cc_mqtt_bereich($e),
+                       'art' => $e['art'] === 'text' ? 'text' : 'zahl', 'retained' => !empty($e['retain']),
+                       'haken' => $haken, 'noncached' => $nc, 'geraet' => $geraet);
+    };
+    $mit = array('online', 'zaehler', 'geraete', 'verluste');
+    foreach (cc_themen()['dienst'] as $e) {
+        $k = $e['schluessel'];
+        $zeile('server/' . $k, $e, 'server_' . $k, in_array($k, $mit, true), $k === 'online', '');
+    }
+    $zeile('status/befehle', array('art' => 'analog', 'min' => -1, 'max' => 1, 'einheit' => '', 'retain' => false),
+           'status_befehle', false, false, '');
+    foreach (cc_geraete($cfg) as $g) {
+        $t = cc_thema($g);
+        foreach (cc_themen()['geraet'] as $e) {
+            $zeile($t . '/' . $e['schluessel'], $e, $e['schluessel'], $e['schluessel'] !== 'type', false, $g);
+        }
+    }
+    return $aus;
+}
+
+/** Hakenliste fuer Gateway V2 (Entwurf cc 2.4, E10): nur die Zeilen mit Haken; Noncached nur server/online. */
+function cc_mqtt_hakenliste($cfg = null)
+{
+    return array_values(array_filter(cc_mqtt_namen($cfg), function ($z) { return $z['haken']; }));
+}
+
+/** Die Abo-Zeile fuer Gateway V1 (E12): <praefix>/#. */
+function cc_abo_zeile($praefix)
+{
+    return trim((string) $praefix, '/') . '/#';
+}
+
+/**
+ * Die Abo-Datei des Gateways V1 (config/plugins/<ordner>/mqtt_subscriptions.cfg, E12) nachfuehren - beim Speichern
+ * im Reiter MQTT nach einem Praefixwechsel. Nur in einer Anlage (nicht im Archiv). Rueckgabe array(Pfad, steht drin).
+ */
+function cc_abo_datei($praefix, $schreiben = false)
+{
+    $p = cc_paths();
+    $pfad = dirname($p['config']) . '/mqtt_subscriptions.cfg';
+    $soll = cc_abo_zeile($praefix);
+    if ($p['home'] === '') {
+        return array($pfad, false);
+    }
+    $roh = is_readable($pfad) ? (string) @file_get_contents($pfad) : '';
+    $da = in_array($soll, array_map('trim', cc_zeilen($roh)), true);
+    if ($schreiben && !$da && is_dir(dirname($pfad))) {
+        $da = cc_datei_schreiben($pfad, $soll . "\n", 0644);
+    }
+    return array($pfad, $da);
+}
+
+/**
+ * Warnungen zur Geraeteliste (Entwurf cc 2.7, E14) - nicht abweisen, bestehende Listen bleiben speicherbar: ein
+ * Thema "server" sendet mitten in die Dienstthemen, eines namens "befehl" in den Abo-Bereich der Bruecke; zwei
+ * Geraete mit demselben Befehlsnamen waeren ueber MQTT nicht zu unterscheiden. Rueckgabe Liste fertiger Saetze
+ * (Namen maskiert).
+ */
+function cc_geraete_warnungen(array $geraete)
+{
+    $aus = array();
+    $kennung = array();
+    foreach ($geraete as $g) {
+        $t = strtolower(cc_thema($g));
+        if ($t === 'server' || $t === 'befehl') {
+            $aus[] = sprintf(cc_t('BEFEHL.W_NAME_RESERVIERT'), cc_e($g), cc_e($t));
+        }
+        $kennung[cc_befehl_kennung(cc_thema($g))][] = $g;
+    }
+    foreach ($kennung as $k => $namen) {
+        if (count($namen) > 1) {
+            $aus[] = sprintf(cc_t('BEFEHL.W_NAME_DOPPELT'), cc_e(implode(', ', $namen)), cc_e($k));
+        }
+    }
+    return $aus;
+}
+
+/** Protokoll der Befehlsbruecke: an log/plugins/<ordner>/befehle_start.log (dieselbe Datei wie befehlsbruecke.sh). */
+function cc_bb_protokoll($stufe, $text)
+{
+    $d = cc_paths()['logdir'];
+    $zeile = date('Y-m-d H:i:s') . ' ' . str_pad((string) $stufe, 7) . ' ' . (string) $text . "\n";
+    if ((is_dir($d) || @mkdir($d, 0775, true))
+        && @file_put_contents($d . '/befehle_start.log', $zeile, FILE_APPEND | LOCK_EX) !== false) {
+        return;
+    }
+    if (defined('STDERR')) {
+        fwrite(STDERR, $zeile);
+    }
+}
+
+/**
+ * Einstellungen fuer die Zuordnung (Entwurf cc 3.3): Praefix = mqtt_topic; annehmen = "Befehle ueber MQTT annehmen"
+ * UND Plugin nicht angehalten (enabled != 0) - die Bruecke endet sonst mit "abgelehnt: ausgeschaltet"; eingreifend =
+ * zweiter Haken "Lautsprecher ueber MQTT steuern". Liest nur, schreibt nie (die Bruecke laeuft auch waehrend der
+ * Upgrade-Luecke als Waechterlauf).
+ */
+function cc_befehle_einstellungen()
+{
+    $c = cc_config_read();
+    return array('praefix' => (string) cc_cfg($c, 'mqtt_topic', 'chromecast4lox'),
+                 'annehmen' => (string) cc_cfg($c, 'befehle_mqtt_ein', '0') === '1'
+                               && (string) cc_cfg($c, 'enabled', '1') !== '0',
+                 'eingreifend' => (string) cc_cfg($c, 'befehle_mqtt_steuern', '0') === '1',
+                 'mqtt_ein' => (string) cc_cfg($c, 'mqtt_ein', '1') === '1');
+}
+
+/**
+ * Einen Auftrag an den Dienst geben und auf seine Antwort warten (data/plugins/<ordner>/sprechen/, siehe SprechEingang
+ * im Dienst) - EINE Stelle fuer Ansage, Lautstaerke und Befehl (Entwurf cc 3.3; bis 1.3.23 stand das Schreiben,
+ * Warten und Zurueckziehen zweimal wortgleich da). Hoechstens CC_SPRECHEN_FRIST s; kommt keine Antwort, wird der
+ * Auftrag zurueckgezogen - dann fuehrt der Dienst nichts aus. War er schon abgeholt, noch 1,5 s.
+ * $felder ohne id (die id steht vorn). Rueckgabe array(Antwort|null, Grund, unklar).
+ */
+function cc_auftrag_senden(array $felder)
+{
+    $ordner = cc_sprechen_ordner();
+    $id = bin2hex(random_bytes(10));
+    $auftrag = $ordner . '/' . $id . '.auftrag';
+    $antwort = $ordner . '/' . $id . '.antwort';
+    $js = json_encode(array('id' => $id) + $felder, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    if ($js === false || !cc_datei_schreiben($auftrag, $js, 0600)) {
+        return array(null, 'SCHREIBFEHLER', false);
+    }
+    $warten = function ($sekunden) use ($antwort) {
+        $bis = microtime(true) + $sekunden;
+        while (microtime(true) < $bis) {
+            usleep(50000);
+            clearstatcache(true, $antwort);
+            if (is_file($antwort)) {
+                $d = json_decode((string) @file_get_contents($antwort), true);
+                @unlink($antwort);
+                return is_array($d) ? $d : array();
+            }
+        }
+        return null;
+    };
+    $a = $warten(CC_SPRECHEN_FRIST);
+    if ($a === null) {
+        if (@unlink($auftrag)) {
+            // Zurueckgezogen: der Dienst hat ihn nie gesehen, ausgefuehrt wird nichts.
+            return array(null, 'DIENST_ANTWORTET_NICHT', false);
+        }
+        // Schon abgeholt - die Antwort kommt gleich.
+        $a = $warten(1.5);
+        if ($a === null) {
+            return array(null, 'DIENST_ANTWORTET_NICHT', true);
+        }
+    }
+    return array($a, '', false);
+}
+
+/**
+ * Ein Befehl der Befehlsbruecke (tun() in bin/befehle_zuordnung.php) an den laufenden Dienst (Entwurf cc 3.3, E1):
+ * Auftrag der Art "befehl" ueber denselben Eingang wie Ansage und Lautstaerke; der Dienst fuehrt ihn in
+ * befehl_ausfuehren() aus - Sperre, X-7, Obergrenze und Ruhezeit pruefen dort, nicht hier. Vorher nur:
+ * AKTUALISIERUNG, KONFIGURATION, DIENST_LAEUFT_NICHT (Herzschlag), DIENST_OHNE_BEFEHLE (ein Dienst bis 1.3.23 in der
+ * Update-Luecke kennt die Art nicht). Kein sprechen_ein, keine Stundengrenze (E8): beides gehoert zum Endpunkt fuer
+ * andere Plugins. $geraet: Befehlsname, "alle" oder "server" (sperre). Rueckgabe array(bool ok, string grund):
+ * ok heisst eingereiht (bei mindestens einem Lautsprecher), uebersprungen (GESPERRT, TEXT_NULL) oder Sperre gesetzt.
+ */
+function cc_befehl_bruecke($geraet, $befehl, $wert)
+{
+    $cfg = cc_config_read();
+    if (cc_upgrade_laeuft()) {
+        return array(false, 'AKTUALISIERUNG');
+    }
+    if (in_array(cc_config_zustand(), array('unlesbar', 'leer', 'gekuerzt'), true)) {
+        return array(false, 'KONFIGURATION');
+    }
+    list($herz, , $zu) = cc_dienst_herz($cfg);
+    if (!$herz) {
+        return array(false, 'DIENST_LAEUFT_NICHT');
+    }
+    if (empty($zu['befehl_eingang'])) {
+        return array(false, 'DIENST_OHNE_BEFEHLE');
+    }
+    $ordner = cc_sprechen_ordner();
+    if (!is_dir($ordner) && !@mkdir($ordner, 0700, true) && !is_dir($ordner)) {
+        return array(false, 'ORDNER');
+    }
+    list($a, $grund) = cc_auftrag_senden(array('art' => 'befehl', 'zeit' => time(), 'geraet' => (string) $geraet,
+        'befehl' => (string) $befehl, 'wert' => (string) $wert, 'quelle' => 'mqtt', 'wer' => 'befehlsbruecke'));
+    if ($a === null) {
+        return array(false, $grund);
+    }
+    if (!isset($a['eingereiht']) || !is_array($a['eingereiht']) || !isset($a['grund']) || !is_string($a['grund'])) {
+        return array(false, 'ANTWORT_KAPUTT');
+    }
+    if ($a['grund'] !== '') {
+        return array(false, $a['grund']);
+    }
+    if ((isset($a['uebersprungen']) && is_string($a['uebersprungen']) && $a['uebersprungen'] !== '')
+        || !empty($a['sperre']) || $a['eingereiht']) {
+        return array(true, '');
+    }
+    return array(false, 'GERAET_UNBEKANNT');
+}
+
+/** Wo liegt bin/befehlsbruecke.php? Installiert unter bin/plugins/<ordner>, im Archiv neben webfrontend. */
+function cc_bruecke_datei()
+{
+    foreach (array(cc_paths()['bindir'] . '/befehlsbruecke.php', dirname(dirname(__DIR__)) . '/bin/befehlsbruecke.php') as $k) {
+        if (is_file($k)) {
+            return $k;
+        }
+    }
+    return '';
+}
+
+/** Die Bruecke als Bibliothek laden (BB_NUR_LADEN: kein Hauptteil). */
+function cc_bruecke_laden()
+{
+    if (function_exists('bb_waechter')) {
+        return true;
+    }
+    $f = cc_bruecke_datei();
+    if ($f === '') {
+        return false;
+    }
+    if (!defined('BB_NUR_LADEN')) {
+        define('BB_NUR_LADEN', true);
+    }
+    require_once $f;
+    return function_exists('bb_waechter');
+}
+
+/**
+ * Direktstart bzw. -stopp der Bruecke beim Speichern im Reiter MQTT und bei "Dienst neu starten/anhalten" (Entwurf cc
+ * 3.5, Bauart ax_bruecke_schalten): befehlsbruecke.sh start startet nur nach --soll, nie als root, nie waehrend eines
+ * Updates, nie doppelt; der Waechter in cron.05min startet nach einem Start hoechstens alle 600 s neu. $neustart:
+ * Praefix gewechselt (stop, dann start). Rueckgabe array(''|'ein'|'aus'|'start_fehl'|'stop_fehl', Ausgabe).
+ */
+function cc_bruecke_schalten($neustart = false)
+{
+    if (DIRECTORY_SEPARATOR === '\\' || cc_paths()['home'] === '' || !cc_bruecke_laden()) {
+        return array('', '');
+    }
+    $p = bb_pfade();
+    if (!$p) {
+        return array('', '');
+    }
+    $e = cc_befehle_einstellungen();
+    $laeuft = (bool) bb_dienste();
+    if ($e['annehmen']) {
+        if ($laeuft && !$neustart) {
+            return array('', '');
+        }
+        if ($laeuft) {
+            bb_sh($p, 'stop');
+        }
+        list($rc, $aus) = bb_sh($p, 'start');
+        return array(($rc === 0 && bb_dienste()) ? 'ein' : 'start_fehl', $aus);
+    }
+    if (!$laeuft) {
+        return array('', '');
+    }
+    list($rc, $aus) = bb_sh($p, 'stop');
+    return array(($rc === 0 && !bb_dienste()) ? 'aus' : 'stop_fehl', $aus);
+}
+
+/** Ein Satz zum Ergebnis von cc_bruecke_schalten() fuer die Meldung nach dem Speichern ('' = nichts zu sagen). */
+function cc_bruecke_satz(array $r)
+{
+    $a = cc_e($r[1] !== '' ? $r[1] : '-');
+    if ($r[0] === 'ein') {
+        return sprintf(cc_t('BEFEHL.H_GESTARTET'), $a);
+    }
+    if ($r[0] === 'aus') {
+        return sprintf(cc_t('BEFEHL.H_ANGEHALTEN'), $a);
+    }
+    if ($r[0] === 'start_fehl') {
+        return sprintf(cc_t('BEFEHL.H_START_FEHL'), $a);
+    }
+    if ($r[0] === 'stop_fehl') {
+        return sprintf(cc_t('BEFEHL.H_STOP_FEHL'), $a);
+    }
+    return '';
+}
+
+/** Die Befehlsliste der Bruecke (bb_liste(): EINE Quelle fuer Reiter und Vorlage). Rueckgabe Feld oder null. */
+function cc_bb_liste()
+{
+    if (!cc_bruecke_laden()) {
+        return null;
+    }
+    list($z) = bb_zuordnung_laden();
+    if ($z === null) {
+        return null;
+    }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) {
+        return null;
+    }
+    return bb_liste($z, bb_einstellungen($z));
+}
+
+/**
+ * Die Befehle fuer Reiter und Vorlage ausgerollt (Entwurf cc 2.5 S3): je Geraet und "alle" jede Zeile der Bruecke
+ * mit dem Befehlsnamen statt {geraet}, dazu die Sperre. Rueckgabe Liste array(geraet, befehl, titel, thema, wert,
+ * eingreifend, sperre_s, quittung) oder null.
+ */
+function cc_befehle_ausgerollt(array $geraete)
+{
+    $l = cc_bb_liste();
+    if ($l === null) {
+        return null;
+    }
+    $aus = array();
+    $ziele = array();
+    foreach ($geraete as $g) {
+        $ziele[] = array($g, cc_befehl_kennung(cc_thema($g)));
+    }
+    $ziele[] = array(cc_t('BEFEHL.ALLE'), cc_sammelziel());
+    foreach ($l['befehle'] as $b) {
+        $wert = $b['art'];
+        if ($b['art'] === 'ganz') {
+            $wert = $b['min'] . ' … ' . $b['max'];
+        } elseif ($b['art'] === 'schalter') {
+            $wert = '0 / 1';
+        } elseif ($b['art'] === 'puls') {
+            $wert = '1';
+        } elseif ($b['art'] === 'text') {
+            $wert = cc_t('BEFEHL.WERT_TEXT');
+        }
+        $teile = $b['muster'] ? $ziele : array(array('', ''));
+        foreach ($teile as $zz) {
+            $aus[] = array('geraet' => $zz[0], 'befehl' => $b['name'], 'titel' => $b['titel'],
+                           'thema' => str_replace('{geraet}', $zz[1], $b['thema']), 'wert' => $wert,
+                           'eingreifend' => $b['eingreifend'], 'sperre_s' => $b['sperre_s'], 'quittung' => $b['quittung']);
+        }
+    }
+    return $aus;
+}
+
+/** Die feste deutsche Kurzbezeichnung eines Befehls fuer die Titel der Vorlage - wie im Musterprojekt (Titel fest). */
+function cc_befehl_titel_kurz($b)
+{
+    $t = array('play' => 'Wiedergabe', 'pause' => 'Pause', 'stop' => 'beenden', 'quit' => 'App schließen',
+               'volume' => 'Lautstärke', 'volume_step' => 'Lautstärke um Schritt', 'volume_up' => 'lauter',
+               'volume_down' => 'leiser', 'mute' => 'stumm', 'next' => 'nächster Titel', 'prev' => 'voriger Titel',
+               'seek' => 'springen', 'play_favorit' => 'Favorit', 'tts' => 'Ansage', 'tts_stop' => 'Ansage abbrechen');
+    return isset($t[$b]) ? $t[$b] : $b;
+}
+
+/**
+ * Alle Vorlagen, die der Reiter "Einbindung in Loxone" erzeugt - EINE Liste fuer die Knoepfe und die Selbstpruefung
+ * (Entwurf cc 3.7): Kuerzel => array(Dateiname, Inhalt). Seit 1.3.24: MQTT-Befehle (Bruecke, mit Sperre - V3) und fuer
+ * bestehende Anlagen der alte MQTT-Ausgang und der UDP-Ausgang. Die Eingangsvorlage mit http://localhost gibt es
+ * nicht mehr (Pruefbericht E2, R2_078): je Wert ein einfacher Virtueller Eingang (Namenstabelle).
+ */
+function cc_vorlagen_liste($cfg, array $geraete)
+{
+    $aus = array();
+    foreach (array('bruecke', 'mqtt_out', 'udp_out') as $art) {
+        $aus[$art] = cc_vorlage($art, $cfg, $geraete);
+    }
+    return $aus;
+}
+
+/**
+ * Pruefzeile "Vorlagen" (Entwurf cc 3.7): jede erzeugbare Vorlage wohlgeformt, und kein Ausgangstitel heisst wie ein
+ * Gateway-Eingang aus cc_mqtt_namen() (Pruefbericht E1: sonst droht unter Gateway V1 die Schleife). $zusatz:
+ * weitere Titel (Gegenprobe). Rueckgabe array(true|false|null, Text ohne HTML).
+ */
+function cc_pruef_vorlagen($cfg, array $geraete, array $zusatz = array())
+{
+    if (!$geraete) {
+        return array(null, cc_t('TEST.A_KEINE_GERAETE_KURZ'));
+    }
+    $kaputt = array();
+    $titel = $zusatz;
+    $vorher = libxml_use_internal_errors(true);
+    $liste = cc_vorlagen_liste($cfg, $geraete);
+    foreach ($liste as $art => $v) {
+        $x = $v[1] === '' ? false : simplexml_load_string($v[1]);
+        if ($x === false) {
+            $kaputt[] = $art;
+        } else {
+            foreach ($x->xpath('//VirtualOutCmd') as $c) {
+                $titel[] = (string) $c['Title'];
+            }
+        }
+        libxml_clear_errors();
+    }
+    libxml_use_internal_errors($vorher);
+    $namen = array();
+    foreach (cc_mqtt_namen($cfg) as $z) {
+        $namen[$z['name']] = 1;
+    }
+    $gleich = array_values(array_unique(array_filter($titel, function ($t) use ($namen) { return isset($namen[$t]); })));
+    if ($kaputt) {
+        return array(false, sprintf(cc_t('TEST.A_VORLAGE_KAPUTT'), implode(', ', $kaputt)));
+    }
+    if ($gleich) {
+        return array(false, sprintf(cc_t('TEST.A_VORLAGE_NAMENSGLEICH'), implode(', ', $gleich)));
+    }
+    return array(true, sprintf(cc_t('TEST.A_VORLAGE_OK'), count($liste), implode(', ', array_keys($liste)),
+                               count($titel) - count($zusatz)));
+}
+
+/**
+ * Pruefzeile "Namenstabelle" (Entwurf cc 2.4): jeder Name der Tabelle ist ein Thema, das der Dienst sendet - gemessen
+ * am Sendecode (--themen: gesendet_geraet und dienst), der Name entsteht wie im Gateway; und jedes gesendete Thema
+ * eines eingetragenen Geraets steht in der Tabelle. Die Gegenseite wird OHNE cc_gateway_name() gebildet. $namen:
+ * Liste array(thema, name) fuer die Gegenprobe (ein verdrehter Name muss rot werden). Rueckgabe array(bool, Text).
+ */
+function cc_pruef_namen($cfg, array $dienst, $namen = null)
+{
+    $p = (string) cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
+    if ($namen === null) {
+        $namen = array();
+        foreach (cc_mqtt_namen($cfg) as $z) {
+            $namen[] = array($z['thema'], $z['name']);
+        }
+    }
+    $gesendet = isset($dienst['gesendet_geraet']) && is_array($dienst['gesendet_geraet']) ? $dienst['gesendet_geraet'] : array();
+    $diensttheme = isset($dienst['dienst']) && is_array($dienst['dienst']) ? $dienst['dienst'] : array();
+    $geraete = array();
+    foreach (cc_geraete($cfg) as $g) {
+        $geraete[cc_thema($g)] = 1;
+    }
+    $falsch = array();
+    $gesehen = array();
+    foreach ($namen as $z) {
+        $teile = explode('/', (string) $z[0]);
+        $ok = count($teile) === 2 && (($teile[0] === 'server' && in_array($teile[1], $diensttheme, true))
+            || ($z[0] === 'status/befehle')
+            || (isset($geraete[$teile[0]]) && in_array($teile[1], $gesendet, true)));
+        if (!$ok || $z[1] !== strtr($p . '/' . $z[0], array('/' => '_', '%' => '_', ' ' => '_'))) {
+            $falsch[] = $z[1];
+            continue;
+        }
+        $gesehen[$z[0]] = 1;
+    }
+    $fehlt = array();
+    foreach (array_keys($geraete) as $t) {
+        foreach ($gesendet as $k) {
+            if (!isset($gesehen[$t . '/' . $k])) {
+                $fehlt[] = $t . '/' . $k;
+            }
+        }
+    }
+    if (!$namen) {
+        return array(false, cc_t('TEST.A_NAMEN_LEER'));
+    }
+    if ($falsch || $fehlt) {
+        return array(false, sprintf(cc_t('TEST.A_NAMEN_FEHL'), $falsch ? implode(', ', $falsch) : '-',
+                                    $fehlt ? implode(', ', $fehlt) : '-'));
+    }
+    return array(true, sprintf(cc_t('TEST.A_NAMEN_OK'), count($namen), count($geraete)));
+}
+
+/**
+ * Pruefzeile "Thema und Befehlsname" (Entwurf cc 3.3): cc_thema()/cc_befehl_kennung() gegen thema_saeubern()/
+ * befehl_kennung() im Dienst - an festen Proben und den eingetragenen Namen (--themen <namen>). Rueckgabe array(bool|null, Text).
+ */
+function cc_pruef_kennung($dienst)
+{
+    if (!is_array($dienst) || !isset($dienst['kennung']) || !is_array($dienst['kennung']) || !$dienst['kennung']) {
+        return array(null, cc_t('TEST.A_NICHT_MESSBAR'));
+    }
+    $anders = array();
+    foreach ($dienst['kennung'] as $k) {
+        if (!is_array($k) || !isset($k['name'], $k['thema'], $k['befehl'])) {
+            $anders[] = '?';
+            continue;
+        }
+        $t = cc_thema($k['name']);
+        if ($t !== $k['thema'] || cc_befehl_kennung($t) !== $k['befehl']) {
+            $anders[] = $k['name'] . ' (PHP ' . $t . '/' . cc_befehl_kennung($t) . ', Dienst ' . $k['thema'] . '/' . $k['befehl'] . ')';
+        }
+    }
+    return $anders ? array(false, sprintf(cc_t('TEST.A_KENNUNG_ANDERS'), implode('; ', $anders)))
+                   : array(true, sprintf(cc_t('TEST.A_KENNUNG_GLEICH'), count($dienst['kennung'])));
+}
+
+/**
+ * Zeile "Laeuft die Befehlsbruecke?" (Entwurf gemeinsam 2.11, Bauart ax_pruef_bruecke): array(true|false|null, Text).
+ * Gemessen wird das Erzeugnis (befehle/zustand.json: ts, abo, Zaehler) und ob ein Dienst argumentweise laeuft - wie
+ * der Waechter. Aus (Haken) ist ein Strich, kein Kreuz. Dazu die letzte Quittung.
+ */
+function cc_pruef_bruecke($cfg)
+{
+    if (!cc_bruecke_laden()) {
+        return array(false, cc_t('BEFEHL.P_FEHLT'));
+    }
+    list($z, $fehler) = bb_zuordnung_laden();
+    if ($z === null) {
+        return array(false, sprintf(cc_t('BEFEHL.P_DEFEKT'), $fehler));
+    }
+    list($f) = bb_zuordnung_pruefen($z);
+    if ($f) {
+        return array(false, sprintf(cc_t('BEFEHL.P_DEFEKT'), $f[0]));
+    }
+    if ((string) cc_cfg($cfg, 'befehle_mqtt_ein', '0') !== '1') {
+        return array(null, cc_t('BEFEHL.P_AUS'));
+    }
+    if ((string) cc_cfg($cfg, 'enabled', '1') === '0') {
+        return array(null, cc_t('BEFEHL.P_PLUGIN_AUS'));
+    }
+    $pr = (string) cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
+    if (!bb_praefix_gueltig($pr)) {
+        return array(false, sprintf(cc_t('BEFEHL.P_PRAEFIX'), $pr));
+    }
+    if (DIRECTORY_SEPARATOR === '\\' || cc_paths()['home'] === '' || !bb_pfade()) {
+        return array(null, cc_t('BEFEHL.P_ARCHIV'));
+    }
+    $zu = bb_zustand_lesen();
+    $alter = ($zu && isset($zu['ts'])) ? time() - (int) $zu['ts'] : null;
+    if (!bb_dienste()) {
+        return array(false, cc_t('BEFEHL.P_STEHT'));
+    }
+    if ($alter === null || $alter > BB_WACHE_GRENZE) {
+        return array(false, sprintf(cc_t('BEFEHL.P_HAENGT'), (int) $alter));
+    }
+    if (empty($zu['abo'])) {
+        return array(false, sprintf(cc_t('BEFEHL.P_OHNE_ABO'), isset($zu['fehler']) ? (string) $zu['fehler'] : ''));
+    }
+    $zl = (isset($zu['zaehler']) && is_array($zu['zaehler'])) ? $zu['zaehler'] : array();
+    $t = sprintf(cc_t('BEFEHL.P_LAEUFT'), date('d.m.Y H:i', isset($zu['start']) ? (int) $zu['start'] : time()),
+                 isset($zl['angenommen']) ? (int) $zl['angenommen'] : 0, isset($zl['abgelehnt']) ? (int) $zl['abgelehnt'] : 0,
+                 isset($zl['verworfen']) ? (int) $zl['verworfen'] : 0);
+    if (!empty($zu['letzter']) && is_array($zu['letzter'])) {
+        $t .= ' ' . sprintf(cc_t('BEFEHL.P_LETZTER'), (string) $zu['letzter']['name'],
+                            (string) $zu['letzter']['ergebnis'], max(0, time() - (int) $zu['letzter']['zeit']));
+    }
+    if (!empty($zl['verworfen'])) {
+        $t .= ' ' . cc_t('BEFEHL.P_VERWORFEN');
+    }
+    return array(true, $t);
+}
+
+/** Die Zeilen von "befehlsbruecke.php --pruefen" (bb_pruefen()) als eine Pruefzeile: array(true|false|null, Text). */
+function cc_pruef_bruecke_einrichtung()
+{
+    if (!cc_bruecke_laden()) {
+        return array(null, cc_t('BEFEHL.P_FEHLT'));
+    }
+    ob_start();
+    bb_pruefen();
+    $aus = array_values(array_filter(explode("\n", (string) ob_get_clean()), 'strlen'));
+    if (!$aus) {
+        return array(null, '-');
+    }
+    $fehl = preg_grep('/^\[FEHL\]/', $aus);
+    return array($fehl ? false : true, implode(' | ', $fehl ? $fehl : array($aus[0], end($aus))));
+}
+
+/**
+ * Hinweis zum alten Befehlsweg im Reiter MQTT (Entwurf cc 3.4): steht befehle_cmd_ein, nennt er, wann zuletzt ein
+ * Befehl ueber <praefix>/<Geraet>/cmd/ kam (zustand.json des Dienstes). Rueckgabe Text (HTML) oder ''.
+ */
+function cc_cmd_hinweis($cfg)
+{
+    if ((string) cc_cfg($cfg, 'befehle_cmd_ein', '0') !== '1') {
+        return '';
+    }
+    $zu = cc_sprechen_json('zustand.json');
+    $zl = (is_array($zu) && isset($zu['cmd_zuletzt']) && (int) $zu['cmd_zuletzt'] > 0)
+        ? date('d.m.Y H:i', (int) $zu['cmd_zuletzt']) : cc_t('BEFEHL.CMD_NIE');
+    return sprintf(cc_t('BEFEHL.CMD_HINWEIS'), cc_e($zl));
 }

@@ -22,9 +22,28 @@
 # 30.09.2026, Installer-Befund 4: "aus der Zweitschrift wiederhergestellt",
 # aktionstoken=TOKEN_ALT_ZWEITSCHRIFT). Die Deinstallation raeumt die .alt ab.
 ARGV3=$3
-ARGV5=$5
 PFOLDER="${ARGV3:-chromecast-4lox-ng}"
-BASE="${ARGV5:-$LBHOMEDIR}"
+# Fremdbefund C1 (1.3.24): die Wurzel wie in postinstall.sh - ${5:-}, dann LBHOMEDIR, dann vom eigenen Ablageort
+# aufwaerts (cc_wurzel_suchen, wortgleich aus postinstall.sh). Bis 1.3.23 fehlte die Suche hier: ohne $5 und
+# LBHOMEDIR legte preinstall.sh nichts beiseite, postinstall.sh fand die Wurzel aber doch (Pruefbericht C1; nur bei
+# einem Aufruf von Hand - der Installer uebergibt $5 an beide).
+cc_wurzel_suchen() {
+    cc_v=$(cd "$(dirname "$(readlink -f "$0")")" 2>/dev/null && pwd -P)
+    cc_i=0
+    while [ -n "$cc_v" ] && [ "$cc_v" != "/" ] && [ "$cc_i" -lt 8 ]; do
+        if [ -d "$cc_v/config/plugins" ] && [ -d "$cc_v/data/plugins" ] \
+           && [ -f "$cc_v/config/system/general.json" ]; then
+            echo "$cc_v"
+            return 0
+        fi
+        cc_v=$(dirname "$cc_v")
+        cc_i=$((cc_i + 1))
+    done
+    return 1
+}
+BASE="${5:-}"
+[ -n "$BASE" ] || BASE="${LBHOMEDIR:-}"
+[ -n "$BASE" ] || BASE=$(cc_wurzel_suchen) || BASE=""
 # Wurzelsuche wie in den uebrigen Hakenskripten: ohne config/plugins,
 # data/plugins UND config/system/general.json wird nichts angefasst.
 if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugins" ] \
@@ -32,8 +51,9 @@ if [ -z "$BASE" ] || [ ! -d "$BASE/config/plugins" ] || [ ! -d "$BASE/data/plugi
     echo "<WARNING> Kein LoxBerry-Wurzelverzeichnis erkannt ('$BASE') - nichts beiseitegelegt."
     exit 0
 fi
+# C1 (1.3.24): auch "." und ".." abweisen (bis 1.3.23 kam "." durch - harmlos wegen der Endung, aber uneinheitlich).
 case "$PFOLDER" in
-    ''|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;
+    ''|.|..|*/*|*..*) echo "<WARNING> Unzulaessiger Ordnername '$PFOLDER' - nichts beiseitegelegt."; exit 0 ;;
 esac
 [ -f "$BASE/data/plugins/$PFOLDER.upgrade_laeuft" ] && exit 0
 

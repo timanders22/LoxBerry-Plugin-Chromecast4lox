@@ -100,7 +100,15 @@ function cc_test_ausfuehren($was, $geraet = '')
                         strip_tags(html_entity_decode($info[0], ENT_QUOTES, 'UTF-8')));
                 }
             }
-            $t .= "\n\n" . cc_t('AKTION.S_BEFEHLE_KOPF') . "\n\n";
+            // Gruppe 6b (1.3.24): die Befehle der Befehlsbruecke je Befehlsname, dann der alte Weg (Haken befehle_cmd_ein).
+            $t .= "\n\n" . cc_t('AKTION.S_BRUECKE_KOPF') . "\n\n";
+            $cc_aus = cc_befehle_ausgerollt($geraete);
+            foreach ($cc_aus === null ? array() : $cc_aus as $cc_bz) {
+                $t .= sprintf("    %-48s %s%s\n", $cc_bz['thema'], $cc_bz['titel'],
+                              $cc_bz['geraet'] !== '' ? ' - ' . $cc_bz['geraet'] : '');
+            }
+            $t .= "\n\n" . sprintf(cc_t('AKTION.S_BEFEHLE_KOPF6B'),
+                cc_cfg($cfg, 'befehle_cmd_ein', '0') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) . "\n\n";
             foreach ($geraete as $g) {
                 $th = cc_thema($g);
                 $t .= "\n  " . $g . "\n";
@@ -179,6 +187,11 @@ function cc_test_ausfuehren($was, $geraet = '')
             $pid = cc_dienst_pid();
             $t = ($a !== '' ? $a . "\n\n" : '');
             $t .= $pid ? sprintf(cc_t('AKTION.LAEUFT_JETZT'), $pid) : cc_t('AKTION.S_LAEUFT_NICHT');
+            // Gruppe 6b (1.3.24, Entwurf cc 3.5): die Befehlsbruecke NEBEN cc_dienst() - sie startet nur mit ihrem Haken.
+            $cc_bs = strip_tags(html_entity_decode(cc_bruecke_satz(cc_bruecke_schalten(true)), ENT_QUOTES, 'UTF-8'));
+            if ($cc_bs !== '') {
+                $t .= "\n\n" . $cc_bs;
+            }
             if (!$cc_schalter) {
                 $t .= "\n\n" . cc_t('AKTION.SCHALTER_EIN_FEHLT');
             }
@@ -200,6 +213,11 @@ function cc_test_ausfuehren($was, $geraet = '')
             $cc_vorher = count(cc_dienst_pids());
             $cc_schalter = cc_dienst_schalter(false);
             $a = cc_dienst('stop');
+            // Gruppe 6b (1.3.24): die Befehlsbruecke mit anhalten - enabled=0 heisst "nimmt nichts an".
+            $cc_bs = strip_tags(html_entity_decode(cc_bruecke_satz(cc_bruecke_schalten()), ENT_QUOTES, 'UTF-8'));
+            if ($cc_bs !== '') {
+                $a .= ($a !== '' ? "\n" : '') . $cc_bs;
+            }
             $t = ($a !== '' ? $a . "\n\n" : '');
             if (cc_dienst_pids()) {
                 $t .= cc_dienst_lage_satz($cc_vorher) . ' ' . cc_t('AKTION.S_LAEUFT_NOCH');
@@ -444,6 +462,9 @@ function cc_selbstpruefung()
     $zb = is_file($zdatei) ? json_decode((string) @file_get_contents($zdatei), true) : null;
     if (cc_cfg($cfg, 'mqtt_ein', '1') !== '1') {
         cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), null, cc_t('TEST.A_MQTT_AUS'));
+    } elseif (cc_cfg($cfg, 'befehle_cmd_ein', '0') !== '1') {
+        // Gruppe 6b (1.3.24): ohne den alten Befehlsweg abonniert der Dienst cmd/ nicht und raeumt dort nichts ab.
+        cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), null, cc_t('TEST.A_CMD_AUS'));
     } elseif (!$an || $pid <= 0 || !is_array($zb) || !array_key_exists('befehle_stehen', $zb)
               || empty($zb['mqtt_verbunden'])) {
         cc_pruefzeile($z, cc_t('TEST.F_BEFEHLE_RETAINED'), null, cc_t('TEST.A_NICHT_MESSBAR'));
@@ -474,7 +495,12 @@ function cc_selbstpruefung()
     } elseif (!is_file($skript)) {
         cc_pruefzeile($z, cc_t('TEST.F_THEMEN'), null, cc_t('TEST.A_KEIN_SKRIPT'));
     } else {
-        $roh = cc_sh('timeout -k 5 20 python3 ' . escapeshellarg($skript) . ' --themen');
+        // Gruppe 6b (1.3.24): die eingetragenen Namen hinter --themen - der Dienst nennt Thema und Befehlsname je Name.
+        $cc_namen = '';
+        foreach ($geraete as $cc_gn) {
+            $cc_namen .= ' ' . escapeshellarg($cc_gn);
+        }
+        $roh = cc_sh('timeout -k 5 20 python3 ' . escapeshellarg($skript) . ' --themen' . $cc_namen);
         $d = json_decode(trim($roh), true);
         /* Gegen den SENDECODE (seit 1.3.13, O17): "gesendet_geraet" ist, was
          * _melden() im Dienst gegen eine Attrappe des Lautsprechers wirklich
@@ -527,26 +553,10 @@ function cc_selbstpruefung()
      * Eine kaputte Vorlage merkt der Anwender sonst erst in Loxone Config,
      * und dort sucht er den Fehler bei sich.
      */
-    if (!$geraete) {
-        cc_pruefzeile($z, cc_t('TEST.F_VORLAGE'), null, cc_t('TEST.A_KEINE_GERAETE_KURZ'));
-    } else {
-        $kaputt = array();
-        $gesehen = 0;
-        $vorher = libxml_use_internal_errors(true);
-        foreach (array('mqtt_in', 'mqtt_out', 'udp_out') as $art) {
-            $gesehen++;
-            list($name, $inhalt) = cc_vorlage($art, $cfg, $geraete);
-            if ($inhalt === '' || simplexml_load_string($inhalt) === false) {
-                $kaputt[] = $art;
-            }
-            libxml_clear_errors();
-        }
-        libxml_use_internal_errors($vorher);
-        cc_pruefzeile($z, cc_t('TEST.F_VORLAGE'), count($kaputt) === 0,
-            count($kaputt) === 0 ? sprintf(cc_t('TEST.A_VORLAGE_OK'), $gesehen)
-                                 : sprintf(cc_t('TEST.A_VORLAGE_KAPUTT'),
-                                           implode(', ', $kaputt)));
-    }
+    /* Gruppe 6b (1.3.24, Entwurf cc 3.7): jede erzeugbare Vorlage aus EINER Liste (cc_vorlagen_liste(), dieselbe wie
+     * die Knoepfe) - wohlgeformt, und kein Ausgangstitel heisst wie ein Gateway-Eingang (Pruefbericht E1). */
+    $cc_pv = cc_pruef_vorlagen($cfg, $geraete);
+    cc_pruefzeile($z, cc_t('TEST.F_VORLAGE'), $cc_pv[0], $cc_pv[1]);
 
     /* --- 9. Reiterleiste, Bereiche und Positivliste --------------- */
     $eigen = @file_get_contents(__DIR__ . '/index.php');
@@ -586,19 +596,30 @@ function cc_selbstpruefung()
                         count($liste)));
         }
 
-        /* --- 10. Traegt jedes Formular das Merkmal? --------------- */
+        /* --- 10. Traegt jedes Formular das Merkmal? ---------------
+         * Je Block <form ...> bis </form> (Fremdbefund C14, 1.3.24, Pruefbericht wortgleich): bis 1.3.23 wurden
+         * Formulare und Merkmale ueber die ganze Datei gezaehlt - ein Merkmal HINTER </form> und ein Formular
+         * ohne, ein anderes doppelt, blieben gruen (Hausbefund "Formulartoken hinter </form>"). Gruen nur, wenn
+         * jedes Formular einen Block hat und kein Block ohne fmt ist. */
         $formulare = preg_match_all('/<form\b/', $eigen);
-        $marken = preg_match_all('/name="fmt"/', $eigen);
+        preg_match_all('/<form\b.*?<\/form>/s', $eigen, $cc_bl);
+        $ohne = 0;
+        foreach ($cc_bl[0] as $cc_b) {
+            if (strpos($cc_b, 'name="fmt"') === false) {
+                $ohne++;
+            }
+        }
         if ($formulare === 0) {
             cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), null, cc_t('TEST.A_NICHTS_GEFUNDEN'));
         } else {
-            cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), $marken >= $formulare,
-                sprintf(cc_t('TEST.A_MERKMAL'), $marken, $formulare));
+            cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), count($cc_bl[0]) === $formulare && $ohne === 0,
+                sprintf(cc_t('TEST.A_MERKMAL6B'), count($cc_bl[0]) - $ohne, $formulare, count($cc_bl[0]), $ohne));
         }
     }
 
     /* --- 11. Laeuft der Waechter? ----------------------------------
-     * An ALLEN Cron-Orten (seit 1.3.13, O11; Regeln/04, Raumklima 0.11.8).
+     * An allen Minuten-Takten (cron.*min) (seit 1.3.13, O11; Regeln/04, Raumklima 0.11.8; Kommentar berichtigt in
+     * 1.3.24, Fremdbefund C15 - hourly, daily usw. und cron.d sieht die Suche nicht, benutzt hat sie nie eine Fassung).
      * Bis 1.3.12 nur der feste Pfad cron.05min - ein liegengebliebener
      * Eintrag in einem anderen Takt blieb unsichtbar, und die Antwort nannte
      * keinen Pfad (gemessen 30.09.2026, Oberflaechen-Befund 11). */
@@ -628,6 +649,38 @@ function cc_selbstpruefung()
      * Auch "kein Wert nach dem Update" ist sichtbar - wie bei Alexa-NG. */
     $cc_lz = cc_loxsperre_pruefzeile();
     cc_pruefzeile($z, $cc_lz[0], $cc_lz[1], $cc_lz[2]);
+
+    /* --- 13. Gruppe 6b / MQTT (1.3.24): Befehlsbruecke, Namen, Praefix ---------------------------------------
+     * Entwurf cc 2.4, 2.7, 3.3, 3.5 und gemeinsam 2.11. */
+    $cc_pb = cc_pruef_bruecke($cfg);
+    cc_pruefzeile($z, cc_t('TEST.F_BRUECKE'), $cc_pb[0], $cc_pb[1]);
+    $cc_pe = cc_pruef_bruecke_einrichtung();
+    cc_pruefzeile($z, cc_t('TEST.F_BRUECKE_PRUEFEN'), $cc_pe[0], $cc_pe[1]);
+    $cc_pp = (string) cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
+    cc_pruefzeile($z, cc_t('TEST.F_PRAEFIX_BRUECKE'), strlen($cc_pp) <= 40,
+        strlen($cc_pp) <= 40 ? sprintf(cc_t('TEST.A_PRAEFIX_OK'), $cc_pp . '/befehl/#')
+                              : sprintf(cc_t('TEST.A_PRAEFIX_LANG'), strlen($cc_pp)));
+    $cc_gw_w = cc_geraete_warnungen($geraete);
+    if (!$geraete) {
+        cc_pruefzeile($z, cc_t('TEST.F_BEFEHLSNAMEN'), null, cc_t('TEST.A_KEINE_GERAETE_KURZ'));
+    } else {
+        $cc_kn = array();
+        foreach ($geraete as $cc_gn) {
+            $cc_kn[] = $cc_gn . ' = ' . cc_befehl_kennung(cc_thema($cc_gn));
+        }
+        cc_pruefzeile($z, cc_t('TEST.F_BEFEHLSNAMEN'), !$cc_gw_w,
+            $cc_gw_w ? strip_tags(html_entity_decode(implode(' ', $cc_gw_w), ENT_QUOTES, 'UTF-8'))
+                     : sprintf(cc_t('TEST.A_BEFEHLSNAMEN'), implode(', ', $cc_kn)));
+    }
+    if (!is_array($d)) {
+        cc_pruefzeile($z, cc_t('TEST.F_KENNUNG'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+        cc_pruefzeile($z, cc_t('TEST.F_NAMEN'), null, cc_t('TEST.A_NICHT_MESSBAR'));
+    } else {
+        $cc_pk = cc_pruef_kennung($d);
+        cc_pruefzeile($z, cc_t('TEST.F_KENNUNG'), $cc_pk[0], $cc_pk[1]);
+        $cc_pn = cc_pruef_namen($cfg, $d);
+        cc_pruefzeile($z, cc_t('TEST.F_NAMEN'), $cc_pn[0], $cc_pn[1]);
+    }
 
     /* --- Bilanz ---------------------------------------------------- */
     $gut = $schlecht = $unbekannt = 0;

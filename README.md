@@ -23,6 +23,42 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.24
+
+Umstellung auf das MQTT-Gateway für Werte **und** Befehle, wie im
+[LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt). Gemessen an
+Attrappen für Lautsprecher, Broker und Dienst unter PHP 7.4, 8.4 und 8.5 und Windows-Python; nicht am Gerät,
+nicht an einem echten Lautsprecher.
+
+* **Befehle über die gemeinsame Befehlsbrücke:** `chromecast4lox/befehl/<Befehlsname>/<Befehl>` und
+  `chromecast4lox/befehl/sperre`. Der Befehlsname ist das Gerätethema klein, `-` wird `_` (`Wohnzimmer` →
+  `wohnzimmer`); `alle` erreicht alle Lautsprecher. Jede Nachricht bekommt eine Quittung
+  (`…/quittung`, nie retained); ausgeführt wird im Dienst an derselben Stelle wie bisher – Sperre aus
+  Loxone, Gleichwert-Bremse, Obergrenze und Ruhezeit gelten unverändert. Ab Werk aus: Reiter *MQTT*, Haken
+  „Befehle über MQTT annehmen“; alles Hörbare (Wiedergabe, Lautstärke, lauter, stumm, Favorit, Ansage, App
+  schließen) braucht zusätzlich „Lautsprecher über MQTT steuern“. Über die Brücke setzt `play` nur fort;
+  `volume_up`/`volume_down` sind Pulse mit der Schrittweite des Plugins – die Vorlage muss nach einer
+  Änderung nicht mehr neu erzeugt werden. Neue Vorlage „MQTT-Befehle“ mit der Sperre.
+* **Bestehende Anlagen merken nichts:** der alte Weg `chromecast4lox/<Gerät>/cmd/<Befehl>` steht hinter
+  dem Haken „Alten Befehlsweg annehmen“ – nach einem Update an, bei einer Neuinstallation aus. Ebenso
+  bleibt der UDP-Befehlseingang bei einem Update, wie er war; bei einer Neuinstallation ist er ab Werk aus.
+* **Werte als einfache Virtuelle Eingänge:** die Eingangsvorlage mit `http://localhost` entfällt; der Reiter
+  *Einbindung in Loxone* zeigt eine Namenstabelle (Name genau so, wie das Gateway ihn vergibt) und für
+  Gateway V2 die Hakenliste (19 Haken im Musterprojekt, „Noncached“ nur `server/online`). Für Gateway V1
+  liegt die Abo-Datei bei. **`volume`, `duration` und `favorit` melden `-1`**, wenn der Wert unbekannt ist
+  bzw. das Gerät aus der Liste genommen wurde (vorher 0 bzw. „-“) – Prüfungen auf „= 0“ in eigenen
+  Projekten bitte ansehen. Die Ausfallerkennung rechnet mit Tmc mindestens 180 s.
+* **Warnung bei Gerätenamen** „server“ und „befehl“ und bei zwei Geräten mit demselben Befehlsnamen.
+* **Korrekturen aus einer Fremdprüfung:** Konfiguration und Zweitschrift nach jedem Update 0600; der
+  Arbeitsfaden eines entfernten Lautsprechers endet; die örtliche Ansage nennt den Port des Webservers;
+  die Selbstprüfung der Formulare prüft je Formular; Sicherungs-Download ohne fremde Ausgabe davor;
+  UDP-Port im Formular ab 1024; ein einheitliches Muster für `enabled` in Dienststart, Wächter und
+  Installation; die Wurzelsuche in preinstall wie in postinstall; die Prüfsumme der mitgelieferten
+  Konfiguration in postinstall ist wieder aktuell (seit 1.3.22 veraltet).
+* Die Baustein-Listen im Reiter *Einbindung in Loxone* folgen dem umgestellten Musterprojekt (Befehle am
+  gemeinsamen Ausgang „LoxBerry MQTT-Gateway“, neu „Ansagen sperren“ auf der Seite „Chromecast4lox
+  Steuerung“); beide Bilder sind neu aus dem angeordneten Musterprojekt.
+
 ## Neu in 1.3.23
 
 Einbindung in Loxone: Eingang En der Analogwertvalidierung nicht negieren (Hinweis und Bild); ohne diese Korrektur löste die Ausfallmeldung nie aus.
@@ -925,7 +961,8 @@ an, etwa bei Abwesend, Gäste oder Schlafen:
 
 | Weg | Sperren | Aufheben |
 |---|---|---|
-| MQTT (virtueller Ausgang über den UDP-Eingang des MQTT-Gateways) | `chromecast4lox/server/cmd/sperre 1` | `chromecast4lox/server/cmd/sperre 0` |
+| MQTT über die Befehlsbrücke (seit 1.3.24, Vorlage „MQTT-Befehle“) | `publish chromecast4lox/befehl/sperre 1` | `publish chromecast4lox/befehl/sperre 0` |
+| MQTT, alter Befehlsweg (Haken „Alten Befehlsweg annehmen“) | `chromecast4lox/server/cmd/sperre 1` | `chromecast4lox/server/cmd/sperre 0` |
 | UDP an dieses Plugin (Port aus den Einstellungen, ab Werk 7090) | `server/SPERRE 1;` | `server/SPERRE 0;` |
 | andere Plugins auf diesem LoxBerry | `aktion=sperre&wert=1` mit dem Sprechtoken | `aktion=sperre&wert=0` |
 
@@ -1001,12 +1038,25 @@ Zustände, retained, je Gerät unter `chromecast4lox/<Gerät>/`:
 | `title`, `artist`, `album` | Text | Metadaten |
 | `duration`, `position` | analog | Sekunden |
 
-Dazu `chromecast4lox/server/online` für den Dienst selbst und der Befehl
-`chromecast4lox/server/cmd/sperre` (`1`/`0`, Abschnitt „Sperre aus Loxone“).
+Dazu `chromecast4lox/server/online` für den Dienst selbst (Letzter Wille), das Lebenszeichen
+`server/zaehler`, `server/ts`, `server/geraete`, `server/verluste` und – von der Befehlsbrücke –
+`status/befehle` (1 läuft, 0 aus, -1 gestört; nie retained). `volume` meldet `-1`, wenn der
+Lautsprecher keine Lautstärke meldet; `volume`, `duration` und `favorit` eines aus der Liste genommenen
+Geräts gehen einmal mit `-1` hinaus (seit 1.3.24). In Loxone ist jeder Wert ein einfacher Virtueller
+Eingang mit dem Namen, den das MQTT-Gateway vergibt – die Namenstabelle steht im Reiter *Einbindung in
+Loxone*.
 
-Befehle unter `chromecast4lox/<Gerät>/cmd/<Befehl>`: `play`, `pause`, `stop`,
-`quit`, `volume`, `volume_step`, `volume_up`, `volume_down`, `mute`, `next`,
-`prev`, `seek`. Über MQTT braucht jeder Befehl einen Wert (z. B. `1`); eine
+**Befehle seit 1.3.24** über die gemeinsame Befehlsbrücke unter
+`chromecast4lox/befehl/<Befehlsname>/<Befehl>` (Befehlsname = Gerätethema klein, `-` wird `_`, z. B.
+`wohnzimmer`; `alle` für alle) und `chromecast4lox/befehl/sperre`: `play` (nur Fortsetzen), `pause`,
+`stop`, `quit`, `volume`, `volume_step`, `volume_up`, `volume_down` (Puls, Schrittweite des Plugins),
+`mute`, `next`, `prev`, `seek`, `play_favorit`, `tts`, `tts_stop`. Quittung unter
+`…/<Befehl>/quittung`, nie retained. Haken im Reiter *MQTT*: „Befehle über MQTT annehmen“ und für alles
+Hörbare zusätzlich „Lautsprecher über MQTT steuern“ (beide ab Werk aus).
+
+**Alter Befehlsweg** (bestehende Anlagen, Haken „Alten Befehlsweg annehmen“: nach einem Update an,
+bei einer Neuinstallation aus) unter `chromecast4lox/<Gerät>/cmd/<Befehl>` mit denselben Befehlen und
+`chromecast4lox/server/cmd/sperre`. Über MQTT braucht jeder Befehl einen Wert (z. B. `1`); eine
 leere Nachricht wird nie ausgeführt – so sieht die Löschung eines retained
 Themas aus. Die Ausgangsvorlage sendet immer einen Wert.
 
@@ -1030,8 +1080,11 @@ Aus `Küche Lautsprecher` wird `Kueche_Lautsprecher`.
 | `webfrontend/htmlauth/cc_lib.php` | Konfiguration, Themen, Loxone-XML |
 | `webfrontend/htmlauth/cc_test.php` | Aktionen des Reiters Test |
 | `webfrontend/html/index.php` | Sprachausgabe für andere Plugins (Endpunkt, ab Werk aus) |
+| `bin/befehlsbruecke.php`, `bin/befehlsbruecke.sh` | gemeinsame Befehlsbrücke (Stammfassung, unverändert) |
+| `bin/befehle_zuordnung.php` | Befehle dieses Plugins für die Brücke |
 | `config/chromecast-4lox-ng.cfg` | Konfiguration im INI-Format |
-| `dpkg/apt` | `python3-pychromecast`, `python3-zeroconf`, `python3-paho-mqtt` |
+| `config/mqtt_subscriptions.cfg` | Abo für das MQTT-Gateway V1 (`chromecast4lox/#`) |
+| `dpkg/apt` | `python3-pychromecast`, `python3-zeroconf`, `python3-paho-mqtt`, `mosquitto-clients`, `espeak-ng` |
 
 ## Voraussetzungen
 

@@ -212,7 +212,9 @@ rm -f "$CC_BASE/data/plugins/$CC_PFOLDER/dienst.pid"
 # Fall q5). daemon/daemon prueft dasselbe - hier steht es zusaetzlich, damit
 # der Grund im Installationsprotokoll steht und nicht nur im Systemlogger.
 CC_CFG="$CC_BASE/config/plugins/$CC_PFOLDER/chromecast-4lox-ng.cfg"
-if [ "$CC_STARTEN" = 1 ] && [ -f "$CC_CFG" ] && grep -q '^enabled=0' "$CC_CFG"; then
+# C5 (1.3.24): dasselbe enabled-Muster wie daemon/daemon und cron.05min - auch "enabled = 0" und "enabled=\"0\""
+# (von Hand bearbeitet) heissen aus, wie die Oberflaeche sie liest (Pruefbericht C5).
+if [ "$CC_STARTEN" = 1 ] && [ -f "$CC_CFG" ] && grep -Eq '^[[:space:]]*enabled[[:space:]]*=[[:space:]]*["'\'']?0["'\'']?[[:space:]]*$' "$CC_CFG"; then
     echo "<INFO> Der Dienst bleibt aus: im Reiter Test steht \"Dienst laufen lassen\" auf aus."
     CC_STARTEN=0
 fi
@@ -246,6 +248,25 @@ fi
 # Entfernt wird immer, auch wenn der Start unterblieb - sonst sperrte sie
 # den Waechter eine Stunde lang.
 rm -f "$CC_BASE/data/plugins/$CC_PFOLDER.upgrade_laeuft"
+
+# Gruppe 6b / MQTT (1.3.24, Entwurf cc 3.5): die Befehlsbruecke starten - erst NACH der Marke (befehlsbruecke.sh
+# startet waehrend einer Aktualisierung nicht) und als loxberry (sie startet nie als root). Sie startet nur mit dem
+# Haken "Befehle ueber MQTT annehmen" (befehlsbruecke.sh fragt --soll); sonst uebernimmt der Waechter in cron.05min.
+# Rueckgabe nicht ausgewertet: der Waechter versucht es erneut.
+CC_BBSH="$CC_BASE/bin/plugins/$CC_PFOLDER/befehlsbruecke.sh"
+if [ -f "$CC_BBSH" ]; then
+    if [ "$(id -u 2>/dev/null)" = "0" ]; then
+        CC_BB_Q=$(printf '%s' "$CC_BBSH" | sed "s/'/'\\\\''/g")
+        CC_BB=$(su -s /bin/bash loxberry -c "timeout 40 /bin/bash '$CC_BB_Q' start" 2>&1 9<&- | head -n 1)
+    else
+        CC_BB=$(timeout 40 /bin/bash "$CC_BBSH" start 2>&1 9<&- | head -n 1)
+    fi
+    case "$CC_BB" in
+        *gestartet*|*laeuft*) echo "<OK> Befehlsbruecke: $CC_BB" ;;
+        "Haken aus - kein Start.") echo "<INFO> Befehlsbruecke: aus (Reiter MQTT, Haken \"Befehle ueber MQTT annehmen\")." ;;
+        *) echo "<WARNING> Befehlsbruecke: ${CC_BB:-keine Antwort} - der Waechter (alle 5 Minuten) versucht es erneut." ;;
+    esac
+fi
 
 # Exit with Status 0
 exit 0

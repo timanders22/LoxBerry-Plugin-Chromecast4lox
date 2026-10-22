@@ -115,8 +115,9 @@ echo "<INFO> Plugin BIN folder is: $PBIN"
 chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
 # Die JSON-Dateien sind Daten, keine Programme, und tragen keine Geheimnisse:
 # 0644 (Verbesserungsbau 30.09.2026, a2). Bis 1.3.14 kamen sie aus dem Archiv
-# mit 0755. Die Konfiguration (Aktionstoken) und die Einmalmeldung der
-# Oberflaeche bleiben 0600.
+# mit 0755. Die Konfiguration (Aktionstoken, Sprechtoken) setzt der Rechteblock
+# unten (cc_rechte_600) auf 0600 - Fremdbefund E3, 1.3.24: bis 1.3.23 stand hier,
+# sie "bleiben 0600"; das setzte keines der Hakenskripte.
 chmod 644 "$PBIN"/cc_themen.json "$PBIN"/cc_vorgaben.json 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie
@@ -222,7 +223,34 @@ netz_zurueck() {
         fi
     fi
 }
-netz_zurueck "chromecast-4lox-ng.cfg" "72c8fbab6eedc6cecbf0db75449df6086115afac34120ee99edc29f07f9566d7"
+# Eigener Fund H1 (1.3.24): die Pruefsumme der MITGELIEFERTEN config/chromecast-4lox-ng.cfg. Bis 1.3.23 stand hier
+# 72c8fbab... aus 1.3.15-1.3.21; seit 1.3.22 (sperre_ein) traegt die Datei eine andere Summe, und eine Konfiguration,
+# die nach einem Update nur noch die Vorgabe war, galt nicht als Vorgabe. Zurueck kam die Zweitschrift dann nur ueber
+# den Token-Fall unten (verloren=2): mit Warnung "kein vollstaendiges Aktionstoken" und der Vorgabe als .kaputt
+# daneben (in WSL gemessen 22.10.2026, haken_probe.sh Fall 5). Mit 1.3.24 aendert sich die Datei wieder (drei Haken,
+# udp=0). neu_aufbauen.sh prueft, dass diese Summe der Datei im Archiv entspricht.
+netz_zurueck "chromecast-4lox-ng.cfg" "27276279f7051959dbaf5a5db4a99061200791a26289c07c4939ac05a0ee9c35"
+
+# Fremdbefund C3 (1.3.24; Regeln/05, Regeln/06 "chmod nach jeder Wiederherstellung"): Konfiguration und
+# Zweitschrift tragen Aktions- und Sprechtoken - 0600. cp -r erhaelt die 0644 der Archivdatei, die der Installer
+# eben kopiert hat, und sed -i erhaelt die Rechte (Pruefbericht, probe_c3.sh in WSL: nach einem Update 0644). Dazu
+# die Optionsdateien der Befehlsbruecke mit dem Broker-Kennwort (Datei 0600, Ordner 0700), wenn es sie gibt - ohne
+# Symlinks. Nach einem Update ist data/ ohnehin leer; die Bruecke schreibt sie selbst so.
+cc_rechte_600() {
+    for cc_f in "$LBHOMEDIR/config/plugins/$PDIR/chromecast-4lox-ng.cfg" \
+                "$LBHOMEDIR/config/plugins/$PDIR.backup.chromecast-4lox-ng.cfg"; do
+        [ -f "$cc_f" ] && [ ! -L "$cc_f" ] && chmod 600 "$cc_f" 2>/dev/null
+    done
+    cc_o="$LBHOMEDIR/data/plugins/$PDIR/befehle/mosquitto"
+    if [ -d "$cc_o" ] && [ ! -L "$cc_o" ]; then
+        chmod 700 "$cc_o" 2>/dev/null
+        for cc_f in "$cc_o/mosquitto_sub" "$cc_o/mosquitto_pub"; do
+            [ -f "$cc_f" ] && [ ! -L "$cc_f" ] && chmod 600 "$cc_f" 2>/dev/null
+        done
+    fi
+    return 0
+}
+cc_rechte_600
 
 # ---------- Erstanleitung nur ohne eingerichtete Geraete (seit 1.3.12) ----------
 # Entschieden am 24.09.2026 (AUFTRAG_postinstall-hinweis): die Anleitung zur

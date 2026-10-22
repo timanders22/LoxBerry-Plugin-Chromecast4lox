@@ -8,6 +8,11 @@ python3-pychromecast
 python3-zeroconf
 python3-paho-mqtt
 
+# Gruppe 6b / MQTT (1.3.24): die Befehlsbruecke (bin/befehlsbruecke.php) liest die Befehle ueber
+# mosquitto_sub und sendet Quittung und Lebenszeichen ueber mosquitto_pub. Auf einem LoxBerry mit
+# MQTT-Gateway meist schon da.
+mosquitto-clients
+
 # Fuer die oertliche Ansage (Modus 'lokal'). Klingt maschinell,
 # braucht dafuer weder Google noch einen Zugang zum Internet.
 espeak-ng

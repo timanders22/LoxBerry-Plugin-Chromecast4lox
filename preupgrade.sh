@@ -213,6 +213,14 @@ else
     echo "<WARNING> kann den Dienst waehrend der Installation starten."
 fi
 
+# Gruppe 6b / MQTT (1.3.24, Entwurf cc 3.5): die Befehlsbruecke anhalten. Die Marke liegt schon (oben) - der Waechter
+# in cron.05min startet sie bis postroot.sh nicht neu; es ist dieselbe Marke, die befehlsbruecke.sh liest. Bis 1.3.23
+# gab es keine Bruecke (dann fehlt die Datei, und es geschieht nichts).
+CC_BBSH="$CC_BASE/bin/plugins/$CC_PFOLDER/befehlsbruecke.sh"
+if [ -f "$CC_BBSH" ]; then
+    echo "<INFO> Befehlsbruecke: $(timeout 40 bash "$CC_BBSH" stop 2>&1 | head -n 1)"
+fi
+
 echo "<INFO> Command is: $COMMAND"
 echo "<INFO> Temporary folder is: $PTEMPDIR"
 echo "<INFO> (Short) Name is: $PSHNAME"

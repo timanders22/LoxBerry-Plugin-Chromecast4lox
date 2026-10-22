@@ -219,6 +219,54 @@ if [ -f "$CCCFG" ]; then
     done
 fi
 
+# Fremdbefund C3 (1.3.24; Regeln/05, Regeln/06 "chmod nach jeder Wiederherstellung"): Konfiguration und
+# Zweitschrift tragen Aktions- und Sprechtoken - 0600. cp -r erhaelt die 0644 der Archivdatei, die der Installer
+# eben kopiert hat, und sed -i erhaelt die Rechte (Pruefbericht, probe_c3.sh in WSL: nach einem Update 0644). Dazu
+# die Optionsdateien der Befehlsbruecke mit dem Broker-Kennwort (Datei 0600, Ordner 0700), wenn es sie gibt - ohne
+# Symlinks. Nach einem Update ist data/ ohnehin leer; die Bruecke schreibt sie selbst so.
+cc_rechte_600() {
+    for cc_f in "$LBHOMEDIR/config/plugins/$PDIR/chromecast-4lox-ng.cfg" \
+                "$LBHOMEDIR/config/plugins/$PDIR.backup.chromecast-4lox-ng.cfg"; do
+        [ -f "$cc_f" ] && [ ! -L "$cc_f" ] && chmod 600 "$cc_f" 2>/dev/null
+    done
+    cc_o="$LBHOMEDIR/data/plugins/$PDIR/befehle/mosquitto"
+    if [ -d "$cc_o" ] && [ ! -L "$cc_o" ]; then
+        chmod 700 "$cc_o" 2>/dev/null
+        for cc_f in "$cc_o/mosquitto_sub" "$cc_o/mosquitto_pub"; do
+            [ -f "$cc_f" ] && [ ! -L "$cc_f" ] && chmod 600 "$cc_f" 2>/dev/null
+        done
+    fi
+    return 0
+}
+cc_rechte_600
+
+# Gruppe 6b / MQTT (1.3.24, Entwurf cc 3.4, Hausherr 22.10.2026 Punkt 1; Bauart WOLF ISM NG 3.1.12): eine
+# Konfiguration bis 1.3.23 kennt die drei Haken der Befehle nicht. Der alte Befehlsweg <praefix>/<Geraet>/cmd/...
+# wirkte dort ohne Haken - er gilt weiter (befehle_cmd_ein=1), damit bestehende Loxone-Projekte nichts merken. Die
+# beiden Haken der Befehlsbruecke kommen ab Werk aus dazu. Eingefuegt VOR aktionstoken= (aktionstoken bleibt der
+# letzte Schluessel - daran erkennen die Hakenskripte eine abgeschnittene Datei), nur was fehlt, VOR postroot.sh (es
+# startet den Dienst, der den Haken liest). Danach wieder 0600 (sed -i). Scheitert es (gekuerzte Datei ohne Zeile
+# aktionstoken=), vervollstaendigten Dienst und Oberflaeche spaeter mit der Vorgabe 0 - der alte Weg ist dann aus,
+# und das steht hier.
+if [ -f "$CCCFG" ]; then
+    for cc_kv in "befehle_mqtt_ein=0" "befehle_mqtt_steuern=0" "befehle_cmd_ein=1"; do
+        cc_k=${cc_kv%%=*}
+        if ! grep -Eq "^[[:space:]]*${cc_k}[[:space:]]*=" "$CCCFG"; then
+            if grep -q '^aktionstoken=' "$CCCFG" && sed -i "/^aktionstoken=/i ${cc_kv}" "$CCCFG" \
+               && grep -q "^${cc_kv}\$" "$CCCFG"; then
+                echo "<INFO> Konfiguration ergaenzt: ${cc_kv}"
+            elif [ "$cc_k" = "befehle_cmd_ein" ]; then
+                echo "<WARNING> Konfiguration nicht ergaenzt (${cc_kv}): der alte Befehlsweg ist damit aus - nutzt"
+                echo "<WARNING> das Loxone-Projekt <praefix>/<Geraet>/cmd/..., im Reiter MQTT den Haken"
+                echo "<WARNING> \"Alten Befehlsweg annehmen\" einschalten."
+            else
+                echo "<WARNING> Konfiguration nicht ergaenzt (${cc_kv}) - es gilt die Vorgabe 0."
+            fi
+        fi
+    done
+    cc_rechte_600
+fi
+
 # Eigentuemer nur nachsehen und sagen. Dieses Skript laeuft als Benutzer
 # loxberry, NICHT als root: plugininstall.pl ruft es mit
 # "sudo -n -u loxberry" auf (Regeln/06). Bis 1.3.9 stand hier ein
@@ -256,8 +304,9 @@ fi
 chmod 755 "$PBIN"/chromecast4lox_ng-server.py "$PBIN"/cc_discover.py 2>/dev/null
 # Die JSON-Dateien sind Daten, keine Programme, und tragen keine Geheimnisse:
 # 0644 (Verbesserungsbau 30.09.2026, a2). Bis 1.3.14 kamen sie aus dem Archiv
-# mit 0755. Die Konfiguration (Aktionstoken) und die Einmalmeldung der
-# Oberflaeche bleiben 0600.
+# mit 0755. Die Konfiguration (Aktionstoken, Sprechtoken) setzt der Rechteblock
+# unten (cc_rechte_600) auf 0600 - Fremdbefund E3, 1.3.24: bis 1.3.23 stand hier,
+# sie "bleiben 0600"; das setzte keines der Hakenskripte.
 chmod 644 "$PBIN"/cc_themen.json "$PBIN"/cc_vorgaben.json 2>/dev/null
 
 # Pruefen, ob die Python-Abhaengigkeit wirklich da ist. dpkg/apt sollte sie

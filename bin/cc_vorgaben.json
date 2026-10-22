@@ -33,19 +33,27 @@
     "",
     "sperre_ein (B1, 1.3.22: Sperre aus Loxone, ab Werk 0) steht ebenfalls VOR",
     "aktionstoken. Der Dienst liest ihn (Ansagen aus Loxone), deshalb steht er",
-    "nicht in nur_oberflaeche."
+    "nicht in nur_oberflaeche.",
+    "",
+    "Gruppe 6b / MQTT (1.3.24): die drei Haken der Befehle stehen VOR aktionstoken -",
+    "befehle_mqtt_ein (Befehlsbruecke, ab Werk 0), befehle_mqtt_steuern (zweiter Haken,",
+    "eingreifende Befehle, ab Werk 0) und befehle_cmd_ein (alter Befehlsweg",
+    "<praefix>/<Geraet>/cmd/...; ab Werk 0 fuer eine Neuinstallation, postupgrade.sh setzt",
+    "bei einem Update 1, Hausherr 22.10.2026). Die beiden ersten liest nur die Bruecke",
+    "ueber cc_lib.php, befehle_cmd_ein der Dienst. udp ist seit 1.3.24 ab Werk 0 (E13):",
+    "eine bestehende Anlage behaelt ihren Wert, er steht in ihrer Konfiguration."
   ],
   "fassung": 1,
 
   "nur_oberflaeche": ["enabled", "aktionstoken", "sprechen_ein", "sprechen_geraet",
-                      "sprechen_stunde", "sprechtoken"],
+                      "sprechen_stunde", "sprechtoken", "befehle_mqtt_ein", "befehle_mqtt_steuern"],
 
   "vorgaben": {
     "enabled": "1",
     "geraete": "",
     "mqtt_topic": "chromecast4lox",
     "mqtt_ein": "1",
-    "udp": "1",
+    "udp": "0",
     "udp_port": "7090",
     "intervall": "10",
     "aktualisierung": "60",
@@ -73,6 +81,9 @@
     "sprechen_geraet": "",
     "sprechen_stunde": "60",
     "sprechtoken": "",
+    "befehle_mqtt_ein": "0",
+    "befehle_mqtt_steuern": "0",
+    "befehle_cmd_ein": "0",
     "aktionstoken": ""
   }
 }
