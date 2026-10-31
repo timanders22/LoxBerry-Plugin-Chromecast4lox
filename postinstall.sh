@@ -229,7 +229,7 @@ netz_zurueck() {
 # den Token-Fall unten (verloren=2): mit Warnung "kein vollstaendiges Aktionstoken" und der Vorgabe als .kaputt
 # daneben (in WSL gemessen 22.10.2026, haken_probe.sh Fall 5). Mit 1.3.24 aendert sich die Datei wieder (drei Haken,
 # udp=0). neu_aufbauen.sh prueft, dass diese Summe der Datei im Archiv entspricht.
-netz_zurueck "chromecast-4lox-ng.cfg" "27276279f7051959dbaf5a5db4a99061200791a26289c07c4939ac05a0ee9c35"
+netz_zurueck "chromecast-4lox-ng.cfg" "67300b9b52794ceb0a13eb0bdf6d9521e6ef7014172b279855b204000593a91d"
 
 # Fremdbefund C3 (1.3.24; Regeln/05, Regeln/06 "chmod nach jeder Wiederherstellung"): Konfiguration und
 # Zweitschrift tragen Aktions- und Sprechtoken - 0600. cp -r erhaelt die 0644 der Archivdatei, die der Installer

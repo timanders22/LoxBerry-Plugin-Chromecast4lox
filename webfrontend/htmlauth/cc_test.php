@@ -564,7 +564,10 @@ function cc_selbstpruefung()
         cc_pruefzeile($z, cc_t('TEST.F_REITER'), null, cc_t('TEST.A_NICHT_MESSBAR'));
         cc_pruefzeile($z, cc_t('TEST.F_MERKMAL'), null, cc_t('TEST.A_NICHT_MESSBAR'));
     } else {
-        preg_match_all('/data-ziel="(tab-[a-z]+)"/', $eigen, $m1);
+        // Nachfassung 7 (30.10.2026, am Geraet rot: "7 Reiter, 6 Bereiche, 6 Eintraege"): gezaehlt werden nur die
+        // Reiter-Verweise der Leiste (<a class="sm-tab ...">). Bis dahin zaehlte jedes data-ziel="tab-..." der Datei -
+        // seit Nachfassung 4 auch der Selektor im Skript des Reiters Audio, der dessen Reiter ein zweites Mal traf.
+        preg_match_all('/<a class="sm-tab\b.{0,200}?data-ziel="(tab-[a-z]+)"/s', $eigen, $m1);
         // Zwischen class= und id= steht ein PHP-Block, und dessen
         // schliessendes Zeichenpaar enthaelt ein Groesserzeichen. Ein
         // Muster mit einer verneinten Zeichenklasse darauf findet deshalb
@@ -681,6 +684,13 @@ function cc_selbstpruefung()
         $cc_pn = cc_pruef_namen($cfg, $d);
         cc_pruefzeile($z, cc_t('TEST.F_NAMEN'), $cc_pn[0], $cc_pn[1]);
     }
+    /* Nachtwelle N7 (1.3.25): stehen unter MQTT-Gateway V2 die Haken der Hakenliste mit dem richtigen Noncached?
+       Liest config/system/subscriptions.json; unter V1 und bei ausgeschaltetem MQTT ein Strich. */
+    list($cc_v2s, $cc_v2t) = cc_v2_haken_lage($cfg);
+    cc_pruefzeile($z, cc_t('TEST.F_V2_HAKEN'), $cc_v2s === 2 ? null : ($cc_v2s === 1), $cc_v2t);
+    /* Audio Stufe 1 (1.3.25): gespeicherte Zonen- und Quellenliste lesbar, Medienablage laut Dienst freigegeben. */
+    list($cc_aus, $cc_aut) = cc_audio_pruefzeile($cfg);
+    cc_pruefzeile($z, cc_t('TEST.F_AUDIO'), $cc_aus, $cc_aut);
 
     /* --- Bilanz ---------------------------------------------------- */
     $gut = $schlecht = $unbekannt = 0;

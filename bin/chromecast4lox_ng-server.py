@@ -567,6 +567,737 @@ def favoriten(cfg):
     return aus
 
 
+# ---------------------------------------------------------------------------
+# Audio Stufe 1 (1.3.25, Entscheidungen 30.10.2026, Musterprojekt/ENTSCHEIDUNGEN_AUDIO_STUFE1.md)
+#
+# Zonen statt Geraetenamen (E1), Quellenliste als Radiotasten (S3), Medienablage SSD/NAS ueber einen Verweis im
+# eigenen Webordner, Apache liefert (E2), Klingel auf eine Google-Gruppe mit Rueckfall parallel (E3-E5),
+# Wiedergabelisten aus M3U-Datei oder Ordner (E7). Alles hier ist rein (liest hoechstens Dateien) und wird im
+# Selbsttest (--selbsttest) ohne Netz und ohne Lautsprecher geprueft.
+# ---------------------------------------------------------------------------
+
+ZONEN_MAX = 24
+QUELLEN_MAX = 99
+LISTE_MAX = 200
+QUELLEN_ARTEN = ("radio", "liste", "datei")
+ZONE_KENNUNG = re.compile(r"^zone_([0-9]{1,2})$")
+
+# Inhaltstyp je Endung - nur Audio. Ein Ordner liefert nur Dateien mit diesen Endungen.
+# Nachfassung 8 (30.10.2026, Zusage an den Hausherrn): .mp4 gilt als Audio (audio/mp4) - der Lautsprecher
+# spielt den Ton (AAC) eines MP4, bei Videos nur den Ton. Aus dieser Liste folgen Durchsicht/Wache (Zaehlung),
+# Ordner- und M3U-Listen, Dateiquellen und ein Gong aus der Ablage. Apache liefert .mp4 laut /etc/mime.types als
+# video/mp4 aus (am LoxBerry gelesen); der Lautsprecher bekommt den Typ aber mit dem Ladebefehl (audio/mp4).
+AUDIO_ENDUNGEN = {
+    ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac",
+    ".ogg": "audio/ogg", ".oga": "audio/ogg", ".opus": "audio/ogg", ".wav": "audio/wav",
+    ".webm": "audio/webm", ".mp4": "audio/mp4",
+}
+LISTEN_ENDUNGEN = (".m3u", ".m3u8")
+HLS_TYP = "application/x-mpegURL"
+
+# Dateien, die Apache im Webordner AUSFUEHREN oder auswerten koennte. Liegt eine davon in der Medienablage, wird
+# der Verweis nicht angelegt: der Ordner waere sonst ueber den Pfadschluessel als Programm erreichbar.
+WEB_AUSFUEHRBAR = (".php", ".php3", ".php4", ".php5", ".php7", ".php8", ".phtml", ".phar", ".pht", ".phps",
+                   ".cgi", ".pl", ".py", ".sh", ".shtml", ".shtm")
+ABLAGE_PRUEF_MAX = 50000          # Eintraege; mehr wird nicht durchsucht, der Verweis dann nicht angelegt
+# Nachfassung 6 (30.10.2026): dieselbe Endungsliste wie die zweite Sperre der .htaccess (SPERRE_MUSTER) - im Namen
+# ueberall, nicht nur am Ende (mod_mime nimmt jede Endung eines Namens). Die Wache sieht die freigegebene Ablage alle
+# ABLAGE_WACHE_ALLE s erneut durch (eigener Faden, hoechstens ABLAGE_WACHE_FRIST s und ABLAGE_PRUEF_MAX Eintraege;
+# reicht die Grenze nicht oder laeuft eine Klingel/Ansage, bleibt die Freigabe, wie sie ist). 120 s: eine Musiksammlung
+# mit 50000 Dateien hat grob 5000 Ordner, je Ordner ein Verzeichnislesen ueber SMB (an der FRITZ!Box geschaetzt
+# 5-20 ms, nicht gemessen) -> 25-100 s; mehr waere eine Last, die alle 15 min wiederkehrt.
+SPERRE_ENDUNGEN = "php[0-9]*|pht|phtml|phps|phar|cgi|pl|py|sh|shtml?"
+ABLAGE_UNSICHER = re.compile(r"\.(" + SPERRE_ENDUNGEN + r")(\.|$)", re.I)
+ABLAGE_WACHE_ALLE = 900
+ABLAGE_WACHE_FRIST = 120.0
+ABLAGE_SCHLUESSEL = re.compile(r"^[0-9a-f]{24,64}$")
+
+# Nachfassung 7 (30.10.2026, Befund Hausherr 20:31): der Klingel-Gong haengt nicht mehr an der Medienablage. Die Ablage
+# wechselt mit der Musiksammlung (z. B. USB -> FRITZ!Box), Dateinamen gelten relativ zu ihr - "gong.mp3" zeigte danach
+# ins Leere, und die Klingel blieb stumm. Jetzt: die Datei der Ablage, wenn es sie dort gibt (wie bisher), sonst der
+# eigene Gong (Reiter Audio, hochgeladen nach config/plugins/<ordner>/klaenge/ - die Sicherung beim Update nimmt den
+# ganzen Konfigurationsordner mit), sonst der mitgelieferte Standard-Gong, den der Dienst selbst erzeugt. Ausgeliefert
+# aus html/plugins/<ordner>/klang/ (wie die oertliche Ansage aus ansage/); die Namen dort vergibt der Dienst.
+KLANG_ENDUNGEN = {".mp3": "audio/mpeg", ".ogg": "audio/ogg", ".wav": "audio/wav"}
+KLANG_MAX = 1048576
+KLANG_STANDARD = "standard_gong_1.wav"
+KLANG_EIGEN_NAME = re.compile(r"^eigener_gong\.(mp3|ogg|wav)$")
+KLANG_WEB_EIGEN = re.compile(r"^eigen_[0-9a-f]{16}\.(mp3|ogg|wav)$")
+_GONG_RATE = 22050
+_GONG_PROBEN = _GONG_RATE * 28 // 10          # 2,8 s
+_KLANG_ORTE = {}                               # nur der Selbsttest lenkt die beiden Ordner um
+
+# Was der Dienst zur Medienablage weiss - gesetzt von Dienst.ablage_einrichten(), gelesen beim Abspielen.
+ABLAGE_STAND = {"eingerichtet": 0, "ok": 0, "grund": "", "dateien": 0, "pfad": "", "schluessel": ""}
+
+# Im Netz gesehene Cast-Geraete (S2): Name -> Modell. Nur Name und Modell, keine Adresse und keine Kennung.
+SICHTBAR = {}
+
+# Nachfassung 3 (30.10.2026, O1 am Geraet gemessen): Mitglieder der Google-Gruppen. Der MultizoneController von
+# pychromecast fragt die Gruppe (GET_STATUS im Namensraum urn:x-cast:com.google.cast.multizone) - eine Statusabfrage,
+# es wird nichts gespielt. Gemessen am LoxBerry mit pychromecast 9.4.0: Gruppe "Klingel" -> zwei Mitglieder mit Namen.
+# Die Antwort nennt je Mitglied Kennung und Namen; der Dienst merkt sie unter data/ (mitglieder.json), damit sie nach
+# einem Neustart auch dann bekannt sind, wenn die Gruppe noch nicht verbunden ist (Klingel-Rueckfall). Aenderungen
+# meldet die Gruppe selbst; nach MZ_NACHFRAGE Sekunden fragt der Dienst eine verbundene Gruppe trotzdem erneut.
+MZ_NACHFRAGE = 900.0
+
+
+def kennung_gleich(a, b):
+    """Zwei Cast-Kennungen gleich? Striche und Gross-/Kleinschreibung zaehlen nicht; leer ist nie gleich."""
+    a = re.sub(r"[^0-9a-f]", "", str(a or "").lower())
+    b = re.sub(r"[^0-9a-f]", "", str(b or "").lower())
+    return a != "" and a == b
+
+
+def name_gleich(a, b):
+    """Zwei Geraetenamen gleich? Gross-/Kleinschreibung und Unicode-Form (Umlaut zusammengesetzt oder nicht) zaehlen
+    nicht; leer ist nie gleich."""
+    a = unicodedata.normalize("NFC", str(a or "")).strip().casefold()
+    b = unicodedata.normalize("NFC", str(b or "")).strip().casefold()
+    return a != "" and a == b
+
+
+def _zahl_in(text, unten, oben):
+    """Eine ganze Zahl aus Ziffern im Bereich - sonst None (kein Runden, kein Zurechtbiegen)."""
+    t = str(text or "").strip()
+    if not re.match(r"^[0-9]{1,3}$", t):
+        return None
+    n = int(t)
+    return n if unten <= n <= oben else None
+
+
+def zonen(cfg):
+    """Die Zonentabelle (E1): je Zeile "Nr = Ziel" oder "Nr = Anzeigename | Ziel", Nr 1 bis 24, Ziel = Google-Name
+    eines eingetragenen Geraets oder einer eingetragenen Gruppe. Rueckgabe: Liste von dict(nr, name, ziel) nach
+    Nummer. Unverstaendliche Zeilen und doppelte Nummern fallen weg und stehen im Protokoll - dieselben Regeln
+    prueft cc_zonen() in der Oberflaeche beim Speichern."""
+    aus = {}
+    for zeile in re.split(r"[\r\n]+", str(cfg.get("zonen", "") or "")):
+        zeile = zeile.strip()
+        if zeile == "" or zeile.startswith("#"):
+            continue
+        if "=" not in zeile:
+            log.warning("Zone ohne Nummer uebergangen: %s", zeile[:60])
+            continue
+        nr_text, rest = zeile.split("=", 1)
+        nr = _zahl_in(nr_text, 1, ZONEN_MAX)
+        if nr is None:
+            log.warning("Zone '%s': Nummer 1 bis %d erwartet - uebergangen", nr_text.strip()[:10], ZONEN_MAX)
+            continue
+        if "|" in rest:
+            name, ziel = rest.split("|", 1)
+        else:
+            name, ziel = rest, rest
+        name, ziel = name.strip(), ziel.strip()
+        if ziel == "" or ";" in ziel:
+            log.warning("Zone %d hat kein gueltiges Ziel - uebergangen", nr)
+            continue
+        if nr in aus:
+            log.warning("Zone %d steht doppelt - die erste Zeile gilt", nr)
+            continue
+        aus[nr] = {"nr": nr, "name": name or ziel, "ziel": ziel}
+    return [aus[k] for k in sorted(aus)]
+
+
+def quellen(cfg):
+    """Die Quellenliste (S3): je Zeile "Nr = Art | Name | Adresse", Nr 1 bis 99, Art radio, liste oder datei.
+    Ist die Liste leer, gelten die Favoriten als Radioquellen 1 bis n - die Nummern bleiben gleich (S3: "die
+    heutigen Favoriten werden als radio uebernommen"). Rueckgabe: dict Nr -> dict(nr, art, name, adresse)."""
+    roh = str(cfg.get("quellen", "") or "")
+    if roh.strip() == "":
+        return dict((i, {"nr": i, "art": "radio", "name": n, "adresse": a})
+                    for i, (n, a) in enumerate(favoriten(cfg), start=1) if i <= QUELLEN_MAX)
+    aus = {}
+    for zeile in re.split(r"[\r\n]+", roh):
+        zeile = zeile.strip()
+        if zeile == "" or zeile.startswith("#"):
+            continue
+        if "=" not in zeile:
+            log.warning("Quelle ohne Nummer uebergangen: %s", zeile[:60])
+            continue
+        nr_text, rest = zeile.split("=", 1)
+        nr = _zahl_in(nr_text, 1, QUELLEN_MAX)
+        teile = [t.strip() for t in rest.split("|", 2)]
+        if nr is None or len(teile) != 3 or teile[0].lower() not in QUELLEN_ARTEN or teile[2] == "":
+            log.warning("Quelle '%s' hat nicht die Form 'Nr = radio|liste|datei | Name | Adresse' - uebergangen",
+                        zeile[:60])
+            continue
+        art, adresse = teile[0].lower(), teile[2]
+        web = re.match(r"^https?://", adresse, re.I) is not None
+        if (art == "radio" and not web) or (art == "liste" and ablage_relativ(adresse) is None) \
+                or (art == "datei" and not web and ablage_relativ(adresse) is None):
+            log.warning("Quelle %d: Adresse passt nicht zur Art %s - uebergangen", nr, art)
+            continue
+        if nr in aus:
+            log.warning("Quelle %d steht doppelt - die erste Zeile gilt", nr)
+            continue
+        aus[nr] = {"nr": nr, "art": art, "name": teile[1] or adresse, "adresse": adresse}
+    return aus
+
+
+def inhaltstyp(pfad):
+    """Inhaltstyp aus der Endung - nur fuer Dateien der Medienablage; None, wenn es keine Audiodatei ist."""
+    p = str(pfad or "").split("?", 1)[0].lower()
+    for endung, typ in AUDIO_ENDUNGEN.items():
+        if p.endswith(endung):
+            return typ
+    return None
+
+
+# Nachfassung 30.10.2026: im eigenen Webordner gilt die LoxBerry-Seitenkonfiguration (Options +Indexes,
+# AllowOverride All) - ohne diese Datei zeigte Apache hinter dem Verweis m_<Schluessel> eine Verzeichnisliste.
+# Apache liest .htaccess entlang des nicht aufgeloesten Pfads, sie gilt also auch hinter dem Verweis. Punkt-Pfade
+# -> 404: die Durchsicht sieht versteckte Ordner nicht an. Der Installer kopiert Punktdateien nicht mit, darum
+# legt sie der Dienst an.
+# Nachfassung 5 (30.10.2026, Entscheidung Hausherr): zweite Sperre unter m_<Schluessel>/ - unabhaengig von der
+# Durchsicht der Ablage, die nur beim Einrichten laeuft (wer spaeter eine .php in den Ordner legt, dem fuehrte Apache
+# sie sonst aus). Am LoxBerry gelesen: Apache 2.4.68, AllowOverride All, Options +ExecCGI +MultiViews,
+# AddHandler cgi-script cgi (mod_mime nimmt jede Endung eines Namens), PHP 7.4 ueber FilesMatch ".+\.ph(ar|p|tml)$"
+# (gross geschrieben also nicht PHP, aber als Quelltext ausgeliefert). Drei Riegel, keiner haengt am PHP-Modul:
+#  1. Programm-Endungen unter m_<Schluessel>/ -> 404, ohne Gross/klein, auch mitten im Namen und vor PATH_INFO.
+#  2. <If> auf den Pfad: dort jede Datei nur als Datei (SetHandler default-handler schlaegt FilesMatch und
+#     AddHandler), keine Startseite (DirectoryIndex disabled).
+#  3. im ganzen Webordner keine Inhaltsaushandlung (MultiViews: /m_<S>/test liefe sonst als test.php), kein CGI,
+#     kein SSI (die eigene index.php bleibt, wie sie ist).
+# Kein "php_flag engine off": ohne geladenes mod_php ist das ein unbekannter Befehl, und eine ungueltige Zeile macht
+# den ganzen Webordner zum 500er (am Geraet mit apache2 -t belegt); dort liegt auch libphp8.4 (anderer Modulname).
+# Grenze: eine .htaccess, die spaeter jemand IN die Ablage legt, liest Apache mit (die Durchsicht weist sie nur beim
+# Einrichten ab) - dagegen hilft eine Freigabe nur mit Leserecht.
+SPERRE_MUSTER = r"(?i)/m_[0-9a-f]+/.*\.(" + SPERRE_ENDUNGEN + r")(\.|/|$)"
+INDEX_SCHUTZ = ("# Chromecast 4 Lox NG: vom Dienst angelegt (Medienablage). Keine Verzeichnisliste, nur einzelne\n"
+                "# Dateien; Pfade mit Punkt-Anteil gibt es nicht. Wird beim Freigeben der Ablage neu geschrieben.\n"
+                "Options -Indexes\n"
+                "RedirectMatch 404 \"/\\.\"\n"
+                "# Zweite Sperre: unter m_<Schluessel>/ nie ein Programm, unabhaengig von der Durchsicht der Ablage.\n"
+                "Options -MultiViews -ExecCGI -Includes\n"
+                "RedirectMatch 404 \"" + SPERRE_MUSTER + "\"\n"
+                "<If \"%{REQUEST_URI} =~ m#/m_[0-9a-f]+/#i\">\n"
+                "    SetHandler default-handler\n"
+                "    DirectoryIndex disabled\n"
+                "</If>\n")
+
+
+def index_schutz_setzen(ordner):
+    """Die .htaccess mit INDEX_SCHUTZ in den Webordner legen (nur wenn sie fehlt oder anders lautet, atomar).
+    Rueckgabe "" oder der Grund, warum es nicht ging - dann wird die Ablage nicht freigegeben."""
+    ziel = os.path.join(ordner, ".htaccess")
+    try:
+        with open(ziel, "r", encoding="utf-8", newline="") as fh:
+            if fh.read(4096) == INDEX_SCHUTZ:
+                return ""
+    except (OSError, ValueError):
+        pass
+    vorlaeufig = ziel + ".neu.%d" % os.getpid()
+    try:
+        with open(vorlaeufig, "w", encoding="utf-8", newline="") as fh:
+            fh.write(INDEX_SCHUTZ)
+        os.replace(vorlaeufig, ziel)
+    except OSError as fehler:
+        try:
+            os.remove(vorlaeufig)
+        except OSError:
+            pass
+        return "Schutz gegen die Verzeichnisliste (.htaccess) nicht anlegbar (%s)" % fehler
+    return ""
+
+
+def ablage_relativ(eintrag):
+    """Ein Pfad in der Medienablage, wie er in Quellenliste, Gong-Feld oder M3U steht: relativ, mit "/" getrennt,
+    ohne ".." und ohne fuehrenden Schraegstrich. Rueckgabe der bereinigte Pfad oder None (abgewiesen)."""
+    t = str(eintrag or "").strip().replace("\\", "/")
+    if t == "" or t.startswith("/") or re.search(r"[\x00-\x1f\x7f]", t) or re.match(r"^[A-Za-z]:", t):
+        return None
+    teile = [x for x in t.split("/") if x not in ("", ".")]
+    if not teile or any(x == ".." for x in teile):
+        return None
+    return "/".join(teile)
+
+
+def ablage_wurzeln():
+    """Wo eine Medienablage liegen darf: was LoxBerry selbst einhaengt (Speicherverwaltung) - USB-Datentraeger und
+    Netzfreigaben unter system/storage sowie /media und /mnt. Als echte Pfade, Verweise aufgeloest."""
+    orte = ["/media", "/mnt"]
+    if HOME_DIR:
+        orte.insert(0, os.path.join(HOME_DIR, "system", "storage"))
+    return [os.path.realpath(o) for o in orte]
+
+
+def ablage_pfad_taugt(pfad, wurzeln=None):
+    """Taugt der Pfad als Medienablage? Rueckgabe (echter Pfad, "") oder ("", Grund)."""
+    p = str(pfad or "").strip()
+    if p == "":
+        return "", "keine Medienablage eingetragen"
+    # os.path statt "/": dieselbe Regel unter Linux (Geraet) und Windows (Pruefstand).
+    if not os.path.isabs(p) or re.search(r"[\x00-\x1f\x7f]", p) or ".." in re.split(r"[\\/]", p):
+        return "", "der Pfad muss absolut sein und darf kein '..' enthalten"
+    echt = os.path.realpath(p)
+    for w in (wurzeln if wurzeln is not None else ablage_wurzeln()):
+        if echt == w or echt.startswith(w.rstrip(os.sep) + os.sep):
+            if echt == w:
+                return "", "die Wurzel selbst ist keine Medienablage - einen Ordner darin waehlen"
+            return echt, ""
+    return "", "die Medienablage muss unter dem LoxBerry-Speicher (USB/Netzfreigabe) oder /media bzw. /mnt liegen"
+
+
+def ablage_durchsehen(echt, grenze=ABLAGE_PRUEF_MAX, frist=None, abbrechen=None, fund=None):
+    """Den Ordner einmal durchsehen: (zahl der Audiodateien, Grund). Grund nicht leer = nicht freigeben - eine Datei,
+    die Apache ausfuehren koennte, oder mehr Eintraege als die Grenze (dann ist nichts bewiesen).
+    Nachfassung 6: frist (s) und abbrechen() (Klingel/Ansage) beenden die Durchsicht mit "Durchsicht abgebrochen ..."
+    - das ist kein Befund; fund (Liste) bekommt den Pfad des Funds relativ zur Ablage (ohne Pfadschluessel)."""
+    ende = (time.monotonic() + frist) if frist is not None else None
+    zahl = 0
+    gesehen = 0
+    try:
+        for wurzel, ordner, dateien in os.walk(echt, followlinks=False):
+            ordner[:] = sorted(o for o in ordner if not o.startswith("."))
+            if abbrechen is not None and abbrechen():
+                return zahl, "Durchsicht abgebrochen (Klingel oder Ansage laeuft)"
+            if ende is not None and time.monotonic() > ende:
+                return zahl, "Durchsicht abgebrochen (Zeitgrenze %d s)" % frist
+            # Nachfassung 4 (30.10.2026): Apache folgt Verweisen (FollowSymLinks). Ein Verweis in der Ablage, der
+            # hinauszeigt, gaebe ueber den Pfadschluessel fremde Dateien frei; os.walk folgt ihm nicht und saehe ihn
+            # sonst nie an. Versteckte Namen liefert Apache ohnehin nicht (.htaccess, RedirectMatch 404).
+            for n in ordner + list(dateien):
+                voll = os.path.join(wurzel, n)
+                if not n.startswith(".") and os.path.islink(voll):
+                    ziel = os.path.realpath(voll)
+                    if ziel != echt and not ziel.startswith(echt.rstrip(os.sep) + os.sep):
+                        rel = os.path.relpath(voll, echt)
+                        if fund is not None:
+                            fund.append(rel)
+                        return zahl, "enthaelt einen Verweis nach ausserhalb der Ablage (%s)" % rel[:80]
+            for d in dateien:
+                gesehen += 1
+                if gesehen > grenze:
+                    return zahl, "mehr als %d Eintraege - zu gross zum Durchsehen, kleineren Ordner waehlen" % grenze
+                klein = d.lower()
+                # Nach dem NAMEN, nicht nach Rechten: auf einer Netzfreigabe (cifs, file_mode=0666) traegt jede Datei
+                # dieselben Rechte. ".cgi." mitten im Namen: LoxBerry-Apache hat "AddHandler cgi-script cgi", und
+                # mod_mime nimmt jede Endung eines Namens (lied.cgi.mp3 liefe als Programm).
+                if klein.startswith(".ht") or klein.endswith(WEB_AUSFUEHRBAR) or ABLAGE_UNSICHER.search(klein):
+                    rel = os.path.relpath(os.path.join(wurzel, d), echt)
+                    if fund is not None:
+                        fund.append(rel)
+                    return zahl, "enthaelt eine Datei, die der Webserver ausfuehren koennte (%s)" % rel[:80]
+                if inhaltstyp(klein):
+                    zahl += 1
+    except OSError as fehler:
+        return zahl, "nicht lesbar (%s)" % fehler
+    return zahl, ""
+
+
+def _verweis_weg(pfad):
+    """Einen Verweis entfernen (nur Selbsttest) - unter Windows ist ein Ordnerverweis mit rmdir zu loeschen."""
+    try:
+        os.remove(pfad)
+    except OSError:
+        os.rmdir(pfad)
+
+
+def ablage_dateisystem(echt, mounts="/proc/mounts"):
+    """Das Dateisystem, auf dem die Medienablage liegt (Zusatz Hausherr 30.10.2026: im Reiter Audio anzeigen) - aus
+    /proc/mounts, laengster passender Einhaengepunkt. "" = nicht feststellbar (kein Linux, Datei fehlt)."""
+    try:
+        with open(mounts, "r", encoding="utf-8", errors="replace") as fh:
+            zeilen = fh.read(262144).splitlines()
+    except OSError:
+        return ""
+    best, art = "", ""
+    for z in zeilen:
+        teile = z.split()
+        if len(teile) < 3:
+            continue
+        punkt = teile[1].replace("\\040", " ")
+        if (echt == punkt or echt.startswith(punkt.rstrip("/") + "/")) and len(punkt) >= len(best):
+            best, art = punkt, teile[2]
+    return art[:20]
+
+
+def ablage_datei(rel):
+    """Echter Pfad einer Datei der Medienablage, nur wenn sie DRIN liegt (Verweise aufgeloest) - sonst None."""
+    basis = ABLAGE_STAND.get("pfad") or ""
+    r = ablage_relativ(rel)
+    if not basis or r is None:
+        return None
+    echt = os.path.realpath(os.path.join(basis, r))
+    if not echt.startswith(basis.rstrip(os.sep) + os.sep):
+        return None
+    return echt
+
+
+def ablage_adresse(cfg, rel, geraete_ip=""):
+    """Die Adresse, unter der der Lautsprecher eine Datei der Medienablage abholt: Grundadresse (Feld der oertlichen
+    Ansage) oder http://<eigene Adresse>[:Port]/plugins/<ordner>, dahinter m_<Schluessel>/<Pfad>. "" = nicht moeglich."""
+    r = ablage_relativ(rel)
+    schluessel = ABLAGE_STAND.get("schluessel") or ""
+    if r is None or not ABLAGE_STAND.get("ok") or not ABLAGE_SCHLUESSEL.match(schluessel):
+        return ""
+    basis = str(cfg.get("tts_lokal_basis", "") or "").strip().rstrip("/")
+    if basis == "":
+        ip = eigene_ip(geraete_ip or None)
+        if ip == "":
+            return ""
+        port = webport()
+        basis = "http://{0}{1}/plugins/{2}".format(ip, "" if port == 80 else ":%d" % port, PLUGIN_NAME)
+    return basis + "/m_" + schluessel + "/" + urllib.parse.quote(r, safe="/")
+
+
+def m3u_lesen(text, ordner_rel=""):
+    """Eintraege einer M3U-Liste: [(adresse_oder_relpfad, titel, interpret)]. #EXTINF:<sek>,Interpret - Titel liefert
+    die Anzeige; ein relativer Eintrag gilt relativ zum Ordner der Liste. Was die Ablage verlaesst, faellt weg."""
+    aus = []
+    info = ("", "")
+    for zeile in str(text or "").replace("\r", "\n").split("\n"):
+        zeile = zeile.strip().lstrip("﻿")
+        if zeile == "":
+            continue
+        if zeile.upper().startswith("#EXTINF:"):
+            anzeige = zeile.split(",", 1)[1].strip() if "," in zeile else ""
+            if " - " in anzeige:
+                interpret, titel = anzeige.split(" - ", 1)
+                info = (titel.strip(), interpret.strip())
+            else:
+                info = (anzeige, "")
+            continue
+        if zeile.startswith("#"):
+            continue
+        if re.match(r"^https?://", zeile, re.I):
+            aus.append((zeile, info[0], info[1]))
+        else:
+            rel = ablage_relativ((ordner_rel + "/" if ordner_rel else "") + zeile)
+            if rel is not None:
+                aus.append((rel, info[0], info[1]))
+        info = ("", "")
+        if len(aus) >= LISTE_MAX:
+            break
+    return aus
+
+
+def pls_lesen(text):
+    """Die erste Adresse einer PLS-Liste (File1=...)."""
+    treffer = sorted((int(m.group(1)), m.group(2).strip())
+                     for m in re.finditer(r"^\s*File([0-9]+)\s*=\s*(\S+)\s*$", str(text or ""), re.I | re.M))
+    for _n, adresse in treffer:
+        if re.match(r"^https?://", adresse, re.I):
+            return adresse
+    return ""
+
+
+def _holen(adresse, frist=5.0, menge=65536):
+    """(Inhaltstyp, Anfang des Inhalts) einer Adresse. Liest hoechstens 'menge' Byte - ein Radiostrom endet nie."""
+    import urllib.request
+    anfrage = urllib.request.Request(adresse, headers={"User-Agent": "Chromecast4LoxNG", "Icy-MetaData": "0"})
+    with urllib.request.urlopen(anfrage, timeout=frist) as antwort:
+        typ = str(antwort.headers.get("Content-Type", "") or "").split(";", 1)[0].strip().lower()
+        if "mpegurl" in typ or "scpls" in typ or "x-pls" in typ or typ in ("text/plain", "application/octet-stream") \
+                or adresse.lower().split("?", 1)[0].endswith(LISTEN_ENDUNGEN + (".pls",)):
+            return typ, antwort.read(menge).decode("utf-8", "replace")
+        return typ, ""
+
+
+def radio_aufloesen(adresse, holen=None, tiefe=0):
+    """Eine Radioadresse abspielfertig machen (S3): .m3u/.pls werden aufgeloest (erste gueltige Zeile), HLS bleibt
+    eine Liste mit eigenem Typ, sonst entscheidet der Content-Type der Antwort statt der Endung (AAC spielte sonst
+    nicht). Rueckgabe (adresse, typ, hinweis). Antwortet die Adresse nicht, bleibt sie, wie sie ist - der Lautsprecher
+    holt selbst ab, und der Hinweis steht im Protokoll."""
+    holen = holen or _holen
+    endung = adresse.lower().split("?", 1)[0]
+    try:
+        typ, inhalt = holen(adresse)
+    except Exception as fehler:  # noqa: BLE001
+        typ, inhalt = "", ""
+        hinweis = "Adresse antwortete nicht beim Pruefen (%s) - sie wird trotzdem uebergeben" % fehler
+        if endung.endswith(".m3u8"):
+            return adresse, HLS_TYP, hinweis
+        return adresse, inhaltstyp(endung) or "audio/mpeg", hinweis
+    if "#EXT-X-" in inhalt or endung.endswith(".m3u8") and inhalt.lstrip().startswith("#EXTM3U"):
+        return adresse, HLS_TYP, ""
+    if inhalt and tiefe < 2 and ("scpls" in typ or "x-pls" in typ or endung.endswith(".pls")
+                                 or inhalt.lstrip().lower().startswith("[playlist]")):
+        neu = pls_lesen(inhalt)
+        if neu:
+            return radio_aufloesen(neu, holen, tiefe + 1)
+        return adresse, "audio/mpeg", "PLS-Liste ohne gueltige Adresse"
+    if inhalt and tiefe < 2 and ("mpegurl" in typ or endung.endswith(".m3u")):
+        neu = [a for a, _t, _i in m3u_lesen(inhalt) if re.match(r"^https?://", a, re.I)]
+        if neu:
+            return radio_aufloesen(neu[0], holen, tiefe + 1)
+        return adresse, "audio/mpeg", "M3U-Liste ohne gueltige Adresse"
+    if typ.startswith("audio/") or typ in ("application/ogg", "video/mp2t"):
+        return adresse, typ, ""
+    return adresse, inhaltstyp(endung) or "audio/mpeg", ""
+
+
+def liste_aufbauen(quelle, ordner_lesen=None):
+    """Die Titel einer Quelle der Art liste (E7): ein Ordner = alle Audiodateien darin alphabetisch (mit
+    Unterordnern), eine M3U-Datei = ihre Reihenfolge. Rueckgabe (eintraege, grund): eintraege [(relpfad_oder_adresse,
+    titel, interpret)] hoechstens LISTE_MAX; grund nicht leer = nichts abzuspielen."""
+    rel = ablage_relativ(quelle.get("adresse"))
+    if rel is None:
+        return [], "Adresse der Liste ist kein Pfad in der Medienablage"
+    echt = ablage_datei(rel)
+    if echt is None:
+        return [], "Medienablage nicht eingerichtet oder Pfad ausserhalb"
+    if os.path.isdir(echt):
+        eintraege = []
+        for wurzel, ordner, dateien in os.walk(echt):
+            ordner[:] = sorted(o for o in ordner if not o.startswith("."))
+            for d in sorted(dateien, key=lambda x: x.lower()):
+                if d.startswith(".") or not inhaltstyp(d):
+                    continue
+                pfad = os.path.relpath(os.path.join(wurzel, d), ABLAGE_STAND["pfad"]).replace(os.sep, "/")
+                eintraege.append((pfad, os.path.splitext(d)[0], ""))
+                if len(eintraege) >= LISTE_MAX:
+                    break
+            if len(eintraege) >= LISTE_MAX:
+                break
+        return (eintraege, "") if eintraege else ([], "keine Audiodatei im Ordner")
+    if os.path.isfile(echt) and rel.lower().endswith(LISTEN_ENDUNGEN):
+        try:
+            with open(echt, "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read(1024 * 1024)
+        except OSError as fehler:
+            return [], "Liste nicht lesbar (%s)" % fehler
+        eintraege = m3u_lesen(text, os.path.dirname(rel))
+        return (eintraege, "") if eintraege else ([], "keine gueltige Zeile in der Liste")
+    return [], "weder Ordner noch M3U-Datei"
+
+
+def _klang_web():
+    """Der Klangordner im unangemeldeten Webordner (html/plugins/<ordner>/klang). "" = keine Anlage."""
+    return _KLANG_ORTE.get("web") or (os.path.join(HTML_DIR, "klang") if HTML_DIR else "")
+
+
+def _klang_eigen_ordner():
+    """Wo der eigene Gong liegt (config/plugins/<ordner>/klaenge - die Oberflaeche legt ihn dort ab)."""
+    return _KLANG_ORTE.get("eigen") or (os.path.join(CONFIG_DIR, "klaenge") if CONFIG_DIR else "")
+
+
+def standard_gong_wav():
+    """Der mitgelieferte Standard-Gong (Nachfassung 7) als WAV - PCM 16 bit, mono, 22050 Hz, 2,8 s. Vom Plugin selbst
+    berechnet, also ohne fremde Rechte: 0,4 s Stille (Googles eigener Ton beim Start einer Wiedergabe und das
+    Anlaufen), dann ein Zweiklang e'' - c'' mit weichem Einsatz (40 ms) und Abklingen, die letzten 0,15 s ausgeblendet -
+    so knackt nichts. Spitze knapp 60 % der Vollaussteuerung (gemessen 19115 von 32767); laut macht die Klingel ihr
+    Pegel, nicht die Datei."""
+    import struct
+    werte = []
+    toene = ((0.40, 659.255), (1.00, 523.251))
+    for i in range(_GONG_PROBEN):
+        t = i / float(_GONG_RATE)
+        s = 0.0
+        for beginn, f in toene:
+            d = t - beginn
+            if d < 0:
+                continue
+            huelle = math.exp(-d / 0.55)
+            if d < 0.04:
+                huelle *= 0.5 - 0.5 * math.cos(math.pi * d / 0.04)
+            w = 2.0 * math.pi * f * d
+            s += huelle * (math.sin(w) + 0.3 * math.sin(2.0 * w) + 0.1 * math.sin(3.0 * w))
+        rest = (_GONG_PROBEN - i) / float(_GONG_RATE)
+        if rest < 0.15:
+            s *= rest / 0.15
+        werte.append(int(round(max(-1.0, min(1.0, s * 0.42)) * 32767)))
+    daten = struct.pack("<%dh" % _GONG_PROBEN, *werte)
+    kopf = struct.pack("<4sI4s4sIHHIIHH4sI", b"RIFF", 36 + len(daten), b"WAVE", b"fmt ", 16, 1, 1, _GONG_RATE,
+                       _GONG_RATE * 2, 2, 16, b"data", len(daten))
+    return kopf + daten
+
+
+def klang_art(daten, endung):
+    """Passt der Anfang des Inhalts zur Endung? WAV RIFF/WAVE, OGG OggS, MP3 ID3 oder Rahmenkopf. Dieselbe Regel
+    prueft die Oberflaeche beim Hochladen (cc_klang_art)."""
+    k = bytes(daten[:12])
+    if endung == ".wav":
+        return k[:4] == b"RIFF" and k[8:12] == b"WAVE"
+    if endung == ".ogg":
+        return k[:4] == b"OggS"
+    if endung == ".mp3":
+        return k[:3] == b"ID3" or (len(k) >= 2 and k[0] == 0xFF and (k[1] & 0xE0) == 0xE0)
+    return False
+
+
+def _klang_schreiben(name, daten):
+    """Eine Datei in den Klangordner legen: 0644, erst vollstaendig, dann umbenannt (je Faden eine eigene
+    Zwischendatei - mehrere Lautsprecher klingeln gleichzeitig). Rueckgabe "" oder Grund."""
+    ordner = _klang_web()
+    if not ordner:
+        return "kein Webordner"
+    try:
+        os.makedirs(ordner, exist_ok=True)
+        ziel = os.path.join(ordner, name)
+        neu = "%s.%d.neu" % (ziel, threading.get_ident())
+        fd = os.open(neu, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
+        if hasattr(os, "fchmod"):
+            os.fchmod(fd, 0o644)
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(daten)
+        os.replace(neu, ziel)
+    except OSError as fehler:
+        return "Klangordner nicht beschreibbar (%s)" % fehler
+    return ""
+
+
+def klang_standard():
+    """Name des Standard-Gongs im Klangordner; legt ihn an, wenn er fehlt oder nicht die richtige Groesse hat.
+    "" = nicht moeglich (steht im Protokoll)."""
+    ordner = _klang_web()
+    if not ordner:
+        return ""
+    try:
+        if os.path.getsize(os.path.join(ordner, KLANG_STANDARD)) == 44 + 2 * _GONG_PROBEN:
+            return KLANG_STANDARD
+    except OSError:
+        pass
+    grund = _klang_schreiben(KLANG_STANDARD, standard_gong_wav())
+    if grund:
+        log.warning("Standard-Gong nicht anlegbar: %s", grund)
+        return ""
+    return KLANG_STANDARD
+
+
+def klang_eigen():
+    """Der eigene Gong: (Pfad, Endung) oder None. Nur eigener_gong.<mp3|ogg|wav>, kein Verweis, hoechstens KLANG_MAX
+    Byte, Inhalt passend zur Endung."""
+    ordner = _klang_eigen_ordner()
+    if not ordner or not os.path.isdir(ordner):
+        return None
+    try:
+        namen = sorted(n for n in os.listdir(ordner) if KLANG_EIGEN_NAME.match(n))
+    except OSError:
+        return None
+    for n in namen:
+        p = os.path.join(ordner, n)
+        if os.path.islink(p) or not os.path.isfile(p):
+            continue
+        try:
+            if os.path.getsize(p) > KLANG_MAX:
+                continue
+            with open(p, "rb") as fh:
+                kopf = fh.read(12)
+        except OSError:
+            continue
+        endung = os.path.splitext(n)[1]
+        if klang_art(kopf, endung):
+            return p, endung
+    return None
+
+
+def klang_eigen_bereitstellen(eigen):
+    """Den eigenen Gong in den Klangordner legen - Name aus dem Inhalt (eigen_<16 hex>.<endung>), ein neuer Gong hat
+    also eine neue Adresse und kommt nie aus einem Zwischenspeicher. Aeltere eigene Klaenge dort fallen weg; eigen None
+    = nur aufraeumen. Rueckgabe der Name oder ""."""
+    ordner = _klang_web()
+    name = ""
+    if eigen is not None and ordner:
+        try:
+            with open(eigen[0], "rb") as fh:
+                daten = fh.read(KLANG_MAX + 1)
+        except OSError as fehler:
+            log.warning("Eigener Gong nicht lesbar: %s", fehler)
+            daten = b""
+        if daten and len(daten) <= KLANG_MAX:
+            name = "eigen_" + hashlib.sha256(daten).hexdigest()[:16] + eigen[1]
+            if not os.path.isfile(os.path.join(ordner, name)):
+                grund = _klang_schreiben(name, daten)
+                if grund:
+                    log.warning("Eigener Gong nicht bereitstellbar: %s", grund)
+                    name = ""
+    if ordner and os.path.isdir(ordner):
+        try:
+            for n in os.listdir(ordner):
+                if KLANG_WEB_EIGEN.match(n) and n != name:
+                    os.remove(os.path.join(ordner, n))
+        except OSError:
+            pass
+    return name
+
+
+def web_basis(cfg, geraete_ip=""):
+    """Grundadresse des eigenen Webordners fuer den Lautsprecher: Feld der oertlichen Ansage oder
+    http://<eigene Adresse>[:Port]/plugins/<ordner> (wie ablage_adresse()). "" = nicht ermittelbar."""
+    basis = str(cfg.get("tts_lokal_basis", "") or "").strip().rstrip("/")
+    if basis:
+        return basis
+    ip = eigene_ip(geraete_ip or None)
+    if ip == "":
+        return ""
+    port = webport()
+    return "http://{0}{1}/plugins/{2}".format(ip, "" if port == 80 else ":%d" % port, PLUGIN_NAME)
+
+
+def klingel_gong(cfg, geraete_ip=""):
+    """(Adresse, Inhaltstyp, Hinweis) des Klingel-Gongs. Nachfassung 7: nie stumm.
+      1. Feld klingel_gong (leer und kein eigener Gong: der Gong der Ansage, tts_gong - wie bisher): eine
+         http(s)-Adresse gilt, wie sie ist; eine Datei der Medienablage, wenn es sie dort gibt (freigegeben).
+      2. sonst der eigene Gong (Reiter Audio), 3. sonst der mitgelieferte Standard-Gong.
+    Hinweis nicht leer = das Feld nannte eine Datei, die es in der freigegebenen Ablage nicht gibt - fuers Protokoll.
+    None nur, wenn sich die Adresse des eigenen Webservers nicht ermitteln laesst (dann Feld Grundadresse)."""
+    eigen = klang_eigen()
+    g = str(cfg.get("klingel_gong", "") or "").strip()
+    if g == "" and eigen is None:
+        g = str(cfg.get("tts_gong", "") or "").strip()
+    hinweis = ""
+    if g != "":
+        if re.match(r"^https?://", g, re.I):
+            return g, inhaltstyp(g) or "audio/mpeg", ""
+        typ = inhaltstyp(g)
+        echt = ablage_datei(g)
+        if typ is not None and echt is not None and os.path.isfile(echt):
+            url = ablage_adresse(cfg, g, geraete_ip)
+            if url:
+                return url, typ, ""
+        if typ is None:
+            grund = "ist keine Audiodatei"
+        elif not ABLAGE_STAND.get("ok"):
+            grund = "nicht abspielbar (Medienablage nicht freigegeben)"
+        else:
+            grund = "fehlt in der Medienablage"
+        hinweis = "Klingel-Gong '%s' %s" % (g[:80], grund)
+    basis = web_basis(cfg, geraete_ip)
+    if eigen is not None:
+        name = klang_eigen_bereitstellen(eigen)
+        if name and basis:
+            return (basis + "/klang/" + name, KLANG_ENDUNGEN[eigen[1]],
+                    (hinweis + " - es klingt der eigene Gong") if hinweis else "")
+        hinweis = (hinweis + "; " if hinweis else "") + "eigener Gong nicht bereitstellbar"
+    else:
+        klang_eigen_bereitstellen(None)
+    name = klang_standard()
+    if name and basis:
+        return basis + "/klang/" + name, "audio/wav", (hinweis + " - es klingt der Standard-Gong") if hinweis else ""
+    return None
+
+
+def zone_nummer(kennung):
+    """Zonennummer aus einem Befehlsnamen zone_<n> - sonst None."""
+    m = ZONE_KENNUNG.match(str(kennung or "").strip().lower())
+    if not m:
+        return None
+    n = int(m.group(1))
+    return n if 1 <= n <= ZONEN_MAX else None
+
+
+def sichtbar_merken(geraete):
+    """Gesehene Cast-Geraete festhalten (S2): CastInfo-Werte aus browser.devices. Nur Name und Modell."""
+    try:
+        werte = list(geraete.values()) if hasattr(geraete, "values") else list(geraete)
+    except Exception:  # noqa: BLE001
+        return
+    for info in werte:
+        name = str(getattr(info, "friendly_name", "") or "")
+        if name:
+            SICHTBAR[name[:80]] = str(getattr(info, "model_name", "") or "")[:60]
+    if len(SICHTBAR) > 200:
+        for k in list(SICHTBAR)[:len(SICHTBAR) - 200]:
+            del SICHTBAR[k]
+
+
+def sichtbar_fremd(eingetragen):
+    """Im Netz gesehen, aber nicht eingetragen: Liste von dict(name, modell), nach Name."""
+    return [{"name": n, "modell": SICHTBAR[n]} for n in sorted(SICHTBAR) if n not in eingetragen][:40]
+
+
 def thema_saeubern(name):
     """Geraetenamen in ein MQTT-taugliches Thema umformen.
     Umlaute werden umgeschrieben, alles andere ausser Buchstaben, Ziffern,
@@ -1436,6 +2167,9 @@ def eigenes_thema(praefix, thema):
         return teile[2] == "sperre"
     if len(teile) == 3 and teile[0] not in ("", "server") and teile[1] == "cmd":
         return thema_info("befehle", teile[2]) is not None
+    # Audio Stufe 1 (1.3.25): Zonenthemen <praefix>/zone/<n>/<schluessel> (Liste zone).
+    if len(teile) == 3 and teile[0] == "zone" and re.match(r"^[0-9]{1,2}$", teile[1]):
+        return thema_info("zone", teile[2]) is not None
     if len(teile) != 2 or teile[0] == "":
         return False
     bereich = "dienst" if teile[0] == "server" else "geraet"
@@ -1453,7 +2187,9 @@ def broker_leeren(praefix, warten=2.0, nur=None):
     praefix = str(praefix or "").strip("/")
     if praefix == "" or "#" in praefix or "+" in praefix:
         return 2, [], [], "das Themenpraefix '%s' taugt nicht fuer ein Abonnement" % praefix
-    if nur is not None and (str(nur) in ("", "server") or re.search(r"[/#+]", str(nur))):
+    # Audio Stufe 1 (1.3.25): auch eine Zone "zone/<n>".
+    if nur is not None and (str(nur) in ("", "server") or re.search(r"[#+]", str(nur))
+                            or ("/" in str(nur) and not re.match(r"^zone/[0-9]{1,2}$", str(nur)))):
         return 2, [], [], "das Geraetethema '%s' taugt nicht fuer ein Abonnement" % nur
     filter_thema = praefix + ("/" + str(nur) if nur is not None else "") + "/#"
     try:
@@ -1710,6 +2446,7 @@ class Netzsuche:
             name = getattr(info, "friendly_name", "") if info else ""
             if name:
                 self.gefunden[name] = info
+                sichtbar_merken([info])     # Audio Stufe 1 (S2)
 
         def weg(uuid, service, cast_info):
             name = getattr(cast_info, "friendly_name", "")
@@ -1734,6 +2471,15 @@ class Netzsuche:
 
     def info(self, name):
         return self.gefunden.get(name)
+
+    def info_kennung(self, kennung):
+        """Audio Stufe 1 (E1): ein Zonenziel, das in Google Home umbenannt wurde - ueber die gemerkte Kennung."""
+        if not kennung:
+            return None
+        for info in list(self.gefunden.values()):
+            if str(getattr(info, "uuid", "") or "") == kennung:
+                return info
+        return None
 
     def stop(self):
         try:
@@ -1796,6 +2542,24 @@ class Geraet:
         # X-7 (Entscheidung Nr. 19, seit 1.3.17): zuletzt GESENDETER Pegel
         # (0-100) und Zeitpunkt (time.monotonic) - siehe _x7_gleich().
         self.x7_laut = None
+        # Audio Stufe 1 (1.3.25): Zonen dieses Geraets, gemerkte und aktuelle Cast-Kennung, aktive Quelle.
+        self.zonen_nr = []
+        self.uuid_merker = ""
+        self.uuid = ""
+        self.quelle = 0
+        self.quelle_name = ""
+        # E-NF3 (Nachfassung 2): die Geraeteliste des Dienstes - eine Gruppe merkt sich vor Klingel/Ansage, was auf
+        # den anderen spielt, und setzt danach fort, was sie unterbrochen hat. Der Dienst setzt sie beim Aufbau.
+        self.nachbarn = {}
+        # Nachfassung 3 (O1): nur bei einer Google-Gruppe - ihre Mitglieder als Liste von dict(kennung, name) aus dem
+        # MultizoneController; None = noch nicht gemessen (dann bleibt alles wie vor der Nachfassung). mz = der
+        # Controller am aktuellen Cast-Objekt, mz_frisch = die Gruppe hat eine Aenderung gemeldet.
+        self.mitglieder = None
+        self.mitglieder_zeit = 0
+        self.mitglieder_geaendert = False
+        self.mz = None
+        self.mz_frisch = False
+        self.mz_nachfrage = 0.0
 
     # -- Verbindung ---------------------------------------------------------
 
@@ -1820,6 +2584,8 @@ class Geraet:
         # sie nicht laeuft oder das Geraet dort nicht steht, wird die teure
         # Einzelsuche bemueht.
         info = self.netzsuche.info(self.name) if self.netzsuche else None
+        if info is None and self.netzsuche and self.uuid_merker:
+            info = self.netzsuche.info_kennung(self.uuid_merker)
         if info is not None:
             try:
                 self.cast = pychromecast.get_chromecast_from_cast_info(
@@ -1832,21 +2598,36 @@ class Geraet:
                 info = None
         if info is None:
             try:
+                # Audio Stufe 1 (E1): ein Zonenziel auch ueber seine gemerkte Kennung finden.
+                kennung = self._kennung_objekt()
                 gefunden, browser = pychromecast.get_listed_chromecasts(
-                    friendly_names=[self.name], discovery_timeout=8
+                    friendly_names=[self.name], discovery_timeout=8,
+                    **({"uuids": [kennung]} if kennung is not None else {})
                 )
             except Exception as fehler:  # noqa: BLE001
                 log.error("Suche nach '%s' fehlgeschlagen: %s", self.name, fehler)
                 return False
 
             if not gefunden:
-                log.warning("Chromecast '%s' nicht gefunden", self.name)
+                # Audio Stufe 1 (S2): was die Suche gesehen hat, nennen - Name und Modell, keine Adresse.
+                try:
+                    sichtbar_merken(getattr(browser, "devices", None) or {})
+                except Exception:  # noqa: BLE001
+                    pass
+                gesehen = sorted(SICHTBAR)[:8]
+                log.warning("Chromecast '%s' nicht gefunden%s", self.name,
+                            (" - im Netz sichtbar: " + ", ".join("%s (%s)" % (n, SICHTBAR[n] or "?")
+                                                               for n in gesehen)) if gesehen else "")
                 self._browser_beenden(browser)
                 self.melden_offline()
                 return False
 
             self.cast = gefunden[0]
             self.browser = browser
+            try:
+                sichtbar_merken(getattr(browser, "devices", None) or {})
+            except Exception:  # noqa: BLE001
+                pass
         try:
             self.cast.wait(timeout=10)
         except Exception as fehler:  # noqa: BLE001
@@ -1870,11 +2651,146 @@ class Geraet:
         log.info("Verbunden mit '%s' (%s%s)", self.name,
                  getattr(self.cast, "model_name", "?"),
                  ", Lautsprechergruppe" if self.ist_gruppe else "")
+        # Audio Stufe 1 (E1): Kennung merken; heisst das Geraet in Google Home anders, weiter verbinden und melden.
+        self.uuid = str(getattr(self.cast, "uuid", "") or "")
+        jetzt_name = str(getattr(self.cast, "name", "") or "")
+        if jetzt_name and jetzt_name != self.name:
+            log.warning("'%s' heisst in Google Home jetzt '%s' - verbunden ueber die gemerkte Kennung; Themen "
+                        "und Zonen bleiben. Den Namen in der Geraeteliste nachziehen.", self.name, jetzt_name)
+            self.meldung_setzen("umbenannt in Google Home: {0}".format(jetzt_name))
         # X-7: nach einer (Neu-)Verbindung ist der gemerkte Pegel nichts mehr
         # wert - das Geraet kann neu gestartet sein.
         self.x7_laut = None
         self._lauscher_anmelden()
+        self._mitglieder_anmelden()     # Nachfassung 3 (O1): nur bei einer Gruppe
         return True
+
+    # -- Nachfassung 3: Mitglieder einer Google-Gruppe (O1, gemessen 30.10.2026) ---------------------------------
+    #
+    # Schnittstelle in pychromecast 9.4.0 (am LoxBerry gelesen) wie in 14.x: MultizoneController(uuid),
+    # register_listener(obj) mit multizone_member_added/_removed/multizone_status_received, update_members() schickt
+    # GET_STATUS, members = Liste der Kennungen, _members = Kennung -> Name. Alles ueber getattr mit Rueckfall; fehlt
+    # der Controller, bleibt die Mitgliedschaft unbekannt (None) und alles wie vorher. Angemeldet wird am Cast-Objekt
+    # ueber register_handler (9.4 leitet es an socket_client weiter, neuere ebenso).
+
+    def _mitglieder_anmelden(self):
+        if not self.ist_gruppe or self.cast is None:
+            return
+        try:
+            from pychromecast.controllers.multizone import MultizoneController
+        except ImportError as fehler:
+            log.warning("'%s': die Mitglieder der Gruppe lassen sich nicht abfragen (%s)", self.name, fehler)
+            return
+        geraet = self
+
+        class _MzLauscher(object):
+            """Duck-Typing wie _Lauscher: nicht von MultiZoneControllerListener erben (abstrakte Methoden je Fassung)."""
+
+            def multizone_member_added(self, *_a, **_k):
+                geraet.mz_frisch = True
+
+            def multizone_member_removed(self, *_a, **_k):
+                geraet.mz_frisch = True
+
+            def multizone_status_received(self, *_a, **_k):
+                geraet._mitglieder_lesen()
+
+            def new_connection_status(self, status):
+                if str(getattr(status, "status", "") or "") == "CONNECTED":
+                    geraet._mitglieder_nachfragen()
+
+        lauscher = _MzLauscher()
+        try:
+            mz = MultizoneController(getattr(self.cast, "uuid", None) or self.uuid)
+            mz.register_listener(lauscher)
+            self.mz = mz
+            anmelden = getattr(self.cast, "register_handler", None)
+            if anmelden is None:
+                anmelden = self.cast.socket_client.register_handler
+            anmelden(mz)
+        except Exception as fehler:  # noqa: BLE001
+            self.mz = None
+            log.warning("'%s': die Mitglieder der Gruppe lassen sich nicht abfragen (%s)", self.name, fehler)
+            return
+        try:
+            self.cast.register_connection_listener(lauscher)
+        except Exception:  # noqa: BLE001
+            pass
+        log.info("'%s': Mitglieder der Gruppe werden abgefragt (Multizone)", self.name)
+        self._mitglieder_nachfragen()
+
+    def _mitglieder_nachfragen(self):
+        """GET_STATUS an die Gruppe - die Antwort kommt ueber den Lauscher (multizone_status_received)."""
+        mz = self.mz
+        if mz is None:
+            return
+        self.mz_nachfrage = time.time()
+        try:
+            mz.update_members()
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("'%s': Nachfrage nach den Mitgliedern gescheitert: %s", self.name, fehler)
+
+    def _mitglieder_lesen(self):
+        """Die Mitglieder aus dem Controller uebernehmen (Kennung und Name). Aendert sich etwas, steht es im Protokoll
+        und der Dienst merkt es unter data/."""
+        mz = self.mz
+        if mz is None:
+            return
+        self.mz_frisch = False
+        roh = getattr(mz, "_members", None)
+        if isinstance(roh, dict):
+            paare = list(roh.items())
+        else:
+            paare = [(k, "") for k in (getattr(mz, "members", None) or [])]
+        neu = sorted(({"kennung": str(k or "")[:64], "name": str(n or "")[:80]} for k, n in paare),
+                     key=lambda m: (m["name"].lower(), m["kennung"]))
+        if neu == self.mitglieder:
+            return
+        self.mitglieder = neu
+        self.mitglieder_zeit = int(time.time())
+        self.mitglieder_geaendert = True
+        log.info("Gruppe '%s': Mitglieder %s", self.name, ", ".join(m["name"] or "?" for m in neu) or "(keine)")
+
+    def _mitglieder_pflegen(self):
+        """Aus _melden: was die Gruppe einzeln gemeldet hat (hinzu/weg) uebernehmen, und eine verbundene Gruppe alle
+        MZ_NACHFRAGE Sekunden erneut fragen."""
+        if getattr(self, "mz", None) is None:
+            return
+        if self.mz_frisch:
+            self._mitglieder_lesen()
+        if self.verbunden() and time.time() - self.mz_nachfrage >= MZ_NACHFRAGE:
+            self._mitglieder_nachfragen()
+
+    def ist_mitglied(self, m):
+        """Ist dieses Geraet das Mitglied m (dict kennung, name)? Ueber die Kennung (aktuelle oder gemerkte), sonst
+        ueber den Namen."""
+        k = m.get("kennung") if isinstance(m, dict) else ""
+        if kennung_gleich(k, getattr(self, "uuid", "")) or kennung_gleich(k, getattr(self, "uuid_merker", "")):
+            return True
+        return name_gleich(m.get("name") if isinstance(m, dict) else "", self.name)
+
+    def mitglied_von(self):
+        """Namen der eingetragenen Google-Gruppen, in denen dieses Geraet Mitglied ist (sortiert). Eine Gruppe ist in
+        keiner Gruppe; unbekannte Mitgliedschaften zaehlen nicht."""
+        if getattr(self, "ist_gruppe", False):
+            return []
+        aus = []
+        for g in list((getattr(self, "nachbarn", None) or {}).values()):
+            if g is self:
+                continue
+            if any(self.ist_mitglied(m) for m in (getattr(g, "mitglieder", None) or [])):
+                aus.append(g.name)
+        return sorted(aus, key=lambda n: n.lower())
+
+    def _kennung_objekt(self):
+        """Die gemerkte Kennung als UUID fuer get_listed_chromecasts(uuids=...) - oder None."""
+        if not self.uuid_merker:
+            return None
+        try:
+            import uuid as _uuid
+            return _uuid.UUID(self.uuid_merker)
+        except (ValueError, TypeError):
+            return None
 
     def _lauscher_anmelden(self):
         """Rueckrufe anmelden - OHNE von den Basisklassen zu erben.
@@ -2120,6 +3036,7 @@ class Geraet:
         self.browser = None
         # Die Rueckrufe hingen am alten Cast-Objekt und sind mit ihm fort.
         self.lauscher_an = False
+        self.mz = None      # Nachfassung 3: der Controller ebenso; die Mitglieder bleiben bekannt
 
     def verbunden(self):
         return self.cast is not None and getattr(self.cast, "socket_client", None) is not None
@@ -2152,6 +3069,7 @@ class Geraet:
         self.letzter_stand[schluessel] = merk
         self.mqtt.senden(self.thema + "/" + schluessel, wert,
                          thema_retain("geraet", schluessel) and not platzhalter)
+        self._zonen_spiegeln(schluessel, wert, platzhalter)     # Audio Stufe 1
 
     def melden_offline(self, erzwingen=False):
         """Das Geraet ist nicht erreichbar - Platzhalter, fluechtig.
@@ -2175,6 +3093,10 @@ class Geraet:
             self._melden(erzwingen)
 
     def _melden(self, erzwingen=False):
+        # Nachfassung 3 (O1): Mitgliedschaft in Google-Gruppen - auch bei einem nicht verbundenen Lautsprecher, sie
+        # haengt an den Gruppen. Text, retained; "-" = in keiner (bekannten) Gruppe, nie leer (Entscheidung Nr. 5).
+        self._mitglieder_pflegen()
+        self._zone_senden("mitglied_von", "; ".join(self.mitglied_von()) or "-", erzwingen)
         if not self.verbunden():
             self.melden_offline(erzwingen)
             return
@@ -2217,13 +3139,21 @@ class Geraet:
         self._senden("tts_active", "1" if self.ansage_laeuft else "0", erzwingen)
         self._senden("favorit", self.favorit, erzwingen)
         self._senden("last_error", self.letzte_meldung, erzwingen)
+        # Audio Stufe 1: aktive Quelle der Zone(n).
+        self._zone_senden("quelle", self.quelle, erzwingen)
+        self._zone_senden("quelle_name", self.quelle_name, erzwingen)
 
     # -- Befehle ------------------------------------------------------------
 
     # -- Ansage mit Wiederaufnahme -----------------------------------------
 
     def _lage_merken(self):
-        """Festhalten, was gerade laeuft - fuer die Wiederaufnahme.
+        """Festhalten, was gerade laeuft (self.vorher) - siehe _lage_lesen()."""
+        self.vorher = self._lage_lesen()
+
+    def _lage_lesen(self):
+        """Lesen, was gerade laeuft - fuer die Wiederaufnahme. Rueckgabe dict oder None (E-NF3: so liest eine
+        Gruppe auch die Lage ihrer Mitglieder, ohne deren self.vorher anzufassen).
 
         Gemerkt wird nur, was sich ueber pychromecast auch wieder herstellen
         laesst: die Adresse des Mediums, sein Typ, die Abspielposition und
@@ -2231,24 +3161,29 @@ class Geraet:
         keine Adresse, die man zurueckspielen koennte - dann wird
         ausdruecklich NICHTS gemerkt und hinterher auch nichts behauptet.
         """
-        self.vorher = None
         try:
             st = self.cast.media_controller.status
             cs = self.cast.status
         except Exception:  # noqa: BLE001
-            return
+            return None
         lautstaerke = cs.volume_level if cs else None
         if st is None or not st.content_id or st.player_state not in ("PLAYING", "PAUSED"):
             # Nichts Wiederherstellbares - aber die Lautstaerke schon.
-            self.vorher = {"art": "nur_lautstaerke", "lautstaerke": lautstaerke}
-            return
-        self.vorher = {
+            return {"art": "nur_lautstaerke", "lautstaerke": lautstaerke}
+        return {
             "art": "medium",
             "url": st.content_id,
             "typ": st.content_type or "audio/mp3",
             "position": float(st.adjusted_current_time or 0.0),
             "lief": st.player_state == "PLAYING",
             "lautstaerke": lautstaerke,
+            # Nachfassung 30.10.2026 (Geraetetest 17:57: Radio nach der Klingel still, "bei 13 s wieder
+            # aufgenommen"): ein Live-Strom hat keine Stelle - er startet ohne current_time neu; eine eigene
+            # Liste geht an Titel und Stelle weiter, mit den folgenden Titeln dahinter.
+            "live": (str(getattr(st, "stream_type", "") or "").upper() == "LIVE"
+                     or not getattr(st, "duration", None)),
+            "titel": str(getattr(st, "title", "") or ""),
+            "liste": self._liste_index(st.content_id),
         }
 
     def _lautstaerke_merken(self):
@@ -2262,6 +3197,35 @@ class Geraet:
         if cs is not None and cs.volume_level is not None:
             self.vorher = {"art": "nur_lautstaerke", "lautstaerke": cs.volume_level}
 
+    def _lage_laden(self, lage, zeit):
+        """Das gemerkte Medium laden: eigene Liste ab ihrem Titel (Rest eingereiht), sonst die Adresse - ein
+        Live-Strom als LIVE und ohne Stelle (Nachfassung 30.10.2026)."""
+        mc = self.cast.media_controller
+        if lage.get("liste") is not None and not lage.get("live"):
+            grund = self._liste_ab(lage["liste"], zeit, lage["lief"])
+            if grund:
+                log.warning("'%s': Wiederaufnahme der Liste: %s", self.name, grund)
+            return
+        kw = {"autoplay": lage["lief"]}
+        if zeit > 0:
+            kw["current_time"] = zeit
+        if lage.get("live"):
+            kw["stream_type"] = "LIVE"
+        if lage.get("titel"):
+            kw["title"] = lage["titel"]
+        mc.play_media(lage["url"], lage["typ"], **kw)
+        mc.block_until_active(timeout=10)
+
+    def _spielt_wieder(self, blicke=30):
+        """Nach dem Fortsetzen bis zu ~6 s nachsehen, ob der Lautsprecher spielt (PLAYING/BUFFERING)."""
+        mc = self.cast.media_controller
+        for _ in range(blicke):
+            st = mc.status
+            if st is not None and getattr(st, "player_state", "") in ("PLAYING", "BUFFERING"):
+                return True
+            time.sleep(0.2)
+        return False
+
     def _lage_herstellen(self):
         """Nach der Ansage wieder aufnehmen, was vorher lief."""
         lage = self.vorher
@@ -2274,14 +3238,77 @@ class Geraet:
                 self.x7_laut = None  # X-7: die Ansage hat den Pegel gestellt
             if lage["art"] != "medium":
                 return
-            mc = self.cast.media_controller
-            mc.play_media(lage["url"], lage["typ"], current_time=lage["position"],
-                          autoplay=lage["lief"])
-            mc.block_until_active(timeout=10)
-            log.info("'%s': vorheriges Medium bei %.0f s wieder aufgenommen",
-                     self.name, lage["position"])
+            zeit = 0.0 if lage.get("live") else max(0.0, float(lage.get("position") or 0.0))
+            self._lage_laden(lage, zeit)
+            if lage["lief"] and not self._spielt_wieder():
+                log.warning("'%s': vorheriges Medium spielt nach dem Fortsetzen nicht - einmal ohne Stelle "
+                            "neu geladen", self.name)
+                zeit = 0.0
+                self._lage_laden(lage, zeit)
+            if lage.get("live"):
+                log.info("'%s': vorheriger Live-Strom neu gestartet", self.name)
+            elif lage.get("liste") is not None:
+                log.info("'%s': Wiedergabeliste bei Titel %d, %.0f s wieder aufgenommen", self.name,
+                         lage["liste"] + 1, zeit)
+            else:
+                log.info("'%s': vorheriges Medium bei %.0f s wieder aufgenommen", self.name, zeit)
         except Exception as fehler:  # noqa: BLE001
             log.warning("'%s': Wiederaufnahme misslungen: %s", self.name, fehler)
+
+    # -- E-NF3 (Nachfassung 2, 30.10.2026): Gruppe unterbricht ihre Mitglieder ------------------------------------
+    #
+    # Geraetetest 30.10. 18:17: Wohnzimmer spielt Radio, Klingel an die Gruppe "Klingel" -> Wohnzimmer meldet UNKNOWN,
+    # playing 0 (die Gruppe uebernimmt das Mitglied und beendet dessen Sitzung), Gong aus beiden Lautsprechern, danach
+    # bleibt das Wohnzimmer still. Welche Geraete Mitglieder sind, weiss der Dienst nicht (O1). Darum: vor der
+    # Gruppenwiedergabe die Lage aller verbundenen anderen Geraete merken, die gerade spielen; danach fortsetzen, was
+    # waehrenddessen von PLAYING auf UNKNOWN/IDLE fiel - das sind genau die, die die Gruppe uebernommen hat. Wer
+    # weiterspielt (kein Mitglied) oder pausiert, bleibt unberuehrt; IDLE mit Grund FINISHED ist ein natuerliches Ende.
+
+    def _mitglieder_merken(self):
+        """Nur fuer eine Google-Gruppe: [(Geraet, Lage)] aller verbundenen anderen Geraete, die gerade spielen und
+        sich wiederherstellen lassen (Adresse bekannt). Ihre eigene Lage (self.vorher) bleibt unberuehrt."""
+        if not (self.ist_gruppe or str(self.art or "").lower() == "group"):
+            return []
+        aus = []
+        for g in list((getattr(self, "nachbarn", None) or {}).values()):
+            if g is self or g.cast is None or not g.verbunden() or g.ansage_laeuft:
+                continue
+            try:
+                st = g.cast.media_controller.status
+                zustand = str(getattr(st, "player_state", "") or "") if st is not None else ""
+            except Exception:  # noqa: BLE001
+                continue
+            if zustand != "PLAYING":
+                continue
+            lage = g._lage_lesen()
+            if lage and lage.get("art") == "medium":
+                aus.append((g, lage))
+        if aus:
+            log.info("'%s': vor der Gruppenwiedergabe spielen %s - danach wird nachgesehen, ob die Gruppe sie "
+                     "unterbrochen hat", self.name, ", ".join("'%s'" % g.name for g, _l in aus))
+        return aus
+
+    def _mitglieder_fortsetzen(self, gemerkt, cfg):
+        """Nach Gong/Ansage der Gruppe: wer vorher spielte und jetzt UNKNOWN/IDLE meldet, wurde von der Gruppe
+        uebernommen - im EIGENEN Arbeitsfaden fortsetzen (Auftrag fortsetzen_nach_gruppe, Regeln von _lage_herstellen)."""
+        for g, lage in gemerkt:
+            try:
+                st = g.cast.media_controller.status if g.cast is not None else None
+                zustand = (str(getattr(st, "player_state", "") or "") if st is not None else "") or "UNKNOWN"
+                grund = str(getattr(st, "idle_reason", "") or "") if st is not None else ""
+            except Exception:  # noqa: BLE001
+                zustand, grund = "UNKNOWN", ""
+            if zustand in ("PLAYING", "BUFFERING", "PAUSED"):
+                continue
+            if zustand == "IDLE" and grund.upper() == "FINISHED":
+                log.info("'%s': '%s' ist waehrenddessen regulaer zu Ende gegangen - nicht fortgesetzt", self.name, g.name)
+                continue
+            log.info("'%s': '%s' spielte vorher und meldet jetzt %s - von der Gruppe unterbrochen (Mitglied), wird "
+                     "fortgesetzt", self.name, g.name, zustand)
+            try:
+                g.einreihen("fortsetzen_nach_gruppe", lage, 0, cfg)
+            except Exception as fehler:  # noqa: BLE001
+                log.warning("'%s': Fortsetzen von '%s' nicht eingereiht: %s", self.name, g.name, fehler)
 
     def ansage(self, text, cfg):
         """Text ansagen. Rueckgabe: Meldung fuer das Protokoll."""
@@ -2349,9 +3376,11 @@ class Geraet:
         # Loxone soll wissen, dass gerade gesprochen wird - wer in dieser
         # Zeit Befehle schickt, unterbricht die Ansage.
         self._senden("tts_active", "1")
+        mitglieder = []
         try:
             if fortsetzen:
                 self._lage_merken()
+                mitglieder = self._mitglieder_merken()      # E-NF3, nur bei einer Gruppe
             elif nur_laut:
                 self._lautstaerke_merken()
             if str(ansagepegel or "").strip() != "":
@@ -2411,8 +3440,10 @@ class Geraet:
             self.ansage_laeuft = False
             self.ansage_abbrechen = False
             self._senden("tts_active", "0")
+            if mitglieder:
+                self._mitglieder_fortsetzen(mitglieder, cfg)
 
-    def _auf_ende_warten(self, mc, hoechstens=60.0):
+    def _auf_ende_warten(self, mc, hoechstens=60.0, anlauf=8.0):
         """Warten, bis das laufende Stueck zu Ende ist.
 
         Die Obergrenze ist eine Notbremse: haenge der Lautsprecher in
@@ -2429,12 +3460,19 @@ class Geraet:
         # Kurz Anlauf geben - unmittelbar nach play_media steht der Zustand
         # noch auf IDLE, und die Schleife waere sofort fertig.
         time.sleep(1.0)
+        # Nachfassung 30.10.2026 (Geraetetest 17:59: Gruppe, App startete erst - nach ~1 s "Ergebnis unbekannt",
+        # Rueckfall an alle): bis zum ersten PLAYING/BUFFERING zaehlt ein IDLE als "noch nicht angelaufen", bis
+        # zur Anlauffrist (App-Start eingerechnet).
+        anlauf_ende = time.time() + max(0.0, anlauf - 1.0)
         while time.time() < ende:
             try:
                 zustand = mc.status.player_state if mc.status else "IDLE"
             except Exception:  # noqa: BLE001
                 return gespielt
             if zustand not in ("PLAYING", "BUFFERING"):
+                if not gespielt and time.time() < anlauf_ende and not self.ansage_abbrechen:
+                    time.sleep(0.25)
+                    continue
                 return gespielt
             gespielt = True
             if self.ansage_abbrechen:
@@ -2447,6 +3485,240 @@ class Geraet:
         log.warning("'%s': Ansage laeuft nach %.0f s noch - es wird weitergemacht",
                     self.name, hoechstens)
         return True
+
+    # -- Audio Stufe 1: Zonen, Quellen, Klingel (1.3.25) ------------------
+    #
+    # Eine Zone ist eine feste Nummer, die auf DIESES Geraet (oder diese Google-Gruppe) zeigt (E1). Ihre Themen
+    # chromecast4lox/zone/<n>/... sind Spiegel der Geraetethemen, die in der Themenliste unter "zone" stehen; "group"
+    # heisst dort "art". Gesendet wird, wenn das Geraet sendet - derselbe Doppelt-senden-Filter, dieselbe
+    # Retain-Regel je Thema, Platzhalter nie retained. quelle und quelle_name gibt es nur an der Zone.
+
+    def _zonen_spiegeln(self, schluessel, wert, platzhalter=False):
+        if not self.zonen_nr:
+            return
+        k = "art" if schluessel == "group" else schluessel
+        if thema_info("zone", k) is None:
+            return
+        for nr in list(self.zonen_nr):
+            self.mqtt.senden("zone/%d/%s" % (nr, k), wert, thema_retain("zone", k) and not platzhalter)
+
+    def _zone_senden(self, schluessel, wert, erzwingen=False):
+        """Ein Thema, das es nur an der Zone gibt (quelle, quelle_name)."""
+        if not self.zonen_nr:
+            return
+        wert = "" if wert is None else str(wert)
+        merk_k = "\0zone:" + schluessel
+        if not erzwingen and self.letzter_stand.get(merk_k) == wert:
+            return
+        self.letzter_stand[merk_k] = wert
+        for nr in list(self.zonen_nr):
+            self.mqtt.senden("zone/%d/%s" % (nr, schluessel), wert, thema_retain("zone", schluessel))
+
+    def _quelle_setzen(self, nummer, name):
+        self.quelle = int(nummer)
+        self.quelle_name = str(name or "")[:120]
+        self._zone_senden("quelle", self.quelle)
+        self._zone_senden("quelle_name", self.quelle_name)
+
+    def quelle_spielen(self, wert, cfg):
+        """Befehl quelle (S3): 0 = Stopp, sonst die Quelle dieser Nummer. Rueckgabe "OK" oder Meldung."""
+        nummer, fehlertext = befehlszahl(wert, 0, 0, QUELLEN_MAX, "quelle")
+        if fehlertext:
+            return fehlertext
+        mc = self.cast.media_controller
+        if nummer <= 0:
+            # Radiotasten "Aus" - und ein Ausgang, der nach dem Neustart des Miniservers auf 0 steht, haelt nur an.
+            try:
+                mc.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._quelle_setzen(0, "")
+            return "OK"
+        liste = quellen(cfg)
+        q = liste.get(nummer)
+        if q is None:
+            return "Quelle {0} gibt es nicht - eingetragen sind {1}".format(nummer, len(liste))
+        if q["art"] == "radio":
+            if not re.match(r"^https?://", q["adresse"], re.I):
+                return "Quelle {0}: eine Radioquelle braucht eine http(s)-Adresse".format(nummer)
+            adresse, typ, hinweis = radio_aufloesen(q["adresse"])
+            if hinweis:
+                log.info("'%s': Quelle %d: %s", self.name, nummer, hinweis)
+            mc.play_media(adresse, typ, title=q["name"], stream_type="LIVE")
+            mc.block_until_active(timeout=10)
+        elif q["art"] == "datei":
+            if re.match(r"^https?://", q["adresse"], re.I):
+                adresse, typ = q["adresse"], inhaltstyp(q["adresse"]) or "audio/mpeg"
+            else:
+                if not ABLAGE_STAND.get("ok"):
+                    return "Quelle {0}: Medienablage nicht erreichbar ({1})".format(
+                        nummer, ABLAGE_STAND.get("grund") or "nicht eingerichtet")
+                echt = ablage_datei(q["adresse"])
+                typ = inhaltstyp(q["adresse"])
+                if echt is None or not os.path.isfile(echt) or typ is None:
+                    return "Quelle {0}: Datei fehlt in der Medienablage oder ist keine Audiodatei".format(nummer)
+                adresse = ablage_adresse(cfg, q["adresse"], self._geraete_adresse())
+                if adresse == "":
+                    return "Quelle {0}: Adresse der Medienablage nicht zu bilden (eigene Adresse unbekannt)".format(nummer)
+            mc.play_media(adresse, typ, title=q["name"])
+            mc.block_until_active(timeout=10)
+        else:
+            if not ABLAGE_STAND.get("ok"):
+                return "Quelle {0}: Medienablage nicht erreichbar ({1})".format(
+                    nummer, ABLAGE_STAND.get("grund") or "nicht eingerichtet")
+            eintraege, grund = liste_aufbauen(q)
+            if grund:
+                return "Quelle {0}: {1}".format(nummer, grund)
+            grund = self._liste_laden(eintraege, cfg)
+            if grund:
+                return "Quelle {0}: {1}".format(nummer, grund)
+        log.info("'%s': Quelle %d (%s, %s) gestartet", self.name, nummer, q["name"], q["art"])
+        self._quelle_setzen(nummer, q["name"])
+        return "OK"
+
+    def _liste_laden(self, eintraege, cfg):
+        """Eine Wiedergabeliste als Cast-Warteschlange (S3): der erste Titel mit LOAD, die uebrigen mit QUEUE_INSERT
+        (play_media(..., enqueue=True), pychromecast 9.4 und neuer). Danach wirken next/prev. Rueckgabe "" oder Grund."""
+        mc = self.cast.media_controller
+        ip = self._geraete_adresse()
+        titel = []
+        for ziel, name, interpret in eintraege:
+            if re.match(r"^https?://", ziel, re.I):
+                url, typ = ziel, inhaltstyp(ziel) or "audio/mpeg"
+            else:
+                url, typ = ablage_adresse(cfg, ziel, ip), inhaltstyp(ziel)
+            if not url or not typ:
+                continue
+            meta = {"metadataType": 3, "title": name or os.path.basename(ziel)}
+            if interpret:
+                meta["artist"] = interpret
+            titel.append((url, typ, meta))
+        if not titel:
+            return "keine abspielbare Datei in der Liste"
+        self.liste_titel = titel
+        grund = self._liste_ab(0)
+        if not grund:
+            log.info("'%s': Wiedergabeliste mit %d Titeln geladen", self.name, len(titel))
+        return grund
+
+    def _liste_ab(self, start, zeit=0.0, autoplay=True):
+        """Die eigene Liste ab Titel <start> spielen: diesen mit LOAD, die folgenden mit QUEUE_INSERT. Eingereiht wird
+        erst, wenn der Lautsprecher fuer den neuen Titel eine NEUE Sitzungsnummer meldet (sonst gingen die Eintraege
+        an die alte Sitzung), und mit kleinem Abstand. Rueckgabe "" oder Grund."""
+        mc = self.cast.media_controller
+        titel = list(getattr(self, "liste_titel", None) or [])[start:]
+        if not titel:
+            return "keine abspielbare Datei in der Liste"
+        alt = getattr(mc.status, "media_session_id", None) if mc.status is not None else None
+        url, typ, meta = titel[0]
+        if zeit and zeit > 0:
+            mc.play_media(url, typ, metadata=dict(meta), current_time=zeit, autoplay=autoplay)
+        else:
+            mc.play_media(url, typ, metadata=dict(meta), autoplay=autoplay)
+        mc.block_until_active(timeout=10)
+        ende = time.time() + 5.0
+        while time.time() < ende and getattr(mc.status, "media_session_id", None) in (None, alt):
+            time.sleep(0.2)
+        if len(titel) > 1 and not getattr(mc.status, "media_session_id", None):
+            return "der Lautsprecher hat den ersten Titel nicht angenommen - die Warteschlange fehlt"
+        for url, typ, meta in titel[1:]:
+            mc.play_media(url, typ, metadata=dict(meta), enqueue=True)
+            time.sleep(0.3)
+        return ""
+
+    def _liste_index(self, adresse):
+        """Stelle einer Adresse in der eigenen Liste oder None."""
+        urls = [t[0] for t in (getattr(self, "liste_titel", None) or [])]
+        return urls.index(adresse) if adresse and adresse in urls else None
+
+    def _liste_schritt(self, schritt):
+        """next/prev in einer Wiedergabeliste des Plugins (Nachfassung 30.10.2026; Geraetetest: next auf Titel 2 von 3
+        -> sofort Stille, IDLE, prev ging). Das Ziel kommt aus der EIGENEN Liste, nicht aus der Warteschlange des
+        Lautsprechers: laufender Titel = content_id, dann das Ziel mit LOAD und der Rest dahinter. Weiter nach dem
+        letzten Titel haelt an (wie das Ende der Liste); Zurueck auf dem ersten beginnt ihn neu. Rueckgabe None =
+        es laeuft keine eigene Liste (dann wie bisher queue_next/queue_prev), "" = erledigt, sonst Grund."""
+        titel = getattr(self, "liste_titel", None) or []
+        mc = self.cast.media_controller
+        jetzt = str(getattr(mc.status, "content_id", "") or "") if mc.status is not None else ""
+        urls = [t[0] for t in titel]
+        if jetzt == "" or jetzt not in urls:
+            return None
+        ziel = urls.index(jetzt) + schritt
+        if ziel >= len(titel):
+            mc.stop()
+            log.info("'%s': Weiter nach dem letzten Titel - Liste zu Ende, angehalten", self.name)
+            return ""
+        ziel = max(0, ziel)
+        grund = self._liste_ab(ziel)
+        if not grund:
+            log.info("'%s': Titel %d von %d", self.name, ziel + 1, len(titel))
+        return grund
+
+    def klingeln(self, cfg):
+        """Befehl klingel (S5, E3-E5): Gong (Feld Klingel-Gong, sonst der Ansage-Gong), optional ein Ansagetext danach.
+        Pegel: Klingel-Pegel, gedeckelt von Obergrenze und Ruhezeit - die Klingel geht in der Ruhezeit mit dem
+        Ruhepegel hinaus, nicht gar nicht (E5); wer nachts nichts will, setzt die Sperre aus Loxone. Was vorher lief,
+        wird wie bei der Ansage fortgesetzt (Haken "danach fortsetzen"); bei einer Google-Gruppe dazu die Lautsprecher,
+        die sie unterbrochen hat (E-NF3, Nachfassung 2)."""
+        gong = klingel_gong(cfg, self._geraete_adresse())
+        if gong is None:
+            # Nachfassung 7: fehlt eine Datei, klingt der eigene bzw. der Standard-Gong - None nur ohne eigene Adresse.
+            return ("Klingel: kein Gong - die eigene Adresse liess sich nicht ermitteln (Feld Grundadresse der "
+                    "oertlichen Ansage eintragen) oder der Klangordner ist nicht beschreibbar")
+        if gong[2]:
+            log.warning("'%s': %s", self.name, gong[2])
+        text = str(cfg.get("klingel_text", "") or "").strip()
+        pegel_roh = str(cfg.get("klingel_pegel", "") or "").strip()
+        fortsetzen = str(cfg.get("tts_fortsetzen", "1")).strip() == "1"
+        grenze = lautstaerke_grenze(cfg)
+        self.ansage_abbrechen = False
+        self.ansage_laeuft = True
+        self._senden("tts_active", "1")
+        gespielt = False
+        mitglieder = []
+        try:
+            if fortsetzen:
+                self._lage_merken()
+                mitglieder = self._mitglieder_merken()      # E-NF3, nur bei einer Gruppe
+            else:
+                self._lautstaerke_merken()
+            jetzt = self.cast.status.volume_level if self.cast.status else None
+            stufe = None
+            if pegel_roh != "":
+                stufe = max(0, min(100, zahl_oder(pegel_roh, 40)))
+            elif jetzt is not None and int(round(jetzt * 100)) > grenze:
+                stufe = grenze
+            if stufe is not None:
+                if stufe > grenze:
+                    log.info("'%s': Klingelpegel %d auf die Grenze %d gesenkt", self.name, stufe, grenze)
+                    stufe = grenze
+                lautstaerke_setzen(self.cast, stufe / 100.0)
+                self.x7_laut = None
+            mc = self.cast.media_controller
+            mc.play_media(gong[0], gong[1], title="Klingel")
+            mc.block_until_active(timeout=10)
+            gespielt = self._auf_ende_warten(mc, 20.0)
+            if text and not self.ansage_abbrechen:
+                # Dieselbe Sprachausgabe wie tts - ohne zweiten Gong, ohne eigenes Merken (das tut die Klingel).
+                meldung = self.ansage(text, dict(cfg, tts_gong="", tts_fortsetzen="0", tts_pegel="",
+                                                 _sprechen_laut=""))
+                self.ansage_laeuft = True
+                if meldung != "OK":
+                    log.warning("'%s': Ansage nach der Klingel: %s", self.name, meldung)
+            self._lage_herstellen()
+            if not gespielt:
+                return ("Klingel abgesetzt, Ergebnis unbekannt - der Lautsprecher hat nicht zu spielen begonnen "
+                        "(Gong-Adresse erreichbar?)")
+            return "OK"
+        except Exception as fehler:  # noqa: BLE001
+            log.error("Klingel an '%s' fehlgeschlagen: %s", self.name, fehler)
+            return "Fehler: {0}".format(fehler)
+        finally:
+            self.ansage_laeuft = False
+            self.ansage_abbrechen = False
+            self._senden("tts_active", "0")
+            if mitglieder:
+                self._mitglieder_fortsetzen(mitglieder, cfg)
 
     def befehl(self, befehl, wert, schrittweite, cfg=None):
         """Einen Befehl ausfuehren. Rueckgabe: Meldung fuer das Protokoll."""
@@ -2477,8 +3749,10 @@ class Geraet:
                 mc.pause()
             elif befehl == "stop":
                 mc.stop()
+                self._quelle_setzen(0, "")
             elif befehl == "quit":
                 self.cast.quit_app()
+                self._quelle_setzen(0, "")
             # Zahlen aus MQTT und UDP (seit 1.3.13, C5/C8/M2): nur endliche
             # Werte im Bereich, sonst abgewiesen und gemeldet - ohne die
             # Verbindung zu trennen. Die Bereiche sind die der Befehlsliste
@@ -2537,10 +3811,16 @@ class Geraet:
                 self._x7_merken(gesetzt)
             elif befehl == "mute":
                 stumm_setzen(self.cast, str(wert).strip() not in ("0", "", "false", "aus"))
-            elif befehl == "next":
-                mc.queue_next()
-            elif befehl in ("prev", "previous"):
-                mc.queue_prev()
+            elif befehl in ("next", "prev", "previous"):
+                # Nachfassung 30.10.2026: in einer eigenen Liste aus der Liste, sonst die Warteschlange.
+                grund = self._liste_schritt(1 if befehl == "next" else -1)
+                if grund is None:
+                    if befehl == "next":
+                        mc.queue_next()
+                    else:
+                        mc.queue_prev()
+                elif grund:
+                    return grund
             elif befehl == "seek":
                 stelle, fehlertext = befehlszahl(wert, 0, 0, 86400, befehl)
                 if fehlertext:
@@ -2569,6 +3849,17 @@ class Geraet:
                 mc.block_until_active(timeout=10)
                 self.favorit = str(nummer)
                 self._senden("favorit", self.favorit)
+            # Audio Stufe 1 (S3, S5)
+            elif befehl == "quelle":
+                meldung = self.quelle_spielen(wert, cfg or {})
+                if meldung != "OK":
+                    return meldung
+            elif befehl == "klingel":
+                return self.klingeln(cfg or {})
+            elif befehl == "fortsetzen_nach_gruppe" and isinstance(wert, dict):
+                # E-NF3: nur intern (Wert = gemerkte Lage); von MQTT/UDP kommt hier Text an -> unbekannt.
+                self.vorher = wert
+                self._lage_herstellen()
             elif befehl in ("tts", "say", "ansage"):
                 return self.ansage(wert, cfg or {})
             else:
@@ -2929,6 +4220,9 @@ class SprechEingang(threading.Thread):
             auftrag_cfg["_sprechen_laut"] = "1"
         for name in geraete:
             geraet = nach_name.get(name)
+            if geraet is None and zone_nummer(name) is not None:     # Audio Stufe 1 (S6)
+                treffer = self.dienst.geraete_fuer(name)
+                geraet = treffer[0] if treffer else None
             if geraet is None:
                 aus["unbekannt"].append(name[:60])
                 continue
@@ -3123,6 +4417,11 @@ class Dienst:
         # und der Reiter Test an der Zustandsdatei.
         self.zaehler = 0
         self.netzsuche = Netzsuche()
+        # Audio Stufe 1 (1.3.25): Zonen und gemerkte Kennungen ihrer Ziele.
+        self.zonen_liste = []
+        self.zonen_merker = self.zonen_merker_lesen() if DATA_DIR else {}
+        # Nachfassung 3 (O1): zuletzt gemeldete Mitglieder je Gruppe, bis die Gruppe selbst antwortet.
+        self.mitglieder_gemerkt = self.mitglieder_merker_lesen() if DATA_DIR else {}
 
     def _mtime(self):
         try:
@@ -3286,6 +4585,9 @@ class Dienst:
             # Wert geht nie retained hinaus, und der retained Altwert der
             # vorigen Fassung blieb stehen (gemessen 30.09.2026, MQTT M11).
             "fassung": version() or "-",
+            # Audio Stufe 1: Zahl der gueltigen Quellen, Medienablage freigegeben (beide nie retained).
+            "quellen": len(quellen(self.cfg)),
+            "ablage_ok": 1 if ABLAGE_STAND.get("ok") else 0,
         }
         for schluessel, wert in werte.items():
             self.mqtt.senden("server/" + schluessel, wert,
@@ -3333,6 +4635,8 @@ class Dienst:
                     "cmd_ein": 1 if self.mqtt.cmd_ein else 0,
                     "cmd_zuletzt": int(self.mqtt.cmd_zuletzt),
                     "geraete_stand": self.geraete_stand(),
+                    # Audio Stufe 1: Zonen, Quellen, Ablage, sichtbare Geraete (ohne Pfad, Adresse, Kennung).
+                    "audio": self.audio_stand(),
                 }, fh)
             # Erst vollstaendig schreiben, dann umbenennen: sonst liest die
             # Oberflaeche irgendwann eine halbe Datei und meldet einen
@@ -3380,6 +4684,13 @@ class Dienst:
             self.geraete[name].gruppen_erlaubt = erlaubt
             self.geraete[name].lauscher_erlaubt = schnell
             self.geraete[name].netzsuche = self.netzsuche if schnell else None
+            self.geraete[name].nachbarn = self.geraete      # E-NF3: dasselbe Verzeichnis, nicht eine Kopie
+            gemerkt = getattr(self, "mitglieder_gemerkt", None) or {}
+            if getattr(self.geraete[name], "mitglieder", None) is None and name in gemerkt:
+                # Nachfassung 3: Mitglieder aus data/, bis die Gruppe selbst antwortet
+                self.geraete[name].mitglieder = list(gemerkt[name])
+        # Audio Stufe 1: Zonen zuordnen - nach jedem Aufbau, die Liste kann sich geaendert haben.
+        self.zonen_aufbauen()
 
     def geraet_abraeumen(self, weg, namen):
         """Ein entferntes Geraet (seit 1.3.13, M4; Entscheidung 5).
@@ -3433,6 +4744,13 @@ class Dienst:
         einzeln = self.geraet_finden(kennung)
         if einzeln is not None:
             return [einzeln]
+        # Audio Stufe 1 (E1): zone_<n> meint das Ziel der Zone.
+        nr = zone_nummer(kennung)
+        if nr is not None:
+            for z in self.zonen_liste:
+                if z["nr"] == nr and z["ziel"] in self.geraete:
+                    return [self.geraete[z["ziel"]]]
+            return []
         if kennung and str(kennung).strip().lower() in SAMMELZIEL:
             return list(self.geraete.values())
         return []
@@ -3471,6 +4789,9 @@ class Dienst:
             if not grund:
                 aus["sperre"] = 1
             return aus
+        # Audio Stufe 1 (S5): die Klingel hat ihre eigene Zielwahl samt Rueckfall.
+        if b == "klingel":
+            return self.klingel_ausfuehren(kennung, quelle)
         ziele = self.geraete_fuer(kennung)
         if not ziele:
             log.warning("Kein Geraet fuer '%s' - konfiguriert sind: %s "
@@ -3501,6 +4822,415 @@ class Dienst:
             aus["eingereiht"].append(geraet.name)
         return aus
 
+    # -- Audio Stufe 1 (1.3.25): Zonen, Medienablage, Klingel --------------
+
+    ZONEN_MERKER = "zonen.json"
+
+    def zonen_merker_lesen(self):
+        """Gemerkte Cast-Kennung je Zonenziel (E1: "beim ersten Fund gemerkt"). Liegt unter data/, nie in einer
+        Ausgabe. Rueckgabe dict Geraetename -> Kennung."""
+        try:
+            with open(os.path.join(DATA_DIR, self.ZONEN_MERKER), "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+            return dict((str(k), str(v)) for k, v in d.items() if isinstance(v, str)) if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def zonen_merker_schreiben(self):
+        ziel = os.path.join(DATA_DIR, self.ZONEN_MERKER)
+        try:
+            SprechEingang._schreiben(ziel, self.zonen_merker, 0o600)
+        except OSError as fehler:
+            log.warning("Merker der Zonen %s nicht schreibbar: %s", ziel, fehler)
+
+    def zonen_aufbauen(self):
+        """Zonen den Geraeten zuordnen (E1). Ein Ziel, das nicht in der Geraeteliste steht, bleibt stumm (und steht
+        im Protokoll); eine entfernte Zone wird abgeraeumt wie ein entferntes Geraet."""
+        alt = set(z["nr"] for z in self.zonen_liste)
+        self.zonen_liste = zonen(self.cfg)
+        neu = set(z["nr"] for z in self.zonen_liste)
+        for g in self.geraete.values():
+            nrs = sorted(z["nr"] for z in self.zonen_liste if z["ziel"] == g.name)
+            if nrs != g.zonen_nr:
+                g.zonen_nr = nrs
+                g.letzter_stand.clear()     # die Zone bekommt beim naechsten Melden alles einmal
+            g.uuid_merker = self.zonen_merker.get(g.name, "") if nrs else ""
+        for z in self.zonen_liste:
+            if z["ziel"] not in self.geraete:
+                log.warning("Zone %d: Ziel '%s' steht nicht in der Geraeteliste - die Zone bleibt stumm",
+                            z["nr"], z["ziel"])
+        for nr in sorted(alt - neu):
+            self.zone_abraeumen(nr)
+
+    def zone_abraeumen(self, nr):
+        """Eine aus der Tabelle genommene Zone: retained Zustaende einmal mit Fehlwert, dann abraeumen."""
+        if not self.mqtt.verbunden or not praefix_taugt(self.praefix):
+            log.warning("Zone %d entfernt; ihre retained Themen bleiben stehen - MQTT ist nicht verbunden.", nr)
+            return
+        for eintrag in THEMEN.get("zone", []):
+            if eintrag.get("retain", False):
+                art = eintrag.get("art")
+                fehlwert = "-1" if art == "analog" else ("0" if art == "digital" else "-")
+                self.mqtt.senden_und_warten("zone/%d/%s" % (nr, eintrag["schluessel"]), fehlwert)
+        try:
+            code, geleert, rest, grund = broker_leeren(self.praefix, nur="zone/%d" % nr)
+        except Exception as fehler:  # noqa: BLE001
+            code, geleert, rest, grund = 2, [], [], str(fehler)
+        log.info("Zone %d entfernt: Abraeumen %s", nr, "fertig" if code == 0 else (grund or "unvollstaendig"))
+
+    def zonen_merken(self):
+        """Nach einer Verbindung die Cast-Kennung eines Zonenziels festhalten (Umbenennung in Google Home, E1)."""
+        geaendert = False
+        for g in self.geraete.values():
+            if g.zonen_nr and g.uuid and self.zonen_merker.get(g.name) != g.uuid:
+                self.zonen_merker[g.name] = g.uuid
+                g.uuid_merker = g.uuid
+                geaendert = True
+        if geaendert:
+            self.zonen_merker_schreiben()
+
+    MITGLIEDER_MERKER = "mitglieder.json"
+
+    def mitglieder_merker_lesen(self):
+        """Nachfassung 3: zuletzt gemeldete Mitglieder je Gruppe (Gruppenname -> [dict(kennung, name)]). Liegt unter
+        data/ (0600) und steht nie in einer Ausgabe - die Oberflaeche bekommt ueber zustand.json nur die Namen."""
+        try:
+            with open(os.path.join(DATA_DIR, self.MITGLIEDER_MERKER), "r", encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            return {}
+        aus = {}
+        if isinstance(d, dict):
+            for k, v in d.items():
+                if isinstance(v, list):
+                    aus[str(k)] = [{"kennung": str(m.get("kennung", "") or "")[:64],
+                                    "name": str(m.get("name", "") or "")[:80]} for m in v if isinstance(m, dict)]
+        return aus
+
+    def mitglieder_merken(self):
+        """Nach einer Aenderung die Mitglieder aller eingetragenen Gruppen unter data/ festhalten (nur Gruppen, die in
+        der Geraeteliste stehen; eine entfernte Gruppe faellt dabei heraus)."""
+        geraete = list(self.geraete.values())
+        if not any(getattr(g, "mitglieder_geaendert", False) for g in geraete):
+            return
+        daten = {}
+        for g in geraete:
+            g.mitglieder_geaendert = False
+            if getattr(g, "mitglieder", None) is not None:
+                daten[g.name] = list(g.mitglieder)
+        self.mitglieder_gemerkt = daten
+        if not DATA_DIR:
+            return
+        ziel = os.path.join(DATA_DIR, self.MITGLIEDER_MERKER)
+        try:
+            SprechEingang._schreiben(ziel, daten, 0o600)
+        except OSError as fehler:
+            log.warning("Merker der Gruppenmitglieder %s nicht schreibbar: %s", ziel, fehler)
+
+    def ablage_einrichten(self, durchsicht=None):
+        """Die Medienablage (S4, E2): Pfad pruefen, einmal durchsehen (keine Datei, die Apache ausfuehren koennte),
+        dann den Verweis html/plugins/<ordner>/m_<Schluessel> auf den Ordner setzen. Ohne Freigabe gibt es keinen
+        Verweis - ein alter wird entfernt. Haelt den Dienst nie an."""
+        pfad = str(self.cfg.get("ablage_pfad", "") or "").strip()
+        schluessel = str(self.cfg.get("ablage_schluessel", "") or "").strip()
+        st = {"eingerichtet": 1 if pfad else 0, "ok": 0, "grund": "", "dateien": 0, "pfad": "", "schluessel": ""}
+        if pfad == "":
+            self._verweise_aufraeumen("")
+            ABLAGE_STAND.clear()
+            ABLAGE_STAND.update(st)
+            return
+        echt, grund = ablage_pfad_taugt(pfad)
+        if not grund and not ABLAGE_SCHLUESSEL.match(schluessel):
+            grund = "kein Pfadschluessel - im Reiter Audio einmal speichern"
+        if not grund and not os.path.isdir(echt):
+            grund = "Ordner nicht vorhanden oder Datentraeger nicht eingehaengt"
+        if not grund:
+            st["dateisystem"] = ablage_dateisystem(echt)
+            if durchsicht is not None and durchsicht[0] == echt:
+                st["dateien"], grund = durchsicht[1], ""     # Nachfassung 6: eben von der Wache durchgesehen
+            else:
+                st["dateien"], grund = ablage_durchsehen(echt)
+        if not grund:
+            grund = self._verweis_setzen(echt, schluessel)
+        if grund:
+            st["grund"] = grund
+            self._verweise_aufraeumen("")
+            log.warning("Medienablage nicht freigegeben: %s", grund)
+        else:
+            st.update({"ok": 1, "pfad": echt, "schluessel": schluessel})
+            log.info("Medienablage freigegeben: %d Audiodateien", st["dateien"])
+        ABLAGE_STAND.clear()
+        ABLAGE_STAND.update(st)
+
+    def ablage_nachsehen(self):
+        """Mit jeder Vollmeldung: ist die freigegebene Ablage noch lesbar (Datentraeger ausgehaengt, NAS fort)? Und
+        kommt eine nicht erreichbare wieder, wird sie neu eingerichtet."""
+        if ABLAGE_STAND.get("ok"):
+            try:
+                os.listdir(ABLAGE_STAND["pfad"])
+            except OSError as fehler:
+                ABLAGE_STAND["ok"] = 0
+                ABLAGE_STAND["grund"] = "nicht erreichbar (%s)" % fehler.strerror
+                log.warning("Medienablage nicht mehr erreichbar: %s", fehler)
+        elif ABLAGE_STAND.get("eingerichtet") and str(ABLAGE_STAND.get("grund", "")).startswith(
+                ("nicht erreichbar", "Ordner nicht vorhanden")):
+            self.ablage_einrichten()
+
+    def _klingel_oder_ansage(self):
+        """Laeuft gerade an irgendeinem Geraet eine Klingel oder Ansage? Dann wartet die Wache der Ablage."""
+        return any(getattr(g, "ansage_laeuft", False) for g in list(getattr(self, "geraete", {}).values()))
+
+    def _halt_gesetzt(self):
+        h = getattr(self, "halt", None)
+        return bool(h is not None and h.is_set())
+
+    def _ablage_ok_senden(self):
+        """server/ablage_ok sofort (nicht erst mit der naechsten Vollmeldung)."""
+        m = getattr(self, "mqtt", None)
+        if m is not None and getattr(m, "verbunden", False):
+            m.senden("server/ablage_ok", 1 if ABLAGE_STAND.get("ok") else 0, thema_retain("dienst", "ablage_ok"))
+
+    def ablage_wache(self, jetzt=None):
+        """Nachfassung 6 (30.10.2026, E-NF5): die Durchsicht beim Einrichten sieht nur, was DANN in der Ablage liegt.
+        Alle ABLAGE_WACHE_ALLE s wird die freigegebene Ablage erneut durchgesehen - in einem eigenen Faden (eine
+        Netzfreigabe kann dauern), nicht waehrend einer Klingel oder Ansage, hoechstens ABLAGE_WACHE_FRIST s und
+        ABLAGE_PRUEF_MAX Eintraege. Fund (.ht*, Programm-Endung auch mitten im Namen, Verweis nach aussen) -> Freigabe
+        sofort zurueck; eine so (oder schon beim Einrichten wegen eines Funds) gesperrte Ablage wird beim naechsten
+        Durchgang wieder freigegeben, wenn sie sauber ist. Grenze erreicht oder abgebrochen: nichts aendern.
+        Aus der Hauptschleife in jedem Durchgang gerufen; billig, solange nichts faellig ist."""
+        jetzt = time.time() if jetzt is None else jetzt
+        w = getattr(self, "_wache", None)
+        if w is None:
+            w = self._wache = {"naechste": jetzt + ABLAGE_WACHE_ALLE, "faden": None, "ergebnis": None}
+        erg = w.get("ergebnis")
+        if erg is not None:
+            w["ergebnis"] = None
+            self._wache_anwenden(erg)
+        faden = w.get("faden")
+        if faden is not None and faden.is_alive():
+            return
+        if jetzt < w["naechste"]:
+            return
+        st = ABLAGE_STAND
+        zurueck = bool(not st.get("ok") and st.get("eingerichtet")
+                       and str(st.get("grund", "")).startswith(("unsichere Datei gefunden", "enthaelt")))
+        if not st.get("ok") and not zurueck:
+            w["naechste"] = jetzt + ABLAGE_WACHE_ALLE
+            return
+        if self._klingel_oder_ansage():
+            return                      # beim naechsten Durchgang der Hauptschleife wieder versuchen
+        w["naechste"] = jetzt + ABLAGE_WACHE_ALLE
+        if zurueck:
+            echt, grund = ablage_pfad_taugt(str(self.cfg.get("ablage_pfad", "") or "").strip())
+            schluessel = str(self.cfg.get("ablage_schluessel", "") or "").strip()
+            if grund or not os.path.isdir(echt):
+                return
+        else:
+            echt, schluessel = st.get("pfad", ""), st.get("schluessel", "")
+        auftrag = {"echt": echt, "schluessel": schluessel, "zurueck": zurueck}
+
+        def lauf():
+            beginn = time.monotonic()
+            fund = []
+            try:
+                zahl, grund2 = ablage_durchsehen(echt, grenze=ABLAGE_PRUEF_MAX, frist=ABLAGE_WACHE_FRIST,
+                                                 abbrechen=lambda: self._klingel_oder_ansage() or self._halt_gesetzt(),
+                                                 fund=fund)
+            except Exception as fehler:  # noqa: BLE001
+                zahl, grund2 = 0, "Durchsicht abgebrochen (%s)" % fehler
+            auftrag.update({"zahl": zahl, "grund": grund2, "fund": fund[0] if fund else "",
+                            "dauer": time.monotonic() - beginn})
+            w["ergebnis"] = auftrag
+
+        w["faden"] = threading.Thread(target=lauf, daemon=True, name="ablage-wache")
+        w["faden"].start()
+
+    def _wache_anwenden(self, erg):
+        """Ergebnis der Wache in der Hauptschleife uebernehmen (nur, wenn die Ablage inzwischen nicht anders
+        eingerichtet wurde)."""
+        st = ABLAGE_STAND
+        grund, rel = str(erg.get("grund", "")), str(erg.get("fund", ""))
+        if erg.get("zurueck"):
+            if st.get("ok") or str(self.cfg.get("ablage_schluessel", "") or "").strip() != erg.get("schluessel"):
+                return
+        elif not st.get("ok") or st.get("pfad") != erg.get("echt") or st.get("schluessel") != erg.get("schluessel"):
+            return
+        if grund.startswith("enthaelt") and rel:
+            text = "unsichere Datei gefunden: %s" % rel[:80]
+            if st.get("ok"):
+                self._verweise_aufraeumen("")
+                st["ok"] = 0
+                st["grund"] = text
+                log.warning("Medienablage zurueckgezogen - %s (Verweis entfernt; wieder frei, sobald die Datei fort ist)",
+                            text)
+                self._ablage_ok_senden()
+            else:
+                if st.get("grund") != text:
+                    log.warning("Medienablage bleibt gesperrt - %s", text)
+                st["grund"] = text
+            return
+        if grund:
+            log.info("Wache der Medienablage: %s - Freigabe unveraendert", grund)
+            return
+        log.info("Wache der Medienablage: %d Audiodateien in %.1f s durchgesehen, nichts Unsicheres",
+                 erg.get("zahl", 0), erg.get("dauer", 0.0))
+        if erg.get("zurueck"):
+            self.ablage_einrichten(durchsicht=(erg.get("echt"), erg.get("zahl", 0)))
+            if ABLAGE_STAND.get("ok"):
+                log.info("Medienablage wieder freigegeben")
+                self._ablage_ok_senden()
+        else:
+            st["dateien"] = erg.get("zahl", st.get("dateien", 0))
+
+    def _verweis_setzen(self, echt, schluessel):
+        if not HTML_DIR or not os.path.isdir(HTML_DIR):
+            return "Webordner des Plugins fehlt"
+        schutz = index_schutz_setzen(HTML_DIR)
+        if schutz:
+            return schutz
+        name = "m_" + schluessel
+        ziel = os.path.join(HTML_DIR, name)
+        try:
+            if os.path.islink(ziel) and os.readlink(ziel) == echt:
+                self._verweise_aufraeumen(name)
+                return ""
+            if os.path.exists(ziel) and not os.path.islink(ziel):
+                return "im Webordner liegt schon etwas unter diesem Namen"
+            vorlaeufig = ziel + ".neu.%d" % os.getpid()
+            os.symlink(echt, vorlaeufig)
+            os.replace(vorlaeufig, ziel)
+        except (OSError, NotImplementedError, AttributeError) as fehler:
+            return "Verweis nicht anlegbar (%s)" % fehler
+        self._verweise_aufraeumen(name)
+        return ""
+
+    @staticmethod
+    def _verweise_aufraeumen(behalten):
+        """Nur VERWEISE m_<hex> im eigenen Webordner entfernen - nie eine Datei, nie den Ordner dahinter."""
+        if not HTML_DIR or not os.path.isdir(HTML_DIR):
+            return
+        try:
+            namen = os.listdir(HTML_DIR)
+        except OSError:
+            return
+        for n in namen:
+            p = os.path.join(HTML_DIR, n)
+            if n != behalten and re.match(r"^m_[0-9a-f]{24,64}(\.neu\.[0-9]+)?$", n) and os.path.islink(p):
+                try:
+                    os.remove(p)
+                except OSError as fehler:
+                    log.warning("Alter Verweis %s nicht entfernbar: %s", n, fehler)
+
+    def klingel_ausfuehren(self, kennung, quelle):
+        """Befehl klingel (S5): an zone_<n>, an ein Geraet/eine Gruppe oder - ohne Ziel bzw. "server" - an das
+        Standardziel klingel_ziel. Hauptweg ist das Ziel (bei einer Google-Gruppe synchron, E3); antwortet es nicht
+        (nicht verbunden, oder die Wiedergabe scheitert), geht die Klingel parallel an den Rueckfall (klingel_rueckfall,
+        leer = die gemessenen Mitglieder der Ziel-Gruppe, sonst alle eingetragenen Lautsprecher, keine Gruppen, keine
+        Fernseher). Die Sperre aus Loxone haelt sie an wie eine Ansage."""
+        aus = {"eingereiht": [], "nicht_verbunden": 0, "unbekannt": [], "uebersprungen": "", "grund": ""}
+        k = str(kennung or "").strip()
+        standard = k.lower() in ("", "server")
+        if standard:
+            k = str(self.cfg.get("klingel_ziel", "") or "").strip()
+            if k == "":
+                log.warning("Klingel (%s): kein Standardziel eingetragen (Reiter Audio)", quelle)
+                aus["grund"] = "KLINGEL_ZIEL_FEHLT"
+                return aus
+        ziele = self.geraete_fuer(k)
+        if not ziele:
+            log.warning("Klingel (%s): kein Geraet fuer '%s'", quelle, k)
+            aus["unbekannt"].append(k[:60])
+            aus["grund"] = "GERAET_UNBEKANNT"
+            return aus
+        if loxsperre_wirkt(self.cfg):
+            log.info("Klingel (%s) an %s uebersprungen: Sperre aus Loxone", quelle, ", ".join(g.name for g in ziele))
+            aus["uebersprungen"] = "GESPERRT"
+            return aus
+        rueck = self.klingel_rueckfall(ziele)
+        schritt = self._zahl("lautstaerke_schritt", 5)
+        # Sofort parallel nur, wenn das Standardziel oder eine bekannte Gruppe gerade keine Verbindung hat - ein einzeln
+        # angesprochener Lautsprecher verbindet im Arbeitsfaden selbst und faellt erst bei einem Fehlschlag zurueck.
+        if len(ziele) == 1 and not ziele[0].verbunden() and rueck and (
+                standard or ziele[0].ist_gruppe or ziele[0].art.lower() == "group"
+                or getattr(ziele[0], "mitglieder", None) is not None):     # Nachfassung 3: bekannte Gruppe
+            log.info("Klingel: '%s' ist nicht verbunden - parallel an %s", ziele[0].name, ", ".join(g.name for g in rueck))
+            ziele, rueck = rueck, []
+        erledigt = {"rueckfall": False}
+
+        def nachher(name, meldung, rueck=rueck):
+            if meldung == "OK" or not rueck or erledigt["rueckfall"]:
+                return
+            erledigt["rueckfall"] = True
+            log.info("Klingel an '%s' gescheitert (%s) - parallel an %s", name, meldung,
+                     ", ".join(g.name for g in rueck))
+            for g in rueck:
+                g.einreihen("klingel", "1", schritt, self.cfg)
+
+        for g in ziele:
+            if not g.verbunden():
+                aus["nicht_verbunden"] += 1
+            g.einreihen("klingel", "1", schritt, self.cfg, nachher if len(ziele) == 1 else None)
+            aus["eingereiht"].append(g.name)
+        return aus
+
+    def klingel_rueckfall(self, ziele):
+        """Die Geraete fuer den Rueckfall: klingel_rueckfall ("a;b", "alle"), leer = die gemessenen Mitglieder der
+        Ziel-Gruppe (Nachfassung 3), sonst alle Lautsprecher. Nie das Ziel selbst."""
+        namen = [n.strip() for n in re.split(r"[;\r\n]+", str(self.cfg.get("klingel_rueckfall", "") or "")) if n.strip()]
+        weg = set(g.name for g in ziele)
+        if not namen or any(n.lower() in SAMMELZIEL for n in namen):
+            # Nachfassung 3 (E-NF1 verfeinert, O1 gemessen): ist das Ziel eine Gruppe mit bekannten Mitgliedern, sind
+            # es genau diese (soweit sie in der Geraeteliste stehen).
+            kand = self.klingel_mitglieder(ziele)
+            if not kand:
+                # Nachfassung 30.10.2026 (Geraetetest 17:59: der Rueckfall klingelte auch am Fernseher): leer bzw.
+                # "alle" = keine Fernseher/Videogeraete (cast_type cast) und keine Gruppen - die nur, wenn sie
+                # ausdruecklich in der Liste stehen. Ein Geraet, das seit dem Dienststart noch nie verbunden war (Art
+                # unbekannt), bleibt drin: der Rueckfall ist gerade fuer nicht verbundene Lautsprecher da.
+                kand = [g for g in self.geraete.values() if not g.ist_gruppe
+                        and g.art.lower() not in ("group", "cast")
+                        and getattr(g, "mitglieder", None) is None]
+        else:
+            kand = [self.geraete[n] for n in namen if n in self.geraete]
+        return [g for g in kand if g.name not in weg]
+
+    def klingel_mitglieder(self, ziele):
+        """Nachfassung 3: die gemessenen Mitglieder der Ziel-Gruppe(n), soweit sie in der Geraeteliste stehen (keine
+        Gruppen, nie das Ziel). [] = keine Gruppe mit bekannten Mitgliedern dabei, oder keines steht in der Liste."""
+        aus = []
+        for z in ziele:
+            for m in (getattr(z, "mitglieder", None) or []):
+                for g in self.geraete.values():
+                    if g is z or g in aus or g in ziele or getattr(g, "ist_gruppe", False) \
+                            or getattr(g, "mitglieder", None) is not None:
+                        continue
+                    if g.ist_mitglied(m):
+                        aus.append(g)
+        return aus
+
+    def audio_stand(self):
+        """Was der Reiter Audio und der Reiter Test zur Audio-Stufe brauchen - ohne Pfade, Adressen und Kennungen."""
+        z = []
+        for zone in self.zonen_liste:
+            g = self.geraete.get(zone["ziel"])
+            z.append({"nr": zone["nr"], "name": zone["name"], "ziel": zone["ziel"],
+                      "online": 1 if g is not None and g.verbunden() else 0,
+                      "quelle": g.quelle if g is not None else 0,
+                      "gruppe": 1 if g is not None and (g.ist_gruppe or g.mitglieder is not None) else 0,
+                      # Nachfassung 3: Namen der Mitglieder (Gruppe; None = noch nicht gemessen) bzw. der Gruppen
+                      "mitglieder": ([m.get("name") or "?" for m in g.mitglieder]
+                                     if g is not None and g.mitglieder is not None else None),
+                      "mitglied_von": g.mitglied_von() if g is not None else []})
+        return {"zonen": z,
+                "quellen": len(quellen(self.cfg)),
+                "ablage": {"eingerichtet": ABLAGE_STAND.get("eingerichtet", 0), "ok": ABLAGE_STAND.get("ok", 0),
+                           "grund": ABLAGE_STAND.get("grund", ""), "dateien": ABLAGE_STAND.get("dateien", 0),
+                           "dateisystem": ABLAGE_STAND.get("dateisystem", "")},
+                "sichtbar": sichtbar_fremd(set(self.geraete)),
+                # Nachfassung 7: Stand (mtime) der Konfiguration, die der Dienst uebernommen hat - weicht sie von der
+                # Datei ab, zeigt die Oberflaeche "wird geprueft ..." statt eines Ablagezustands von vorher.
+                "cfg_zeit": int(getattr(self, "config_mtime", 0) or 0)}
+
     def cmd_ein_lesen(self):
         """Den alten Befehlsweg <praefix>/<Geraet>/cmd/... annehmen? Haken befehle_cmd_ein (Gruppe 6b, 1.3.24,
         Entwurf cc 3.4, Bauart WOLF ISM NG 3.1.12): bei einem Update an (postupgrade.sh setzt ihn), bei einer
@@ -3521,6 +5251,9 @@ class Dienst:
                  "an" if self.mqtt.cmd_ein else "aus - Befehle ueber die Befehlsbruecke")
 
         self.geraete_aufbauen()
+        self.ablage_einrichten()     # Audio Stufe 1 (S4)
+        if klang_standard():     # Nachfassung 7: Rueckfall der Klingel bereitlegen
+            log.info("Standard-Gong bereit (klang/%s)", KLANG_STANDARD)
 
         # Ansage-3: Sprechauftraege anderer Plugins (immer an; ob der Endpunkt
         # sie annimmt, entscheidet dort der Schalter sprechen_ein).
@@ -3598,9 +5331,14 @@ class Dienst:
                 # Verbinden wieder 1 (Pruefung MQTT M7).
                 if self.mqtt.verbunden:
                     self.mqtt.senden("server/online", "1")
+                self.ablage_nachsehen()     # Audio Stufe 1: Datentraeger noch da?
+            self.ablage_wache()     # Nachfassung 6: Ablage alle 15 min erneut durchsehen (eigener Faden)
 
             # Das Lebenszeichen geht in JEDEM Durchgang hinaus, auch wenn
             # sich sonst nichts geaendert hat.
+            self.zonen_merken()     # Audio Stufe 1 (E1)
+            self.mitglieder_merken()     # Nachfassung 3 (O1)
+
             self.herzschlag(sum(1 for g in self.geraete.values() if g.verbunden()))
 
             # Konfigurationsaenderung uebernehmen, ohne Neustart
@@ -3611,6 +5349,9 @@ class Dienst:
                 self.cfg = konfiguration_lesen()
                 self.verbindungen_nachziehen(vorher)
                 self.geraete_aufbauen()
+                if not ABLAGE_STAND.get("ok") or any(vorher.get(k) != self.cfg.get(k)
+                                                     for k in ("ablage_pfad", "ablage_schluessel")):
+                    self.ablage_einrichten()
                 intervall = self._zahl("intervall", 10, 2, 3600)
                 vollmeldung_alle = max(intervall, self._zahl("aktualisierung", 60, 5, 86400))
 
@@ -3661,6 +5402,9 @@ def main():
             "geraet": [e["schluessel"] for e in THEMEN.get("geraet", ())],
             "dienst": [e["schluessel"] for e in THEMEN.get("dienst", ())],
             "befehle": [e["schluessel"] for e in THEMEN.get("befehle", ())],
+            # Audio Stufe 1: die Zonenliste und was der Sendecode an einer Zone wirklich sendet.
+            "zone": [e["schluessel"] for e in THEMEN.get("zone", ())],
+            "gesendet_zone": sendecode_zonenthemen(),
             # Die Retain-Entscheidung, wie DIESER Code sie trifft - mit einem
             # Thema, das in keiner Liste steht, als Gegenprobe der Vorgabe.
             "retain_dienst": {e["schluessel"]: thema_retain("dienst", e["schluessel"])
@@ -3679,11 +5423,18 @@ def main():
     # Argumenten gilt der Aufruf fuer jede Diensterkennung dieses Plugins als
     # Einmallauf, nicht als Dienst. Jeder andere Schalter wird abgewiesen:
     # bis 1.3.11 startete ein Aufruf mit unbekanntem Schalter den Dienst.
+    # Audio Stufe 1 (1.3.25): Selbsttest der reinen Teile - ohne Netz, ohne Lautsprecher, ohne Anlage.
+    if sys.argv[1:] == ["--selbsttest"]:
+        gut, schlecht, zeilen = selbsttest()
+        for z in zeilen:
+            print(z)
+        print("SELBSTTEST %d/%d" % (gut, schlecht))
+        sys.exit(0 if schlecht == 0 else 1)
     if sys.argv[1:] == ["--mqtt-leeren"]:
         sys.exit(mqtt_leeren())
     if sys.argv[1:]:
         sys.stderr.write("Unbekannter Schalter: %s - dieses Skript kennt "
-                         "--themen und --mqtt-leeren.\n" % " ".join(sys.argv[1:]))
+                         "--themen, --selbsttest und --mqtt-leeren.\n" % " ".join(sys.argv[1:]))
         sys.exit(2)
 
     # Ohne Wurzel steigt der Dienst aus (siehe "Pfade" oben) - nichts
@@ -3813,6 +5564,319 @@ def sendecode_geraetethemen():
     geraet.cast = None
     geraet.melden_offline(True)
     return huelle.themen
+
+
+def sendecode_zonenthemen():
+    """Die Zonenthemen, die ein Geraet mit einer Zone wirklich sendet (Audio Stufe 1) - fuer die Namenspruefung im
+    Reiter Test, wie sendecode_geraetethemen(). Kein Netz, keine Datei."""
+    themen = []
+
+    class _Huelle(object):
+        def senden(self, unterthema, wert, retain=True):
+            teile = unterthema.split("/")
+            if len(teile) == 3 and teile[0] == "zone" and teile[2] not in themen:
+                themen.append(teile[2])
+            return True
+
+    geraet = Geraet("Probe", _Huelle())
+    geraet.zonen_nr = [1]
+    geraet.cast = _AttrappeCast()
+    geraet._melden(erzwingen=True)
+    geraet._quelle_setzen(0, "")
+    geraet.cast = None
+    geraet.melden_offline(True)
+    return themen
+
+
+# Die Probedateien des Selbsttests - genau diese werden danach einzeln wieder entfernt, nichts sonst.
+_PROBE_DATEIEN = ("rock/b.mp3", "rock/A.mp3", "gong.mp3", "liste.m3u", "notiz.txt")
+_PROBE_ORDNER = ("media/nas/musik/rock", "media/nas/musik", "media/nas", "media")
+
+
+def selbsttest():
+    """Selbsttest der reinen Teile von Audio Stufe 1 (--selbsttest): Zonen- und Quellenliste, Pfade der
+    Medienablage, M3U/PLS, Radioaufloesung gegen eine eingebaute Attrappe, Inhaltstypen, Zonenspiegel. Kein Netz,
+    kein Lautsprecher; Dateien nur in einem eigenen Probeordner, die danach einzeln entfernt werden. Rueckgabe
+    (gut, schlecht, zeilen)."""
+    import tempfile
+    zeilen = []
+
+    def pruef(name, bedingung):
+        zeilen.append(("ok  " if bedingung else "FEHL") + " " + name)
+
+    z = zonen({"zonen": "1 = Gaeste | Zimmer A\n2=Zimmer B\n 3 = | Gruppe X\n0 = falsch\n25 = falsch\n2 = doppelt\n"
+                         "x = y\n4 = Name | \n5 = a;b\n# Kommentar"})
+    pruef("Zonen: gueltige Zeilen 1, 2, 3", [e["nr"] for e in z] == [1, 2, 3])
+    pruef("Zonen: Anzeigename und Ziel getrennt", z[0]["name"] == "Gaeste" and z[0]["ziel"] == "Zimmer A")
+    pruef("Zonen: ohne Name gilt das Ziel", z[1]["name"] == "Zimmer B" and z[2]["name"] == "Gruppe X")
+    q = quellen({"quellen": "1 = radio | Sender | http://radio.example/s.mp3\n2 = liste | Rock | musik/rock\n"
+                            "3 = datei | Gong | gong.mp3\n4 = video | x | y\n5 = radio | ohne\n1 = radio | d | http://x\n",
+                 "favoriten": "Alt = http://alt.example/a.mp3"})
+    pruef("Quellen: 1, 2, 3 gueltig, 4/5 und doppelte 1 uebergangen", sorted(q) == [1, 2, 3])
+    pruef("Quellen: Art und Name", q[2]["art"] == "liste" and q[2]["name"] == "Rock")
+    fq = quellen({"quellen": "", "favoriten": "A = http://a.example/1\nB = http://b.example/2"})
+    pruef("Quellen: leer -> Favoriten als radio 1..n", sorted(fq) == [1, 2] and fq[2]["art"] == "radio"
+          and fq[2]["adresse"] == "http://b.example/2")
+    pruef("Ablage relativ: gut", ablage_relativ("musik//rock/./a.mp3") == "musik/rock/a.mp3")
+    pruef("Ablage relativ: .. abgewiesen", ablage_relativ("musik/../../etc/passwd") is None)
+    pruef("Ablage relativ: absolut abgewiesen", ablage_relativ("/etc/passwd") is None
+          and ablage_relativ("C:/x.mp3") is None and ablage_relativ(chr(92) * 2 + "srv" + chr(92) + "x") is None)
+    pruef("Inhaltstyp", inhaltstyp("a/B.MP3") == "audio/mpeg" and inhaltstyp("x.flac") == "audio/flac"
+          and inhaltstyp("x.php") is None)
+    pruef("Inhaltstyp: .mp4 = Ton (audio/mp4), auch gross; .mp4.php und .mkv nicht",
+          inhaltstyp("Konzert/Live.MP4") == "audio/mp4" and inhaltstyp("http://a.example/v.mp4?x=1") == "audio/mp4"
+          and inhaltstyp("v.mp4.php") is None and inhaltstyp("v.mkv") is None and inhaltstyp("v.m4v") is None)
+    m = m3u_lesen("#EXTM3U\n#EXTINF:123,Interpret A - Titel A\nlied1.mp3\n../../boese.mp3\n"
+                  "http://srv.example/x.mp3\n#EXTINF:-1,Nur Titel\nsub/lied2.flac\n", "listen")
+    pruef("M3U: Eintraege relativ zur Liste, .. faellt weg", [e[0] for e in m] ==
+          ["listen/lied1.mp3", "http://srv.example/x.mp3", "listen/sub/lied2.flac"])
+    pruef("M3U: Titel und Interpret", m[0][1] == "Titel A" and m[0][2] == "Interpret A" and m[2][1] == "Nur Titel")
+    pruef("PLS: erste Adresse", pls_lesen("[playlist]\nFile2=http://b\nFile1=http://a\nNumberOfEntries=2") == "http://a")
+
+    netz = {
+        "http://r.example/sender.m3u": ("audio/x-mpegurl", "#EXTM3U\nhttp://r.example/strom.aac\n"),
+        "http://r.example/strom.aac": ("audio/aacp", ""),
+        "http://r.example/sender.pls": ("audio/x-scpls", "[playlist]\nFile1=http://r.example/strom.mp3\n"),
+        "http://r.example/strom.mp3": ("audio/mpeg", ""),
+        "http://r.example/hls.m3u8": ("application/vnd.apple.mpegurl", "#EXTM3U\n#EXT-X-VERSION:3\nseg.ts\n"),
+        "http://r.example/ohne_typ": ("text/html", ""),
+    }
+
+    def holen(a):
+        if a not in netz:
+            raise OSError("keine Antwort")
+        return netz[a]
+
+    pruef("Radio: m3u aufgeloest, Typ aus der Antwort (AAC)",
+          radio_aufloesen("http://r.example/sender.m3u", holen)[:2] == ("http://r.example/strom.aac", "audio/aacp"))
+    pruef("Radio: pls aufgeloest", radio_aufloesen("http://r.example/sender.pls", holen)[:2]
+          == ("http://r.example/strom.mp3", "audio/mpeg"))
+    pruef("Radio: HLS bleibt Liste mit eigenem Typ", radio_aufloesen("http://r.example/hls.m3u8", holen)[:2]
+          == ("http://r.example/hls.m3u8", HLS_TYP))
+    a, t, h = radio_aufloesen("http://r.example/tot.mp3", holen)
+    pruef("Radio: keine Antwort -> Adresse bleibt, Hinweis", a == "http://r.example/tot.mp3" and t == "audio/mpeg" and h)
+    pruef("Radio: fremder Typ -> Rueckfall audio/mpeg", radio_aufloesen("http://r.example/ohne_typ", holen)[1]
+          == "audio/mpeg")
+
+    probe = tempfile.mkdtemp(prefix="cc_selbsttest_")
+    wurzel = os.path.join(probe, "media")
+    ablage = os.path.join(wurzel, "nas", "musik")
+    os.makedirs(os.path.join(ablage, "rock"))
+    php = os.path.join(ablage, "rock", "x.php")
+    try:
+        for n in _PROBE_DATEIEN:
+            with open(os.path.join(ablage, n), "w", encoding="utf-8") as fh:
+                fh.write("#EXTM3U\nrock/b.mp3\n" if n.endswith(".m3u") else "x")
+        w = [os.path.realpath(wurzel)]
+        echt, grund = ablage_pfad_taugt(ablage, w)
+        pruef("Ablage: Pfad unter der Wurzel taugt", grund == "" and echt == os.path.realpath(ablage))
+        pruef("Ablage: Pfad ausserhalb abgewiesen", ablage_pfad_taugt(probe, w)[1] != "")
+        pruef("Ablage: Wurzel selbst abgewiesen", ablage_pfad_taugt(wurzel, w)[1] != "")
+        pruef("Ablage: .. abgewiesen", ablage_pfad_taugt(ablage + "/../musik", w)[1] != "")
+        zahl, grund = ablage_durchsehen(echt)
+        pruef("Ablage: 3 Audiodateien, freigegeben", zahl == 3 and grund == "")
+        with open(php, "w", encoding="utf-8") as fh:
+            fh.write("<?php")
+        pruef("Ablage: PHP-Datei -> nicht freigegeben", ablage_durchsehen(echt)[1] != "")
+        os.remove(php)
+        # Nachfassung 4: nach dem Namen, Grossschreibung egal (Netzfreigabe: alle Dateien 0666), .cgi. im Namen.
+        for name in ("X.PHP", "lied.cgi.mp3", "Lied.PHTML"):
+            p2 = os.path.join(ablage, "rock", name)
+            with open(p2, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            g2 = ablage_durchsehen(echt)[1]
+            os.remove(p2)
+            pruef("Ablage: %s -> nicht freigegeben" % name, g2 != "")
+        aussen = os.path.join(ablage, "rock", "aussen")
+        try:
+            os.symlink(probe, aussen, target_is_directory=True)
+        except (OSError, NotImplementedError):
+            aussen = ""
+        if aussen:
+            pruef("Ablage: Verweis nach ausserhalb -> nicht freigegeben",
+                  "ausserhalb" in ablage_durchsehen(echt)[1])
+            _verweis_weg(aussen)
+            os.symlink(os.path.join(ablage, "rock"), aussen, target_is_directory=True)
+            pruef("Ablage: Verweis nach innen -> freigegeben", ablage_durchsehen(echt)[1] == "")
+            _verweis_weg(aussen)
+        else:
+            print("INFO Ablage: hier ist kein Verweis anlegbar - die zwei Verweis-Faelle sind nicht gemessen")
+        pruef("Ablage: Grenze der Durchsicht", ablage_durchsehen(echt, grenze=2)[1] != "")
+        for name in ("lied.php.mp3", "Mix.SH.ogg"):
+            p3 = os.path.join(ablage, "rock", name)
+            with open(p3, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            fund = []
+            g3 = ablage_durchsehen(echt, fund=fund)[1]
+            os.remove(p3)
+            pruef("Ablage: %s (Endung mitten im Namen) -> nicht frei, Fund relativ" % name,
+                  g3 != "" and fund == [os.path.join("rock", name)])
+        pruef("Ablage: Durchsicht bricht bei Klingel/Ansage ab",
+              ablage_durchsehen(echt, abbrechen=lambda: True)[1].startswith("Durchsicht abgebrochen"))
+        pruef("Ablage: Durchsicht bricht an der Zeitgrenze ab",
+              ablage_durchsehen(echt, frist=-1.0)[1].startswith("Durchsicht abgebrochen"))
+        schutz = os.path.join(probe, ".htaccess")
+        try:
+            g1 = index_schutz_setzen(probe)
+            with open(schutz, "r", encoding="utf-8", newline="") as fh:
+                inhalt = fh.read()
+            schutz_zeilen = [z.strip() for z in inhalt.split("\n") if z.strip() and not z.startswith("#")]
+            pruef("Ablage: .htaccess ohne Verzeichnisliste, Punkt-Pfade 404, LF", g1 == "" and schutz_zeilen[:2] ==
+                  ["Options -Indexes", "RedirectMatch 404 \"/\\.\""] and "\r" not in inhalt)
+            pruef("Ablage: .htaccess mit zweiter Sperre (Endungen 404, nur als Datei, keine Aushandlung)",
+                  "RedirectMatch 404 \"%s\"" % SPERRE_MUSTER in schutz_zeilen
+                  and "Options -MultiViews -ExecCGI -Includes" in schutz_zeilen
+                  and "SetHandler default-handler" in schutz_zeilen and "DirectoryIndex disabled" in schutz_zeilen
+                  and schutz_zeilen.count("</If>") == 1 and schutz_zeilen[-1] == "</If>")
+            sperre = re.compile(SPERRE_MUSTER)
+            mm = "/plugins/x/m_0123456789abcdef01234567/"
+            gesperrt = [mm + n for n in ("test.php", "Test.PHP", "a.php5", "rock/lied.cgi.mp3", "x.phtml", "x.phar",
+                                         "y.PL", "z.py", "s.sh", "i.shtml", "x.php/a.mp3", "x.php.", "o.x/t.Php7")]
+            frei = [mm + n for n in ("rock/A.mp3", "Lied.MP3", "liste.m3u", "radio.pls", "alt.shn", "phpfrei.ogg",
+                                     "sh.flac", "Pl.wav")] + ["/plugins/x/index.php", "/plugins/x/a/test.php"]
+            pruef("Ablage: zweite Sperre trifft Programme unter m_<Schluessel>/, nicht Audio, nicht die eigene index.php",
+                  all(sperre.search(u) for u in gesperrt) and not any(sperre.search(u) for u in frei))
+            with open(schutz, "w", encoding="utf-8") as fh:
+                fh.write("Options +Indexes\n")
+            pruef("Ablage: fremde .htaccess wird ersetzt, keine Zwischendatei bleibt",
+                  index_schutz_setzen(probe) == "" and open(schutz, encoding="utf-8").read() == INDEX_SCHUTZ
+                  and not [n for n in os.listdir(probe) if n.startswith(".htaccess.neu")])
+            with open(schutz, "w", encoding="utf-8", newline="") as fh:
+                fh.write(INDEX_SCHUTZ.split("# Zweite Sperre")[0])
+            pruef("Ablage: .htaccess der Fassung ohne zweite Sperre wird erkannt und ersetzt",
+                  index_schutz_setzen(probe) == "" and open(schutz, encoding="utf-8").read() == INDEX_SCHUTZ)
+            pruef("Ablage: Schutz nicht anlegbar -> Grund", index_schutz_setzen(os.path.join(probe, "fehlt")) != "")
+        finally:
+            try:
+                os.remove(schutz)
+            except OSError:
+                pass
+        mounts = os.path.join(probe, "mounts")
+        with open(mounts, "w", encoding="utf-8") as fh:
+            fh.write("/dev/root / ext4 rw 0 0\n/dev/sda1 /media/usb exfat rw 0 0\n//nas/m /media/smb/nas cifs rw 0 0\n")
+        pruef("Ablage: Dateisystem aus den Einhaengepunkten (laengster gewinnt)",
+              ablage_dateisystem("/media/usb/Musik", mounts) == "exfat"
+              and ablage_dateisystem("/media/smb/nas/x", mounts) == "cifs"
+              and ablage_dateisystem("/opt/x", mounts) == "ext4" and ablage_dateisystem("/x", mounts + ".fehlt") == "")
+        os.remove(mounts)
+        alt = dict(ABLAGE_STAND)
+        ABLAGE_STAND.update({"ok": 1, "pfad": echt, "schluessel": "0123456789abcdef01234567"})
+        try:
+            e, g = liste_aufbauen({"adresse": "rock"})
+            pruef("Liste: Ordner alphabetisch", g == "" and [x[0] for x in e] == ["rock/A.mp3", "rock/b.mp3"])
+            e, g = liste_aufbauen({"adresse": "liste.m3u"})
+            pruef("Liste: M3U", g == "" and [x[0] for x in e] == ["rock/b.mp3"])
+            pruef("Liste: Pfad hinaus abgewiesen", liste_aufbauen({"adresse": "../x"})[1] != "")
+            u = ablage_adresse({"tts_lokal_basis": "http://lb.example/plugins/p/"}, "rock/A b.mp3")
+            pruef("Adresse: Basis + Schluessel + kodierter Pfad",
+                  u == "http://lb.example/plugins/p/m_0123456789abcdef01234567/rock/A%20b.mp3")
+            pruef("Adresse: Pfad hinaus -> leer", ablage_adresse({"tts_lokal_basis": "http://lb"}, "../x.mp3") == "")
+            # Nachfassung 7: der Klingel-Gong haengt nicht an der Ablage - fehlt die Datei, klingt der eigene Gong bzw. der
+            # Standard-Gong. Klangordner und Ordner des eigenen Gongs liegen hier im Probeordner.
+            kw, ke = os.path.join(probe, "klang"), os.path.join(probe, "klaenge")
+            _KLANG_ORTE.update({"web": kw, "eigen": ke})
+            try:
+                import struct
+                lb = {"tts_lokal_basis": "http://lb"}
+                gg = klingel_gong(dict(lb, klingel_gong="gong.mp3"))
+                pruef("Klingel-Gong aus der Ablage", gg is not None and gg[0].endswith("/gong.mp3") and gg[1] == "audio/mpeg"
+                      and gg[2] == "")
+                gg = klingel_gong(dict(lb, klingel_gong="fehlt.mp3"))
+                pruef("Klingel-Gong fehlt in der Ablage -> Standard-Gong, Hinweis fuers Protokoll (nie stumm)",
+                      gg is not None and gg[:2] == ("http://lb/klang/" + KLANG_STANDARD, "audio/wav")
+                      and "fehlt.mp3" in gg[2] and "Standard-Gong" in gg[2])
+                with open(os.path.join(kw, KLANG_STANDARD), "rb") as fh:
+                    w = fh.read()
+                pcm = struct.unpack("<%dh" % ((len(w) - 44) // 2), w[44:])
+                pruef("Standard-Gong: WAV PCM 22050 Hz mono, 0,4 s Stille, nicht uebersteuert, am Ende ausgeblendet",
+                      w[:4] == b"RIFF" and w[8:16] == b"WAVEfmt " and len(w) == 44 + 2 * _GONG_PROBEN
+                      and struct.unpack("<HHI", w[20:28]) == (1, 1, _GONG_RATE) and not any(pcm[:int(0.4 * _GONG_RATE)])
+                      and 16000 < max(abs(x) for x in pcm) < 32767 and abs(pcm[-1]) < 100)
+                os.makedirs(ke)
+                with open(os.path.join(ke, "eigener_gong.mp3"), "wb") as fh:
+                    fh.write(b"ID3" + bytes(40))
+                gg = klingel_gong(dict(lb, klingel_gong="fehlt.mp3"))
+                ew = sorted(n for n in os.listdir(kw) if KLANG_WEB_EIGEN.match(n))
+                pruef("Klingel-Gong fehlt -> eigener Gong, bereitgestellt unter klang/eigen_<Inhalt>.mp3",
+                      gg is not None and len(ew) == 1 and gg[:2] == ("http://lb/klang/" + ew[0], "audio/mpeg")
+                      and "eigene Gong" in gg[2])
+                gg = klingel_gong(dict(lb, klingel_gong="", tts_gong="https://g.example/g.mp3"))
+                pruef("Klingel-Gong leer: eigener Gong vor dem Ansage-Gong", gg is not None and ew
+                      and gg == ("http://lb/klang/" + ew[0], "audio/mpeg", ""))
+                gg = klingel_gong(dict(lb, klingel_gong="gong.mp3"))
+                pruef("Klingel-Gong: Datei der Ablage geht vor dem eigenen", gg is not None and gg[0].endswith("/gong.mp3"))
+                with open(os.path.join(ke, "eigener_gong.mp3"), "wb") as fh:
+                    fh.write(b"<?php echo 1; ?>")
+                gg = klingel_gong(dict(lb, klingel_gong=""))
+                pruef("Eigener Gong mit fremdem Inhalt -> Standard-Gong, alte Bereitstellung fort",
+                      gg is not None and gg[0].endswith("/" + KLANG_STANDARD)
+                      and not [n for n in os.listdir(kw) if KLANG_WEB_EIGEN.match(n)])
+                os.remove(os.path.join(ke, "eigener_gong.mp3"))
+                pruef("Klingel-Gong: leer, kein eigener -> Ansage-Gong",
+                      klingel_gong(dict(lb, klingel_gong="", tts_gong="https://g.example/g.mp3"))
+                      == ("https://g.example/g.mp3", "audio/mpeg", ""))
+                ABLAGE_STAND["ok"] = 0
+                gg = klingel_gong(dict(lb, klingel_gong="gong.mp3"))
+                ABLAGE_STAND["ok"] = 1
+                pruef("Ablage nicht freigegeben -> Standard-Gong, Hinweis nennt den Grund",
+                      gg is not None and gg[0].endswith("/" + KLANG_STANDARD) and "nicht freigegeben" in gg[2])
+                pruef("Klang: Inhalt passt zur Endung", klang_art(b"OggS" + bytes(8), ".ogg")
+                      and klang_art(b"RIFF" + bytes(4) + b"WAVE", ".wav") and klang_art(bytes([255, 251, 144]), ".mp3")
+                      and not klang_art(b"RIFF" + bytes(4) + b"WAVE", ".mp3") and not klang_art(b"<?php", ".mp3"))
+            finally:
+                _KLANG_ORTE.clear()
+                for o in (kw, ke):
+                    if os.path.isdir(o):
+                        for n in os.listdir(o):
+                            if n == KLANG_STANDARD or KLANG_WEB_EIGEN.match(n) or KLANG_EIGEN_NAME.match(n):
+                                try:
+                                    os.remove(os.path.join(o, n))
+                                except OSError:
+                                    pass
+                        try:
+                            os.rmdir(o)
+                        except OSError:
+                            pass
+        finally:
+            ABLAGE_STAND.clear()
+            ABLAGE_STAND.update(alt)
+    finally:
+        # Genau die eigenen Probedateien und -ordner, einzeln und nicht rekursiv.
+        for n in _PROBE_DATEIEN + ("rock/x.php",):
+            try:
+                os.remove(os.path.join(ablage, n))
+            except OSError:
+                pass
+        for o in _PROBE_ORDNER + ("",):
+            try:
+                os.rmdir(os.path.join(probe, o) if o else probe)
+            except OSError:
+                pass
+
+    pruef("Zonennummer", zone_nummer("zone_3") == 3 and zone_nummer("Zone_24") == 24 and zone_nummer("zone_25") is None
+          and zone_nummer("zone_0") is None and zone_nummer("wohnzimmer") is None)
+    zt = sendecode_zonenthemen()
+    soll = [e["schluessel"] for e in THEMEN.get("zone", [])]
+    pruef("Zonenspiegel: genau die Themen der Liste 'zone'", sorted(zt) == sorted(soll) and len(soll) > 0)
+    sichtbar_merken({"a": type("I", (), {"friendly_name": "Fremd", "model_name": "M"})()})
+    pruef("Sichtbar: nur Name und Modell, eingetragene fallen weg",
+          sichtbar_fremd({"Andere"}) == [{"name": "Fremd", "modell": "M"}] and sichtbar_fremd({"Fremd"}) == [])
+    # Nachfassung 3 (O1): Mitgliedschaft ueber Kennung oder Namen, eine Gruppe ist in keiner Gruppe.
+    ga, gb, gc, gd = Geraet("Wohnzimmer", None), Geraet("Klingel", None), Geraet("Bad", None), Geraet("Flur", None)
+    nb = {"Wohnzimmer": ga, "Klingel": gb, "Bad": gc, "Flur": gd}
+    for gx in nb.values():
+        gx.nachbarn = nb
+    gb.ist_gruppe = True
+    gb.mitglieder = [{"kennung": "00000000-0000-0000-0000-00000000000A", "name": "Anders"},
+                     {"kennung": "", "name": "wohnzimmer"}]
+    gc.uuid = "0" * 31 + "a"
+    pruef("Mitgliedschaft (O1): Name oder Kennung, nicht Flur, Gruppe in keiner",
+          ga.mitglied_von() == ["Klingel"] and gc.mitglied_von() == ["Klingel"] and gd.mitglied_von() == []
+          and gb.mitglied_von() == [] and kennung_gleich("AB-cd", "abcd") and not kennung_gleich("", "-")
+          and name_gleich("G\u00e4ste", "ga\u0308ste") and not name_gleich("", ""))
+    SICHTBAR.clear()
+    gut = sum(1 for zz in zeilen if zz.startswith("ok"))
+    return gut, len(zeilen) - gut, zeilen
 
 
 if __name__ == "__main__":

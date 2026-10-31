@@ -24,6 +24,10 @@
  * "Lautsprecher ueber MQTT steuern" (befehle_mqtt_steuern, ab Werk aus). Frei: pause, stop, volume_down, next, prev, seek,
  * tts_stop und sperre. sperre_ein, Obergrenze und Ruhezeit prueft weiter der Dienst selbst.
  *
+ * Audio Stufe 1 (1.3.25, ENTSCHEIDUNGEN_AUDIO_STUFE1.md): {geraet}/quelle (Radiotasten, 0 = Stopp), {geraet}/klingel
+ * und klingel (Standardziel des Reiters Audio), beide eingreifend. {geraet} ist auch zone_<Nr>. Die Klingel sperrt 10 s
+ * wie tts (Prellen); ein zweites Klingeln danach geht durch.
+ *
  * Quittung "uebergeben": der Dienst reiht ein, ausgefuehrt wird im Arbeitsfaden des Lautsprechers (Verbindungsaufbau bis
  * ~18 s, Ansage bis 60 s je Teil); das Ergebnis steht danach in <praefix>/<Geraet>/last_error. "sperre" ist synchron.
  */
@@ -89,6 +93,15 @@ return array(
                                           null, array('max_byte' => 4000, 'sperre_s' => 10)),
         '{geraet}/tts_stop'     => $cc_bb('tts_stop', 'puls', false, 'Chromecast Ansage abbrechen (MQTT)', 'BEFEHL.K_TTS_STOP',
                                           $cc_bb_taste, '1'),
+        // Audio Stufe 1 (1.3.25): Quelle (Radiotasten, 0 = Stopp) und Klingel - beide hoerbar, also eingreifend.
+        '{geraet}/quelle'       => $cc_bb('quelle', 'ganz', true, 'Chromecast Quelle (MQTT)', 'BEFEHL.K_QUELLE', $cc_bb_favorit,
+                                          null, array('min' => 0, 'max' => 99)),
+        '{geraet}/klingel'      => $cc_bb('klingel', 'puls', true, 'Chromecast Klingel (MQTT)', 'BEFEHL.K_KLINGEL', $cc_bb_ansage,
+                                          '1', array('sperre_s' => 10)),
+        'klingel' => $cc_bb('klingel', 'puls', true, 'Chromecast Klingel Standardziel (MQTT)', 'BEFEHL.K_KLINGEL_STANDARD',
+                            $cc_bb_ansage, '1', array('sperre_s' => 10, 'tun' => function ($w, $t) {
+                                return cc_befehl_bruecke('server', 'klingel', '1');
+                            })),
         'sperre' => array('art' => 'schalter', 'eingreifend' => false, 'sperre_s' => 0, 'begruendung' => $cc_bb_sperre,
                           'titel' => 'Chromecast Ansagen sperren (MQTT)', 'kachel' => 'BEFEHL.K_SPERRE', 'quittung' => 'ausgefuehrt',
                           'tun' => function ($w, $t) {

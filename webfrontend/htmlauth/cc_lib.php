@@ -592,6 +592,10 @@ function cc_wert_pruefen($k, $w, $bisher)
         $w = (string) (int) $w;
     }
     $s = (string) $w;
+    // Audio Stufe 1 (1.3.25): eigene Pruefung und eigene Laengen (die Quellenliste darf laenger sein).
+    if (in_array($k, cc_audio_schluessel(), true)) {
+        return cc_audio_pruefen($k, $s, $bisher);
+    }
     if (strlen($s) > 4096) {
         return array(null, sprintf(cc_t('PRUEF.ZU_LANG'), $name));
     }
@@ -689,6 +693,9 @@ function cc_sicherung_bauen()
         if ($k === 'sprechtoken') {
             continue;   // Ansage-3: nie in der Sicherung
         }
+        if ($k === 'ablage_schluessel') {
+            continue;   // Audio Stufe 1: wie das Sprechtoken nie in der Sicherung
+        }
         $aus[$k] = isset($cfg[$k]) ? (string) $cfg[$k] : (string) $v;
     }
     return $aus;
@@ -779,6 +786,9 @@ function cc_eingabe_felder($form)
             'nur_markierung' => array('sprechtoken'),
         ),
     );
+    // Audio Stufe 1 (1.3.25): das Formular des Reiters Audio.
+    $felder['audio'] = array('text' => array('zonen', 'quellen', 'ablage_pfad', 'klingel_ziel', 'klingel_rueckfall',
+                                             'klingel_gong', 'klingel_pegel', 'klingel_text'), 'haken' => array());
     return isset($felder[$form]) ? $felder[$form] : null;
 }
 
@@ -2077,7 +2087,7 @@ function cc_sprechen_schluessel()
  *  Fehlen sie, gilt der GELTENDE Wert - fuer befehle_cmd_ein 1 (cc_sicherung_lesen). */
 function cc_sicherung_spaet()
 {
-    return array_merge(cc_sprechen_schluessel(), array('sperre_ein'), cc_befehle_haken());
+    return array_merge(cc_sprechen_schluessel(), array('sperre_ein'), cc_befehle_haken(), cc_audio_schluessel());
 }
 
 /* ==================================================================
@@ -2199,6 +2209,15 @@ function cc_sprechen_ziele($param, array $geraete)
         foreach ($geraete as $g) {
             if ($kl === strtolower($g) || $kl === strtolower(cc_thema($g))) {
                 return $g;
+            }
+        }
+        // Audio Stufe 1 (S6): eine Zone als zone_<n> - gemeint ist ihr Ziel, wenn es eingetragen ist.
+        $nr = cc_zone_nummer($kl);
+        if ($nr > 0) {
+            foreach (cc_zonen(cc_config_read()) as $zn) {
+                if ($zn['nr'] === $nr && in_array($zn['ziel'], $geraete, true)) {
+                    return $zn['ziel'];
+                }
             }
         }
         return null;
@@ -3054,10 +3073,11 @@ function cc_mqtt_namen($cfg = null)
                        'art' => $e['art'] === 'text' ? 'text' : 'zahl', 'retained' => !empty($e['retain']),
                        'haken' => $haken, 'noncached' => $nc, 'geraet' => $geraet);
     };
-    $mit = array('online', 'zaehler', 'geraete', 'verluste');
+    $mit = array('online', 'zaehler', 'geraete', 'verluste', 'quellen', 'ablage_ok');
     foreach (cc_themen()['dienst'] as $e) {
         $k = $e['schluessel'];
-        $zeile('server/' . $k, $e, 'server_' . $k, in_array($k, $mit, true), $k === 'online', '');
+        $zeile('server/' . $k, $e, 'server_' . $k, in_array($k, $mit, true),
+               in_array($k, array('online', 'quellen', 'ablage_ok'), true), '');
     }
     $zeile('status/befehle', array('art' => 'analog', 'min' => -1, 'max' => 1, 'einheit' => '', 'retain' => false),
            'status_befehle', false, false, '');
@@ -3067,6 +3087,14 @@ function cc_mqtt_namen($cfg = null)
             $zeile($t . '/' . $e['schluessel'], $e, $e['schluessel'], $e['schluessel'] !== 'type', false, $g);
         }
     }
+    // Audio Stufe 1 (1.3.25): je Zone die Spiegel aus bin/cc_themen.json (Liste zone); Noncached nur online.
+    $cc_zt = isset(cc_themen()['zone']) && is_array(cc_themen()['zone']) ? cc_themen()['zone'] : array();
+    foreach (cc_zonen($cfg) as $zn) {
+        foreach ($cc_zt as $e) {
+            $zeile('zone/' . (int) $zn['nr'] . '/' . $e['schluessel'], $e, $e['schluessel'], true,
+                   $e['schluessel'] === 'online', sprintf(cc_t('AUDIO.ZONE_N'), (int) $zn['nr'], $zn['name']));
+        }
+    }
     return $aus;
 }
 
@@ -3074,6 +3102,137 @@ function cc_mqtt_namen($cfg = null)
 function cc_mqtt_hakenliste($cfg = null)
 {
     return array_values(array_filter(cc_mqtt_namen($cfg), function ($z) { return $z['haken']; }));
+}
+
+/* ---------------- Gateway V2: Selbsttest der Haken (Nachtwelle N7, 1.3.25) ---------------- */
+
+/**
+ * Die Abos des MQTT-Gateways V2 aus config/system/subscriptions.json (Subscriptions[].Id je Thema, Noncached):
+ * array(Thema => Noncached ja/nein), null = nicht lesbar. Form wie MGiSmart 1.1.28 mg_v2_abos() und Govee 0.9.30
+ * gv_mqtt_v2_haken_lage(); die Datei liest cc_v2_haken_lage().
+ */
+function cc_v2_abos($daten)
+{
+    if (!is_array($daten)) {
+        return null;
+    }
+    $liste = array();
+    foreach (array('Subscriptions', 'subscriptions') as $s) {
+        if (isset($daten[$s]) && is_array($daten[$s])) {
+            $liste = $daten[$s];
+            break;
+        }
+    }
+    $abo = array();
+    foreach ($liste as $e) {
+        if (!is_array($e)) {
+            continue;
+        }
+        $id = '';
+        foreach (array('Id', 'id', 'Topic', 'topic') as $k) {
+            if (isset($e[$k]) && is_string($e[$k])) {
+                $id = $e[$k];
+                break;
+            }
+        }
+        if ($id === '') {
+            continue;
+        }
+        $nc = false;
+        foreach (array('Noncached', 'noncached') as $k) {
+            if (isset($e[$k])) {
+                $nc = ($e[$k] === true || in_array(strtolower(trim((string) $e[$k])), array('1', 'true', 'yes', 'on'), true));
+            }
+        }
+        $abo[$id] = $nc;
+    }
+    return $abo;
+}
+
+/**
+ * Soll gegen Ist, rein (liest nichts): array(1|0, fehlt[], noncached_fehlt[], noncached_zu_viel[], angehakt, soll).
+ * Soll je Zeile array('thema' => volles Thema, 'name' => Gateway-Name, 'noncached' => bool). Noncached wird in
+ * beide Richtungen verglichen: fehlt es, reicht das Gateway einen gleichen Wert nicht weiter (nach einem Neustart
+ * des Miniservers bleibt der Eingang dann leer); steht es zu viel, geht jeder Wert erneut an den Miniserver.
+ */
+function cc_v2_haken_abgleich(array $soll, array $abo)
+{
+    $fehlt = array();
+    $nc_fehlt = array();
+    $nc_zuviel = array();
+    $da = 0;
+    foreach ($soll as $e) {
+        if (!array_key_exists($e['thema'], $abo)) {
+            $fehlt[] = $e['name'];
+            continue;
+        }
+        $da++;
+        if ($e['noncached'] && !$abo[$e['thema']]) {
+            $nc_fehlt[] = $e['name'];
+        } elseif (!$e['noncached'] && $abo[$e['thema']]) {
+            $nc_zuviel[] = $e['name'];
+        }
+    }
+    return array(($fehlt || $nc_fehlt || $nc_zuviel) ? 0 : 1, $fehlt, $nc_fehlt, $nc_zuviel, $da, count($soll));
+}
+
+/**
+ * Das Soll fuer den Selbsttest: cc_mqtt_hakenliste() - DIESELBE Funktion wie die Hakenliste im Reiter Einbindung in
+ * Loxone (Regeln/07), samt der Textthemen je Geraet (Texteingaenge der Musterseite). Noncached: server/online (das
+ * Lebenszeichen-ok dieser Linie).
+ */
+function cc_v2_haken_soll($cfg)
+{
+    $aus = array();
+    foreach (cc_mqtt_hakenliste($cfg) as $z) {
+        $aus[] = array('thema' => $z['voll'], 'name' => $z['name'], 'noncached' => (bool) $z['noncached']);
+    }
+    return $aus;
+}
+
+/**
+ * Selbsttestzeile "Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?" (Nachtwelle N7, Vorschrift Punkt 4):
+ * array(1|0|2, Text ohne Markup). 1 alle Haken da und Noncached wie in der Hakenliste; 0 es fehlt ein Haken oder
+ * Noncached stimmt nicht (mit Namen); 2 trifft nicht zu (MQTT dieses Plugins aus, Gateway V1) oder nicht
+ * feststellbar (Fassung 0, keine Wurzel, subscriptions.json nicht lesbar, Hakenliste leer). Liest nur.
+ */
+function cc_v2_haken_lage($cfg = null)
+{
+    if ($cfg === null) {
+        $cfg = cc_config_read();
+    }
+    if (cc_cfg($cfg, 'mqtt_ein', '1') !== '1') {
+        return array(2, cc_t('TEST.V2_AUS'));
+    }
+    $fassung = cc_gateway_fassung();
+    $home = (string) cc_paths()['home'];
+    if ($fassung === 0 || $home === '') {
+        return array(2, cc_t('TEST.V2_UNKLAR'));
+    }
+    if ($fassung < 2) {
+        return array(2, cc_t('TEST.V2_V1'));
+    }
+    $abo = cc_v2_abos(@json_decode((string) @file_get_contents($home . '/config/system/subscriptions.json'), true));
+    if ($abo === null) {
+        return array(2, cc_t('TEST.V2_UNKLAR'));
+    }
+    $liste = cc_v2_haken_soll($cfg);
+    if (!$liste) {
+        return array(2, cc_t('TEST.V2_LEER'));   // ueber eine leere Hakenliste wird nicht geurteilt
+    }
+    list($ok, $fehlt, $nc_fehlt, $nc_zuviel, $da, $soll) = cc_v2_haken_abgleich($liste, $abo);
+    $txt = sprintf(cc_t('TEST.V2_ZAHL'), $da, $soll);
+    if ($fehlt) {
+        $txt .= ' ' . sprintf(cc_t('TEST.V2_FEHLT'), implode(', ', array_slice($fehlt, 0, 12))
+            . (count($fehlt) > 12 ? ' …' : ''));
+    }
+    if ($nc_fehlt) {
+        $txt .= ' ' . sprintf(cc_t('TEST.V2_NC_FEHLT'), implode(', ', $nc_fehlt));
+    }
+    if ($nc_zuviel) {
+        $txt .= ' ' . sprintf(cc_t('TEST.V2_NC_ZUVIEL'), implode(', ', $nc_zuviel));
+    }
+    return array($ok, $txt);
 }
 
 /** Die Abo-Zeile fuer Gateway V1 (E12): <praefix>/#. */
@@ -3114,7 +3273,7 @@ function cc_geraete_warnungen(array $geraete)
     $kennung = array();
     foreach ($geraete as $g) {
         $t = strtolower(cc_thema($g));
-        if ($t === 'server' || $t === 'befehl') {
+        if ($t === 'server' || $t === 'befehl' || $t === 'zone') {
             $aus[] = sprintf(cc_t('BEFEHL.W_NAME_RESERVIERT'), cc_e($g), cc_e($t));
         }
         $kennung[cc_befehl_kennung(cc_thema($g))][] = $g;
@@ -3468,6 +3627,7 @@ function cc_pruef_namen($cfg, array $dienst, $namen = null)
     }
     $gesendet = isset($dienst['gesendet_geraet']) && is_array($dienst['gesendet_geraet']) ? $dienst['gesendet_geraet'] : array();
     $diensttheme = isset($dienst['dienst']) && is_array($dienst['dienst']) ? $dienst['dienst'] : array();
+    $gesendet_zone = isset($dienst['gesendet_zone']) && is_array($dienst['gesendet_zone']) ? $dienst['gesendet_zone'] : array();
     $geraete = array();
     foreach (cc_geraete($cfg) as $g) {
         $geraete[cc_thema($g)] = 1;
@@ -3476,9 +3636,12 @@ function cc_pruef_namen($cfg, array $dienst, $namen = null)
     $gesehen = array();
     foreach ($namen as $z) {
         $teile = explode('/', (string) $z[0]);
-        $ok = count($teile) === 2 && (($teile[0] === 'server' && in_array($teile[1], $diensttheme, true))
+        $ok = (count($teile) === 2 && (($teile[0] === 'server' && in_array($teile[1], $diensttheme, true))
             || ($z[0] === 'status/befehle')
-            || (isset($geraete[$teile[0]]) && in_array($teile[1], $gesendet, true)));
+            || (isset($geraete[$teile[0]]) && in_array($teile[1], $gesendet, true))))
+            // Audio Stufe 1: Zonenspiegel, gemessen am Sendecode (--themen: gesendet_zone).
+            || (count($teile) === 3 && $teile[0] === 'zone' && preg_match('/^[0-9]{1,2}\z/', $teile[1]) === 1
+                && in_array($teile[2], $gesendet_zone, true));
         if (!$ok || $z[1] !== strtr($p . '/' . $z[0], array('/' => '_', '%' => '_', ' ' => '_'))) {
             $falsch[] = $z[1];
             continue;
@@ -3490,6 +3653,13 @@ function cc_pruef_namen($cfg, array $dienst, $namen = null)
         foreach ($gesendet as $k) {
             if (!isset($gesehen[$t . '/' . $k])) {
                 $fehlt[] = $t . '/' . $k;
+            }
+        }
+    }
+    foreach (cc_zonen($cfg) as $zn) {
+        foreach ($gesendet_zone as $k) {
+            if (!isset($gesehen['zone/' . (int) $zn['nr'] . '/' . $k])) {
+                $fehlt[] = 'zone/' . (int) $zn['nr'] . '/' . $k;
             }
         }
     }
@@ -3612,4 +3782,719 @@ function cc_cmd_hinweis($cfg)
     $zl = (is_array($zu) && isset($zu['cmd_zuletzt']) && (int) $zu['cmd_zuletzt'] > 0)
         ? date('d.m.Y H:i', (int) $zu['cmd_zuletzt']) : cc_t('BEFEHL.CMD_NIE');
     return sprintf(cc_t('BEFEHL.CMD_HINWEIS'), cc_e($zl));
+}
+
+/* ==================================================================
+ * Audio Stufe 1 (1.3.25, Musterprojekt/ENTSCHEIDUNGEN_AUDIO_STUFE1.md, Hausherr 30.10.2026: "Ich folge deinen
+ * Empfehlungen")
+ *
+ * Zonen 1-24 statt Geraetenamen (E1), Quellenliste 1-99 als Radiotasten (S3), Medienablage SSD/NAS ueber einen
+ * Verweis im eigenen Webordner, den Apache ausliefert (E2), Klingel auf eine Google-Gruppe mit Rueckfall parallel
+ * (E3-E5), Wiedergabelisten aus Ordner oder M3U (E7). Die Lesefunktionen hier muessen dasselbe liefern wie
+ * zonen()/quellen()/ablage_relativ() im Dienst; der Selbsttest des Dienstes (--selbsttest) und die Probe des Baus
+ * halten beide Seiten gegeneinander. Der Dienst richtet den Verweis selbst ein (beim Start und nach jeder Aenderung);
+ * die Oberflaeche prueft und schreibt nur die Einstellungen.
+ * ================================================================== */
+
+define('CC_ZONEN_MAX', 24);
+define('CC_QUELLEN_MAX', 99);
+
+/** Die Schluessel von Audio Stufe 1 - EINE Liste fuer Formular, Pruefung und Sicherung. */
+function cc_audio_schluessel()
+{
+    return array('zonen', 'quellen', 'ablage_pfad', 'ablage_schluessel', 'klingel_ziel', 'klingel_rueckfall',
+                 'klingel_gong', 'klingel_pegel', 'klingel_text');
+}
+
+/** Ziffern im Bereich, sonst null (kein Runden). */
+function cc_audio_zahl($t, $unten, $oben)
+{
+    $t = trim((string) $t);
+    if (!preg_match('/^[0-9]{1,3}\z/', $t)) {
+        return null;
+    }
+    $n = (int) $t;
+    return ($n >= $unten && $n <= $oben) ? $n : null;
+}
+
+/**
+ * Zonentabelle lesen: je Zeile "Nr = Ziel" oder "Nr = Anzeigename | Ziel". Rueckgabe array(Liste nach Nummer mit
+ * nr/name/ziel, Beanstandungen[] als fertiger Text). Wie zonen() im Dienst - der uebergeht, was hier beanstandet wird.
+ */
+function cc_zonen_lesen($text)
+{
+    $aus = array();
+    $fehler = array();
+    foreach (preg_split('/[\r\n]+/', (string) $text) as $z) {
+        $z = trim($z);
+        if ($z === '' || $z[0] === '#') {
+            continue;
+        }
+        if (strpos($z, '=') === false) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_ZONE_FORM'), cc_e(cc_zeichen_kuerzen($z, 60)));
+            continue;
+        }
+        list($nr_t, $rest) = explode('=', $z, 2);
+        $nr = cc_audio_zahl($nr_t, 1, CC_ZONEN_MAX);
+        if ($nr === null) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_ZONE_NR'), cc_e(cc_zeichen_kuerzen(trim($nr_t), 10)), CC_ZONEN_MAX);
+            continue;
+        }
+        if (strpos($rest, '|') !== false) {
+            list($name, $ziel) = explode('|', $rest, 2);
+        } else {
+            $name = $rest;
+            $ziel = $rest;
+        }
+        $name = trim($name);
+        $ziel = trim($ziel);
+        if ($ziel === '' || strpos($ziel, ';') !== false) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_ZONE_ZIEL'), $nr);
+            continue;
+        }
+        if (isset($aus[$nr])) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_ZONE_DOPPELT'), $nr);
+            continue;
+        }
+        $aus[$nr] = array('nr' => $nr, 'name' => $name !== '' ? $name : $ziel, 'ziel' => $ziel);
+    }
+    ksort($aus);
+    return array(array_values($aus), $fehler);
+}
+
+function cc_zonen($cfg)
+{
+    list($l) = cc_zonen_lesen(cc_cfg($cfg, 'zonen', ''));
+    return $l;
+}
+
+/** Ein Pfad in der Medienablage: relativ, "/" getrennt, ohne ".." - wie ablage_relativ() im Dienst. null = abgewiesen. */
+function cc_ablage_relativ($s)
+{
+    $t = str_replace('\\', '/', trim((string) $s));
+    if ($t === '' || $t[0] === '/' || preg_match('/[\x00-\x1F\x7F]/', $t) || preg_match('/^[A-Za-z]:/', $t)) {
+        return null;
+    }
+    $teile = array();
+    foreach (explode('/', $t) as $x) {
+        if ($x === '' || $x === '.') {
+            continue;
+        }
+        if ($x === '..') {
+            return null;
+        }
+        $teile[] = $x;
+    }
+    return $teile ? implode('/', $teile) : null;
+}
+
+/**
+ * Quellenliste lesen: je Zeile "Nr = Art | Name | Adresse", Art radio (http/https), liste (Ordner oder M3U in der
+ * Medienablage) oder datei (Datei der Ablage oder http/https). Rueckgabe array(Liste nr => array, Beanstandungen[]).
+ */
+function cc_quellen_lesen($text)
+{
+    $aus = array();
+    $fehler = array();
+    foreach (preg_split('/[\r\n]+/', (string) $text) as $z) {
+        $z = trim($z);
+        if ($z === '' || $z[0] === '#') {
+            continue;
+        }
+        $teile = array();
+        $nr = null;
+        if (strpos($z, '=') !== false) {
+            list($nr_t, $rest) = explode('=', $z, 2);
+            $nr = cc_audio_zahl($nr_t, 1, CC_QUELLEN_MAX);
+            $teile = array_map('trim', explode('|', $rest, 3));
+        }
+        if ($nr === null || count($teile) !== 3 || !in_array(strtolower($teile[0]), array('radio', 'liste', 'datei'), true)
+            || $teile[2] === '') {
+            $fehler[] = sprintf(cc_t('AUDIO.F_QUELLE_FORM'), cc_e(cc_zeichen_kuerzen($z, 60)));
+            continue;
+        }
+        $art = strtolower($teile[0]);
+        $adr = $teile[2];
+        $web = preg_match('#^https?://#i', $adr) === 1;
+        if (($art === 'radio' && !$web) || ($art === 'liste' && cc_ablage_relativ($adr) === null)
+            || ($art === 'datei' && !$web && cc_ablage_relativ($adr) === null)) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_QUELLE_ADRESSE'), $nr);
+            continue;
+        }
+        if (isset($aus[$nr])) {
+            $fehler[] = sprintf(cc_t('AUDIO.F_QUELLE_DOPPELT'), $nr);
+            continue;
+        }
+        $aus[$nr] = array('nr' => $nr, 'art' => $art, 'name' => $teile[1] !== '' ? $teile[1] : $adr, 'adresse' => $adr);
+    }
+    ksort($aus);
+    return array($aus, $fehler);
+}
+
+/** Die geltende Quellenliste: die eigene, sonst die Favoriten als Radioquellen 1 bis n (Nummern bleiben, S3). */
+function cc_quellen($cfg)
+{
+    $t = (string) cc_cfg($cfg, 'quellen', '');
+    if (trim($t) !== '') {
+        list($l) = cc_quellen_lesen($t);
+        return $l;
+    }
+    $aus = array();
+    foreach (cc_favoriten($cfg) as $i => $f) {
+        if ($i + 1 > CC_QUELLEN_MAX) {
+            break;
+        }
+        $aus[$i + 1] = array('nr' => $i + 1, 'art' => 'radio', 'name' => $f[0], 'adresse' => $f[1]);
+    }
+    return $aus;
+}
+
+/** Die Favoriten als Text der Quellenliste - zum Vorbelegen des Feldes, solange die Quellenliste leer ist. */
+function cc_quellen_aus_favoriten($cfg)
+{
+    $z = array();
+    foreach (cc_quellen(array('favoriten' => cc_cfg($cfg, 'favoriten', ''), 'quellen' => '')) as $q) {
+        $z[] = $q['nr'] . ' = radio | ' . $q['name'] . ' | ' . $q['adresse'];
+    }
+    return implode("\n", $z);
+}
+
+/** Wo eine Medienablage liegen darf (wie ablage_wurzeln() im Dienst): LoxBerry-Speicher, /media, /mnt. */
+function cc_ablage_wurzeln()
+{
+    $orte = array('/media', '/mnt');
+    $home = (string) cc_paths()['home'];
+    if ($home !== '') {
+        array_unshift($orte, $home . '/system/storage');
+    }
+    return $orte;
+}
+
+/** Der eingetragene Pfad der Medienablage - Form (immer) und Lage ($lage: Ordner vorhanden). '' = in Ordnung. */
+function cc_ablage_pfad_pruefen($s, $lage)
+{
+    $s = trim((string) $s);
+    if ($s === '') {
+        return '';
+    }
+    // Schraegstriche vereinheitlicht: dieselbe Regel am Geraet (Linux) und im Pruefstand (Windows, C:/...).
+    $n = str_replace('\\', '/', $s);
+    if (!($n[0] === '/' || preg_match('#^[A-Za-z]:/#', $n)) || preg_match('/[\x00-\x1F\x7F]/', $n)
+        || strpos($n . '/', '/../') !== false || strlen($n) > 400) {
+        return cc_t('AUDIO.F_ABLAGE_FORM');
+    }
+    $echt = $n;
+    if ($lage) {
+        $r = @realpath($s);
+        if ($r === false || !@is_dir($r)) {
+            return cc_t('AUDIO.F_ABLAGE_FEHLT');
+        }
+        $echt = $r;
+    }
+    foreach (cc_ablage_wurzeln() as $w) {
+        $wr = $lage ? @realpath($w) : $w;
+        if ($wr === false || $wr === '') {
+            continue;
+        }
+        $wr = rtrim(str_replace('\\', '/', $wr), '/');
+        $e = str_replace('\\', '/', $echt);
+        if (strpos($e, $wr . '/') === 0 && strlen($e) > strlen($wr) + 1) {
+            return '';
+        }
+    }
+    return cc_t('AUDIO.F_ABLAGE_ORT');
+}
+
+/**
+ * Nachfassung 4 (1.3.25, 30.10.2026, Wunsch Hausherr): die Medienablage auswaehlen statt tippen - mit der
+ * Speicherauswahl von LoxBerry (libs/phplib/loxberry_storage.php, get_storage_html(); am Geraet nachgelesen,
+ * LoxBerry 4.0.0.15). Sie holt per POST action=init von /admin/system/ajax/ajax-storage-handler.cgi ein Stueck HTML:
+ * Auswahl <formid>-select (USB, Netzfreigaben, "Benutzerdefinierter Pfad"), Feld <formid>-folder (Unterverzeichnis),
+ * verstecktes Feld <formid> mit dem ganzen Pfad; die Speicher fragt dessen Skript erst im Browser ab (get-storage).
+ * Kein type_local: der Datenordner des Plugins ist keine erlaubte Ablage (cc_ablage_wurzeln()). Ein Pfad, der zu keinem
+ * Speicher passt, waehlt das Widget selbst als "Benutzerdefinierter Pfad" vor (Uebergang alter Pfade).
+ * Rueckgabe das HTML oder '' (Bibliothek fehlt, Abruf gescheitert, unerwartete Antwort) - dann bleibt nur das Feld.
+ */
+function cc_ablage_wahl_html($pfad)
+{
+    $home = (string) cc_paths()['home'];
+    $lib = $home !== '' ? $home . '/libs/phplib/loxberry_storage.php' : '';
+    if ($lib === '' || !is_file($lib)) {
+        return '';
+    }
+    require_once $lib;
+    if (!function_exists('get_storage_html')) {
+        return '';
+    }
+    $pfad = (string) $pfad;
+    $alt = ini_get('default_socket_timeout');
+    ini_set('default_socket_timeout', '5');
+    $html = @get_storage_html(array(
+        'formid' => 'cc_ablage_wahl',
+        'currentpath' => cc_ablage_wahl_tauglich($pfad) ? $pfad : '',
+        'label' => cc_t('AUDIO.L_ABLAGE_WAHL'),
+        'type_usb' => 1, 'type_net' => 1, 'type_custom' => 1, 'custom_folder' => 1, 'show_browse' => 1));
+    ini_set('default_socket_timeout', (string) $alt);
+    return (is_string($html) && strpos($html, 'id="cc_ablage_wahl"') !== false) ? $html : '';
+}
+
+/** Darf der Pfad als currentpath in die Speicherauswahl? Das Widget setzt ihn UNGEPRUEFT in HTML und JavaScript
+ * ein - also nur gueltiges UTF-8 ohne " \ < > & ` und ohne Steuerzeichen. Sonst bleibt die Auswahl leer und das
+ * Feld "Pfad von Hand" offen. */
+function cc_ablage_wahl_tauglich($p)
+{
+    $p = (string) $p;
+    return $p === '' || (preg_match('//u', $p) === 1 && !preg_match('/["\\\\<>&`\x00-\x1F\x7F]/', $p));
+}
+
+/** Namen einer Liste "a;b" oder je Zeile. */
+function cc_audio_namen($text)
+{
+    $aus = array();
+    foreach (preg_split('/[;\r\n]+/', (string) $text) as $n) {
+        $n = trim($n);
+        if ($n !== '' && !in_array($n, $aus, true)) {
+            $aus[] = $n;
+        }
+    }
+    return $aus;
+}
+
+/**
+ * Einen Wert von Audio Stufe 1 pruefen (aus cc_wert_pruefen(), auch beim Zurueckspielen einer Sicherung). Hier nur
+ * die FORM; ob Zonenziele und Klingelziele in der Geraeteliste stehen, prueft cc_audio_formular() beim Speichern.
+ * Rueckgabe wie cc_wert_pruefen(): array(Wert, '') oder array(null, Beanstandung).
+ */
+function cc_audio_pruefen($k, $s, $bisher)
+{
+    $name = cc_e($k);
+    $grenze = $k === 'quellen' ? 32768 : ($k === 'zonen' ? 8192 : 1024);
+    if (strlen($s) > $grenze || preg_match('//u', $s) !== 1) {
+        return array(null, sprintf(cc_t('PRUEF.ZU_LANG'), $name));
+    }
+    if ($k === 'zonen' || $k === 'quellen' || $k === 'klingel_rueckfall') {
+        if (preg_match('/[\x00-\x09\x0B\x0C\x0E-\x1F\x7F]/', $s)) {
+            return array(null, sprintf(cc_t('PRUEF.STEUERZEICHEN'), $name));
+        }
+        if ($k === 'zonen') {
+            list(, $f) = cc_zonen_lesen($s);
+        } elseif ($k === 'quellen') {
+            list(, $f) = cc_quellen_lesen($s);
+        } else {
+            $f = array();
+        }
+        return $f ? array(null, implode('<br>', $f)) : array($s, '');
+    }
+    if (preg_match('/[\x00-\x1F\x7F]/', $s)) {
+        return array(null, sprintf(cc_t('PRUEF.STEUERZEICHEN'), $name));
+    }
+    if ($k === 'ablage_schluessel') {
+        // Wie das Sprechtoken: nie in einer Sicherung; leer heisst "der geltende bleibt".
+        return $s === '' ? array((string) cc_cfg($bisher, 'ablage_schluessel', ''), '')
+                         : array(null, cc_t('AUDIO.F_SCHLUESSEL'));
+    }
+    if ($k === 'ablage_pfad') {
+        $f = cc_ablage_pfad_pruefen($s, false);
+        return $f === '' ? array(trim($s), '') : array(null, $f);
+    }
+    if ($k === 'klingel_pegel') {
+        if ($s === '') {
+            return array('', '');
+        }
+        return (preg_match('/^[0-9]{1,3}\z/', $s) && (int) $s <= 100) ? array((string) (int) $s, '')
+            : array(null, sprintf(cc_t('PRUEF.BEREICH_LEER'), $name, 0, 100));
+    }
+    if ($k === 'klingel_gong') {
+        $s = trim($s);
+        if ($s === '' || preg_match('#^https?://\S+\z#i', $s) || cc_ablage_relativ($s) !== null) {
+            return array($s === '' ? '' : (preg_match('#^https?://#i', $s) ? $s : cc_ablage_relativ($s)), '');
+        }
+        return array(null, cc_t('AUDIO.F_GONG'));
+    }
+    if ($k === 'klingel_text') {
+        // Zeichen, nicht Byte - ohne mbstring (am LoxBerry nicht zugesagt).
+        return preg_match_all('/./us', $s) <= 1000 ? array(trim($s), '') : array(null, sprintf(cc_t('PRUEF.ZU_LANG'), $name));
+    }
+    // klingel_ziel: ein Name oder zone_<n>
+    return array(trim($s), '');
+}
+
+/** Befehlsname einer Zone (fuer die Befehlsbruecke): zone_<n>. */
+function cc_zone_kennung($nr)
+{
+    return 'zone_' . (int) $nr;
+}
+
+/** Zonennummer aus zone_<n> - sonst 0. */
+function cc_zone_nummer($k)
+{
+    return preg_match('/^zone_([0-9]{1,2})\z/', strtolower(trim((string) $k)), $m) && (int) $m[1] >= 1
+        && (int) $m[1] <= CC_ZONEN_MAX ? (int) $m[1] : 0;
+}
+
+/**
+ * Das Formular des Reiters Audio (eigenes Formular, eigener Handler, Bauart cc_sprechen_formular()): array($neu,
+ * $bean) - $bean Feld => Beanstandung. Bei einer Beanstandung wird nichts gespeichert (Entscheidung 16). Fasst nur
+ * die Schluessel von cc_audio_schluessel() an. Querpruefungen: jedes Zonenziel, das Klingelziel und der Rueckfall
+ * stehen in der Geraeteliste (oder sind eine Zone); Listen- und Ablagequellen und ein Gong aus der Ablage brauchen
+ * eine Medienablage; ist der Pfad gesetzt, muss der Ordner da sein. Den Pfadschluessel wuerfelt die Oberflaeche,
+ * sobald ein Pfad steht (24 Zeichen hex, random_bytes) - er wechselt nur mit dem Pfad.
+ */
+function cc_audio_formular(array $post, array $cfg)
+{
+    $neu = $cfg;
+    $bean = array();
+    $geraete = cc_geraete($cfg);
+    foreach (array('zonen', 'quellen', 'ablage_pfad', 'klingel_ziel', 'klingel_rueckfall', 'klingel_gong',
+                   'klingel_pegel', 'klingel_text') as $k) {
+        $roh = isset($post[$k]) ? $post[$k] : '';
+        if (!is_string($roh)) {
+            $bean[$k] = sprintf(cc_t('PRUEF.KEIN_TEXT'), cc_e($k));
+            continue;
+        }
+        $roh = str_replace(array("\r\n", "\r"), "\n", $roh);
+        list($gut, $f) = cc_audio_pruefen($k, trim($roh), $cfg);
+        if ($f !== '') {
+            $bean[$k] = $f;
+        } else {
+            $neu[$k] = $gut;
+        }
+    }
+    if (!isset($bean['zonen'])) {
+        foreach (cc_zonen($neu) as $z) {
+            if (!in_array($z['ziel'], $geraete, true)) {
+                $bean['zonen'] = sprintf(cc_t('AUDIO.F_ZONE_UNBEKANNT'), $z['nr'], cc_e($z['ziel']));
+                break;
+            }
+        }
+    }
+    if (!isset($bean['klingel_ziel']) && (string) $neu['klingel_ziel'] !== '') {
+        $kz = (string) $neu['klingel_ziel'];
+        $nr = cc_zone_nummer($kz);
+        $zonen_nr = array();
+        foreach (cc_zonen($neu) as $z) {
+            $zonen_nr[] = $z['nr'];
+        }
+        if ($nr > 0 ? !in_array($nr, $zonen_nr, true) : !in_array($kz, $geraete, true)) {
+            $bean['klingel_ziel'] = sprintf(cc_t('AUDIO.F_KLINGEL_ZIEL'), cc_e($kz));
+        }
+    }
+    if (!isset($bean['klingel_rueckfall'])) {
+        foreach (cc_audio_namen($neu['klingel_rueckfall']) as $n) {
+            if (strtolower($n) !== 'alle' && !in_array($n, $geraete, true)) {
+                $bean['klingel_rueckfall'] = sprintf(cc_t('AUDIO.F_KLINGEL_ZIEL'), cc_e($n));
+                break;
+            }
+        }
+    }
+    $pfad = (string) cc_cfg($neu, 'ablage_pfad', '');
+    if (!isset($bean['ablage_pfad']) && $pfad !== '') {
+        $f = cc_ablage_pfad_pruefen($pfad, true);
+        if ($f !== '') {
+            $bean['ablage_pfad'] = $f;
+        }
+    }
+    if ($pfad === '' && !isset($bean['quellen'])) {
+        foreach (cc_quellen($neu) as $q) {
+            if ($q['art'] === 'liste' || ($q['art'] === 'datei' && !preg_match('#^https?://#i', $q['adresse']))) {
+                $bean['quellen'] = sprintf(cc_t('AUDIO.F_OHNE_ABLAGE'), $q['nr']);
+                break;
+            }
+        }
+    }
+    $gong = (string) cc_cfg($neu, 'klingel_gong', '');
+    if ($pfad === '' && $gong !== '' && !preg_match('#^https?://#i', $gong) && !isset($bean['klingel_gong'])) {
+        $bean['klingel_gong'] = cc_t('AUDIO.F_GONG_OHNE_ABLAGE');
+    }
+    if (!$bean) {
+        $alt_pfad = (string) cc_cfg($cfg, 'ablage_pfad', '');
+        $sch = (string) cc_cfg($cfg, 'ablage_schluessel', '');
+        if ($pfad === '') {
+            $neu['ablage_schluessel'] = '';
+        } elseif ($pfad !== $alt_pfad || !preg_match('/^[0-9a-f]{24,64}\z/', $sch)) {
+            $neu['ablage_schluessel'] = bin2hex(random_bytes(12));
+        }
+    }
+    return array($neu, $bean);
+}
+
+/** Was der Dienst zur Audio-Stufe meldet (zustand.json): Ablage, Zonen, Quellen, sichtbare Geraete. null = keiner. */
+function cc_audio_zustand()
+{
+    $zu = cc_sprechen_json('zustand.json');
+    if (!is_array($zu) || !isset($zu['audio']) || !is_array($zu['audio'])) {
+        return null;
+    }
+    return $zu['audio'];
+}
+
+/**
+ * Nachfassung 3 (1.3.25, O1): Zusatz fuer die Spalte Zustand im Reiter Audio - bei einer Gruppen-Zone ihre
+ * Mitglieder, bei einem Lautsprecher die Gruppen, in denen er Mitglied ist. Aus zustand.json (audio.zonen[],
+ * mitglieder/mitglied_von, nur Namen). Leer, wenn nichts zu sagen ist (auch bei einem Dienst ohne diese Felder).
+ * Rueckgabe Text ohne HTML (der Aufrufer maskiert).
+ */
+function cc_zone_mitglieder_text($zs)
+{
+    if (!is_array($zs)) {
+        return '';
+    }
+    if (!empty($zs['gruppe'])) {
+        if (!array_key_exists('mitglieder', $zs)) {
+            return '';
+        }
+        if (!is_array($zs['mitglieder'])) {
+            return ' · ' . cc_t('AUDIO.MITGLIEDER_OFFEN');
+        }
+        $n = array_values(array_filter(array_map('strval', $zs['mitglieder']), 'strlen'));
+        return ' · ' . ($n ? sprintf(cc_t('AUDIO.MITGLIEDER'), implode(', ', $n)) : cc_t('AUDIO.MITGLIEDER_KEINE'));
+    }
+    if (isset($zs['mitglied_von']) && is_array($zs['mitglied_von']) && $zs['mitglied_von']) {
+        return ' · ' . sprintf(cc_t('AUDIO.MITGLIED_VON'), implode(', ', array_map('strval', $zs['mitglied_von'])));
+    }
+    return '';
+}
+
+/**
+ * Pruefzeile "Audio: Zonen, Quellen, Medienablage" fuer den Reiter Test: array(true|false|null, Text). Keine Zonen
+ * und keine Ablage = Strich (nicht eingerichtet); Beanstandung in der gespeicherten Liste oder eine eingetragene,
+ * aber nicht freigegebene Ablage = rot, mit Grund.
+ */
+function cc_audio_pruefzeile($cfg)
+{
+    list($zl, $zf) = cc_zonen_lesen(cc_cfg($cfg, 'zonen', ''));
+    $qt = (string) cc_cfg($cfg, 'quellen', '');
+    list(, $qf) = trim($qt) === '' ? array(array(), array()) : cc_quellen_lesen($qt);
+    $ql = cc_quellen($cfg);
+    $pfad = (string) cc_cfg($cfg, 'ablage_pfad', '');
+    if ($zf || $qf) {
+        return array(false, strip_tags(implode(' ', array_merge($zf, $qf))));
+    }
+    $teile = array(sprintf(cc_t('AUDIO.T_ZAHLEN'), count($zl), count($ql)));
+    $ok = null;
+    if ($pfad !== '') {
+        $a = cc_audio_zustand();
+        if ($a === null || !isset($a['ablage']) || !is_array($a['ablage'])) {
+            $teile[] = cc_t('AUDIO.T_ABLAGE_UNKLAR');
+        } elseif (cc_audio_wird_geprueft($a)) {
+            $teile[] = cc_t('AUDIO.T_WIRD_GEPRUEFT');
+        } elseif (!empty($a['ablage']['ok'])) {
+            $teile[] = sprintf(cc_t('AUDIO.T_ABLAGE_OK'), (int) $a['ablage']['dateien']);
+            $ok = true;
+        } else {
+            $teile[] = sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'), isset($a['ablage']['grund']) ? (string) $a['ablage']['grund'] : '?');
+            $ok = false;
+        }
+    } elseif ($zl || $ql) {
+        $ok = true;
+    }
+    // Nachfassung 7: Quellen und Klingel-Gong, deren Datei oder Ordner in der Ablage fehlt, als Warnung (Kreuz) - die
+    // Quelle spielt nicht, der Gong faellt auf den eigenen bzw. den Standard-Gong zurueck.
+    $fehlt = $ok === null ? array() : cc_ablage_fehlende($cfg);
+    if ($fehlt) {
+        $teile[] = cc_t('AUDIO.T_WARNUNG') . ' ' . implode(' ', $fehlt);
+        $ok = false;
+    }
+    return array($ok, implode(' ', $teile));
+}
+
+/* ==================================================================
+ * Nachfassung 7 (30.10.2026): Klingel-Gong unabhaengig von der Medienablage
+ * ================================================================== */
+
+if (!defined('CC_KLANG_MAX')) {
+    define('CC_KLANG_MAX', 1048576);
+}
+
+/** Ordner des eigenen Gongs: config/plugins/<ordner>/klaenge - die Sicherung beim Update nimmt ihn mit. */
+function cc_klang_ordner()
+{
+    return dirname(cc_paths()['config']) . '/klaenge';
+}
+
+/** Passt der Anfang des Inhalts zur Endung (mp3/ogg/wav)? Dieselbe Regel wie klang_art() im Dienst. */
+function cc_klang_art($kopf, $endung)
+{
+    $k = (string) $kopf;
+    if ($endung === 'wav') {
+        return substr($k, 0, 4) === 'RIFF' && substr($k, 8, 4) === 'WAVE';
+    }
+    if ($endung === 'ogg') {
+        return substr($k, 0, 4) === 'OggS';
+    }
+    if ($endung === 'mp3') {
+        return substr($k, 0, 3) === 'ID3' || (strlen($k) >= 2 && ord($k[0]) === 0xFF && (ord($k[1]) & 0xE0) === 0xE0);
+    }
+    return false;
+}
+
+/** Der eigene Gong: array(name, endung, groesse, tauglich) oder null. */
+function cc_klang_eigen()
+{
+    $o = cc_klang_ordner();
+    foreach (array('mp3', 'ogg', 'wav') as $e) {
+        $f = $o . '/eigener_gong.' . $e;
+        if (is_file($f) && !is_link($f)) {
+            $g = (int) @filesize($f);
+            $kopf = (string) @file_get_contents($f, false, null, 0, 12);
+            return array('name' => basename($f), 'endung' => $e, 'groesse' => $g,
+                         'tauglich' => $g > 0 && $g <= CC_KLANG_MAX && cc_klang_art($kopf, $e));
+        }
+    }
+    return null;
+}
+
+/**
+ * Einen eigenen Gong uebernehmen ($_FILES-Eintrag): nur .mp3/.ogg/.wav, hoechstens CC_KLANG_MAX Byte, Inhalt passend
+ * zur Endung; gespeichert als eigener_gong.<endung> (erst vollstaendig, dann umbenannt), ein Gong der anderen Endungen
+ * faellt weg. Rueckgabe '' oder die Beanstandung. $hochgeladen: nur fuer Proben (sonst is_uploaded_file).
+ */
+function cc_klang_hochladen($datei, $hochgeladen = null)
+{
+    $pruef = $hochgeladen !== null ? $hochgeladen : 'is_uploaded_file';
+    if (!is_array($datei) || !isset($datei['tmp_name'], $datei['name'], $datei['error'], $datei['size'])) {
+        return cc_t('AUDIO.F_KLANG_KEINE');
+    }
+    $fehler = (int) $datei['error'];
+    if ($fehler === UPLOAD_ERR_INI_SIZE || $fehler === UPLOAD_ERR_FORM_SIZE) {
+        return cc_t('AUDIO.F_KLANG_GROSS');
+    }
+    if ($fehler !== UPLOAD_ERR_OK || !is_string($datei['tmp_name']) || !@call_user_func($pruef, $datei['tmp_name'])) {
+        return cc_t('AUDIO.F_KLANG_KEINE');
+    }
+    $g = (int) $datei['size'];
+    if ($g <= 0 || $g > CC_KLANG_MAX) {
+        return cc_t('AUDIO.F_KLANG_GROSS');
+    }
+    $e = strtolower(pathinfo((string) $datei['name'], PATHINFO_EXTENSION));
+    if (!in_array($e, array('mp3', 'ogg', 'wav'), true)) {
+        return cc_t('AUDIO.F_KLANG_ART');
+    }
+    $daten = (string) @file_get_contents($datei['tmp_name'], false, null, 0, CC_KLANG_MAX + 1);
+    if (strlen($daten) !== $g) {
+        return cc_t('AUDIO.F_KLANG_GROSS');
+    }
+    if (!cc_klang_art(substr($daten, 0, 12), $e)) {
+        return cc_t('AUDIO.F_KLANG_INHALT');
+    }
+    $o = cc_klang_ordner();
+    if (is_link($o) || (!is_dir($o) && !@mkdir($o, 0755, true))) {
+        return cc_t('AUDIO.F_KLANG_SCHREIBEN');
+    }
+    $ziel = $o . '/eigener_gong.' . $e;
+    $neu = $ziel . '.neu';
+    if (@file_put_contents($neu, $daten) !== $g || !@chmod($neu, 0644) || !@rename($neu, $ziel)) {
+        @unlink($neu);
+        return cc_t('AUDIO.F_KLANG_SCHREIBEN');
+    }
+    foreach (array('mp3', 'ogg', 'wav') as $x) {
+        if ($x !== $e && is_file($o . '/eigener_gong.' . $x)) {
+            @unlink($o . '/eigener_gong.' . $x);
+        }
+    }
+    return '';
+}
+
+/** Den eigenen Gong entfernen (Knopf im Reiter Audio). Rueckgabe: Zahl der entfernten Dateien. */
+function cc_klang_entfernen()
+{
+    $n = 0;
+    foreach (array('mp3', 'ogg', 'wav') as $x) {
+        $f = cc_klang_ordner() . '/eigener_gong.' . $x;
+        if (is_file($f) && @unlink($f)) {
+            $n++;
+        }
+    }
+    return $n;
+}
+
+/** Gibt es $adresse in der eingetragenen Ablage (Datei, bei Art liste auch Ordner oder M3U)? Nur innerhalb. */
+function cc_ablage_da($cfg, $adresse, $art = 'datei')
+{
+    $pfad = (string) cc_cfg($cfg, 'ablage_pfad', '');
+    $rel = cc_ablage_relativ($adresse);
+    if ($pfad === '' || $rel === null) {
+        return false;
+    }
+    $basis = @realpath($pfad);
+    $r = $basis === false ? false : @realpath($basis . '/' . $rel);
+    if ($r === false || strpos($r, rtrim($basis, '/\\') . DIRECTORY_SEPARATOR) !== 0) {
+        return false;
+    }
+    if ($art === 'liste') {
+        return is_dir($r) || (is_file($r) && preg_match('/\.m3u8?\z/i', $r));
+    }
+    return is_file($r);
+}
+
+/**
+ * Quellen und Klingel-Gong, deren Datei bzw. Ordner in der eingetragenen Medienablage fehlt (Texte fuer die
+ * Selbstpruefung). Leer ohne Ablage oder wenn ihr Ordner nicht da ist - das meldet die Zeile schon selbst.
+ */
+function cc_ablage_fehlende($cfg)
+{
+    $pfad = (string) cc_cfg($cfg, 'ablage_pfad', '');
+    if ($pfad === '' || !is_dir($pfad)) {
+        return array();
+    }
+    $aus = array();
+    foreach (cc_quellen($cfg) as $q) {
+        if ($q['art'] === 'radio' || preg_match('#^https?://#i', $q['adresse'])) {
+            continue;
+        }
+        if (!cc_ablage_da($cfg, $q['adresse'], $q['art'])) {
+            $aus[] = sprintf(cc_t('AUDIO.T_QUELLE_FEHLT'), (int) $q['nr'], $q['art'], (string) $q['adresse']);
+        }
+    }
+    $g = trim((string) cc_cfg($cfg, 'klingel_gong', ''));
+    if ($g !== '' && !preg_match('#^https?://#i', $g) && !cc_ablage_da($cfg, $g)) {
+        $ke = cc_klang_eigen();
+        $aus[] = sprintf(cc_t('AUDIO.T_GONG_FEHLT'), $g,
+                         cc_t($ke !== null && $ke['tauglich'] ? 'AUDIO.J_EIGEN' : 'AUDIO.J_STANDARD'));
+    }
+    return $aus;
+}
+
+/**
+ * Welcher Gong jetzt klingt (wie klingel_gong() im Dienst): array(Text, gut). gut false = das Feld nennt eine Datei,
+ * die in der Ablage fehlt (bzw. die Ablage ist nicht freigegeben) - es klingt der Rueckfall.
+ */
+function cc_klang_jetzt($cfg)
+{
+    $ke = cc_klang_eigen();
+    $eigen = $ke !== null && $ke['tauglich'];
+    $rueck = cc_t($eigen ? 'AUDIO.J_EIGEN' : 'AUDIO.J_STANDARD');
+    $g = trim((string) cc_cfg($cfg, 'klingel_gong', ''));
+    $wort = 'AUDIO.J_ADRESSE';
+    if ($g === '' && !$eigen) {
+        $g = trim((string) cc_cfg($cfg, 'tts_gong', ''));
+        $wort = 'AUDIO.J_ANSAGE';
+    }
+    if ($g === '') {
+        return array($rueck, true);
+    }
+    if (preg_match('#^https?://#i', $g)) {
+        return array(cc_t($wort), true);
+    }
+    $a = cc_audio_zustand();
+    $frei = !is_array($a) || !isset($a['ablage']['ok']) || !empty($a['ablage']['ok']);
+    if ($frei && cc_ablage_da($cfg, $g)) {
+        return array(sprintf(cc_t('AUDIO.J_ABLAGE'), $g), true);
+    }
+    return array(sprintf(cc_t('AUDIO.J_FEHLT'), $g, $rueck), false);
+}
+
+/**
+ * Hat der Dienst die gespeicherte Konfiguration schon uebernommen? zustand.json traegt seit Nachfassung 7 den Stand
+ * (audio.cfg_zeit = mtime der Datei, die er gelesen hat). Weicht er ab, ist der gezeigte Ablagezustand von vorher -
+ * die Oberflaeche sagt "wird geprueft ...". Ein Dienst ohne das Feld: false (wie bisher).
+ */
+function cc_audio_wird_geprueft($a)
+{
+    if (!is_array($a) || !isset($a['cfg_zeit'])) {
+        return false;
+    }
+    clearstatcache();
+    $m = @filemtime(cc_paths()['config']);
+    return $m !== false && (int) $m !== (int) $a['cfg_zeit'];
 }

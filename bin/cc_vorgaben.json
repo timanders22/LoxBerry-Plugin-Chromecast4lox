@@ -41,7 +41,11 @@
     "<praefix>/<Geraet>/cmd/...; ab Werk 0 fuer eine Neuinstallation, postupgrade.sh setzt",
     "bei einem Update 1, Hausherr 22.10.2026). Die beiden ersten liest nur die Bruecke",
     "ueber cc_lib.php, befehle_cmd_ein der Dienst. udp ist seit 1.3.24 ab Werk 0 (E13):",
-    "eine bestehende Anlage behaelt ihren Wert, er steht in ihrer Konfiguration."
+    "eine bestehende Anlage behaelt ihren Wert, er steht in ihrer Konfiguration.",
+    "",
+    "Audio Stufe 1 (1.3.25): zonen, quellen, ablage_pfad, ablage_schluessel und die fuenf klingel_*",
+    "stehen VOR aktionstoken; ab Werk leer (nichts eingerichtet). ablage_schluessel wuerfelt die",
+    "Oberflaeche, er steht wie das Sprechtoken nie in einer Sicherung."
   ],
   "fassung": 1,
 
@@ -84,6 +88,15 @@
     "befehle_mqtt_ein": "0",
     "befehle_mqtt_steuern": "0",
     "befehle_cmd_ein": "0",
+    "zonen": "",
+    "quellen": "",
+    "ablage_pfad": "",
+    "ablage_schluessel": "",
+    "klingel_ziel": "",
+    "klingel_rueckfall": "",
+    "klingel_gong": "",
+    "klingel_pegel": "",
+    "klingel_text": "",
     "aktionstoken": ""
   }
 }

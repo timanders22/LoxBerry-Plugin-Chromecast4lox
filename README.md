@@ -23,6 +23,197 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.25
+
+### Audio Stufe 1: Zonen, Radiotasten, Medienablage, Klingel
+
+Chromecast 4 Lox NG übernimmt erste Aufgaben des klassischen Loxone Music Servers – ohne ihn abzuschalten. Bedient
+wird aus Loxone über MQTT (Befehlsbrücke, MQTT-Gateway V2) mit Radiotasten, Reglern, Tastern und Statustexten; eine
+Musikoberfläche der Loxone App (Durchsuchen, Cover) gibt es erst in Stufe 2. Gemessen an Attrappen (Lautsprecher,
+Gruppe, Medienablage) unter PHP 7.4, 8.4 und 8.5 und Python, und am 30.10.2026 im Haus an zwei Google Home
+Speakern mit einer Google-Gruppe: Weiter in einer Liste, Radio nach der Klingel, Klingel an die Gruppe ohne
+Rückfall (etwa 1 s, wenn die Cast-App schon läuft, etwa 2,5 s beim Kaltstart), Fortsetzen der Mitglieder nach
+der Gruppen-Klingel; die Mitglieder der Gruppe ließen sich abfragen (pychromecast 9.4.0).
+
+* **Zonen (neuer Reiter *Audio*):** je Zeile `Nr = Ziel` oder `Nr = Anzeigename | Ziel`, Nummer 1 bis 24, Ziel ist
+  ein Lautsprecher oder eine Google-Lautsprechergruppe aus der Geräteliste. Werte unter
+  `chromecast4lox/zone/<Nr>/…` (`state`, `playing`, `volume`, `muted`, `title`, `artist`, `album`, `online`,
+  `art` 0 Gerät/1 Gruppe, `quelle`, `quelle_name`, `mitglied_von`), Befehle unter `chromecast4lox/befehl/zone_<Nr>/…` – über die
+  Nummer, nicht über den Google-Namen. Das Plugin merkt sich die Kennung des Geräts beim ersten Fund; wird es in
+  Google Home umbenannt, verbindet es weiter und meldet den neuen Namen. Die bisherigen Gerätethemen bleiben.
+* **Gruppen und Mitglieder:** jede eingetragene Google-Gruppe fragt der Dienst beim Verbinden nach ihren
+  Mitgliedern (Multizone, eine reine Statusabfrage) und übernimmt jede Änderung, die sie meldet; gemerkt unter
+  `data/` für den nächsten Start. `zone/<Nr>/mitglied_von` nennt die Gruppen, in denen das Ziel der Zone Mitglied
+  ist (mit `;` getrennt, retained; `-` = in keiner oder noch nichts gemeldet, bei einer Gruppen-Zone immer `-`).
+  Der Reiter *Audio* zeigt bei einer Gruppen-Zone ihre Mitglieder, bei einem Lautsprecher seine Gruppen.
+* **Quellen als Radiotasten:** eine gemeinsame Liste `Nr = Art | Name | Adresse` (1 bis 99). `radio`: Stream-Adresse,
+  `.m3u`/`.pls` werden aufgelöst, der Inhaltstyp kommt aus der Antwort (AAC und HLS spielen damit). `liste`: Ordner
+  (alle Audiodateien alphabetisch) oder M3U-Datei in der Medienablage, als Cast-Warteschlange – danach wirken
+  `next`/`prev` (aus der Liste des Plugins; `next` nach dem letzten Titel hält an, `prev` auf dem ersten beginnt
+  ihn neu), Titel und Interpret stehen in `title`/`artist`. `datei`: eine Datei der Ablage oder eine
+  http-Adresse. Befehl `zone_<Nr>/quelle` mit der Nummer, `0` hält an. Solange die Liste leer ist, gelten die
+  Favoriten als Radioquellen mit ihren Nummern. Abspielbar aus der Ablage sind `.mp3`, `.m4a`, `.aac`,
+  `.flac`, `.ogg`/`.oga`/`.opus`, `.wav`, `.webm` und `.mp4` – bei Videos nur der Ton (AAC, Inhaltstyp
+  `audio/mp4`); die Zählung „n Audiodateien“ nimmt `.mp4` mit, andere Dateien übergeht der Dienst.
+* **Medienablage SSD/NAS:** ein Ordner, den LoxBerry selbst einhängt (USB-Datenträger oder Netzfreigabe). Der
+  Dienst legt im eigenen Webordner einen Verweis `m_<Pfadschlüssel>` an; ausgeliefert wird direkt vom Webserver,
+  mit Spulen, ohne PHP im Datenweg. Die Lautsprecher können sich nicht anmelden – der Ordner ist im Heimnetz ohne
+  Anmeldung erreichbar, geschützt nur durch den zufälligen Pfadschlüssel. Liegt darin eine Datei, die der Webserver
+  ausführen könnte (`.php`, `.cgi`, `.sh` …), wird er nicht freigegeben. Eine Verzeichnisliste gibt es nicht: der
+  Dienst legt dafür im eigenen Webordner eine `.htaccess` an (nur einzelne Dateien abrufbar, versteckte Pfade
+  nicht). Ein ausgehängter Datenträger meldet sich
+  in `last_error` der Zone und in `server/ablage_ok`.
+  **Ablage auswählen:** der Reiter *Audio* bietet mit der Speicherauswahl von LoxBerry an, was LoxBerry
+  eingehängt hat – USB-Datenträger und Netzwerkfreigaben – samt *Unterverzeichnis*; *Benutzerdefinierter Pfad*
+  nimmt einen anderen Ordner unter `/media` oder `/mnt` (ein bisheriger Pfad bleibt so stehen), das freie Feld
+  steht unter *Erweitert*. **Speicher an der FRITZ!Box:** dort *Heimnetz → USB / Speicher → Speicher (NAS)* aktiv
+  und unter *System → FRITZ!Box-Benutzer* ein Benutzer mit „Zugang zu NAS-Inhalten“; im LoxBerry unter
+  *Netzwerkfreigaben* Server `192.168.178.1` bzw. `fritz.box`, SMB, Benutzer und Kennwort. LoxBerry hängt die
+  Freigabe bei Bedarf selbst ein (autofs) und gibt dem Webserver Leserecht. Die Durchsicht geht nach dem
+  Dateinamen, nicht nach Rechten (auf einer Netzfreigabe tragen alle Dateien dieselben): `.php`, `.cgi`, `.sh` …
+  auch in Großschreibung und `.cgi` mitten im Namen (`lied.cgi.mp3`); ein Verweis, der aus der Ablage
+  hinauszeigt, verhindert die Freigabe ebenfalls.
+  **Zweite Sperre:** unabhängig von dieser Durchsicht, die nur beim Einrichten läuft, liefert der Webserver unter
+  `m_<Pfadschlüssel>/` nie ein Programm aus. Die `.htaccess` des Dienstes antwortet auf `.php` (auch `.php5` …),
+  `.phtml`, `.phar`, `.cgi`, `.pl`, `.py`, `.sh` und `.shtml` mit 404 – auch groß geschrieben und mitten im Namen
+  (`lied.cgi.mp3`) –, gibt dort jede andere Datei nur als Datei heraus (kein PHP, kein CGI) und schaltet im
+  Webordner des Plugins die Inhaltsaushandlung ab. Eine Audiodatei mit einem solchen Namensteil spielt das Plugin
+  deshalb nicht. Grenze: eine `.htaccess`, die später jemand in die Ablage legt, liest der Webserver mit und kann
+  diese Regeln aushebeln. **Empfehlung:** für die Netzwerkfreigabe einen FRITZ!Box-Benutzer **nur mit Leserecht**
+  nehmen (dann kann über den LoxBerry niemand in die Ablage schreiben) und als Ablage einen eigenen
+  Musik-Unterordner, nicht die ganze Platte.
+  **Wache:** der Dienst sieht die freigegebene Ablage alle 15 Minuten erneut durch (eigener Faden, nicht während
+  einer Klingel oder Ansage, höchstens 120 s und 50 000 Einträge – reicht das nicht, bleibt die Freigabe, wie sie
+  ist, und das Protokoll sagt es). Findet er eine `.ht*`-Datei, eine Programm-Endung (dieselbe Liste, auch mitten
+  im Namen – `lied.php.mp3` sperrt die Ablage, bis die Datei umbenannt ist) oder einen Verweis nach außen, zieht er
+  die Freigabe sofort zurück: Verweis fort, `server/ablage_ok` 0, Zustand „unsichere Datei gefunden: <Pfad in der
+  Ablage>“, Protokollzeile. Ist die Datei fort, gibt der nächste Durchgang die Ablage wieder frei. Dieselbe
+  Namensregel gilt beim Einrichten. Zwischen zwei Durchgängen schützt die zweite Sperre.
+  **Dateisystem eines externen Laufwerks:** am LoxBerry ist ext4 am besten (Rechte, Stabilität); exFAT ist gut, wenn
+  die Platte auch am Windows-PC befüllt wird (Debian 13 kann exFAT im Kernel); NTFS geht (Kernel-Treiber ntfs3), aber
+  nur als Notlösung (keine Linux-Rechte, nach unsauberem Abziehen eventuell nur lesbar); FAT32 nicht (4-GB-Grenze,
+  Umlaute). Ein Laufwerk an der FRITZ!Box: exFAT oder NTFS, im LoxBerry als Netzwerkfreigabe (SMB) einbinden. Strom:
+  der Pi 4 gibt über USB zusammen etwa 1,2 A ab – ein NVMe-Gehäuse ggf. nur mit aktivem USB-Hub. Der Reiter *Audio*
+  zeigt das erkannte Dateisystem der Ablage.
+* **Klingel auf viele Lautsprecher:** Befehl `chromecast4lox/befehl/klingel` (Standardziel) oder
+  `…/befehl/zone_<Nr>/klingel`, je als Puls. Hauptweg ist eine Google-Lautsprechergruppe (synchron); antwortet sie
+  nicht (Anlauf bis 8 s, auch wenn die Cast-App erst starten muss), geht die Klingel parallel an die Rückfallliste
+  (leer = die Mitglieder der Klingel-Gruppe, sobald die Gruppe sie gemeldet hat, sonst alle Lautsprecher, nie
+  Fernseher oder Gruppen). Eigener Gong (Datei der Ablage oder Adresse), eigener Pegel,
+  optional eine Ansage danach. Google spielt beim Start jeder Wiedergabe einen kurzen eigenen Ton („Dip“) – das
+  Plugin kann ihn nicht abschalten. Ein eigener Gong sollte mit etwa 0,3–0,5 s Stille beginnen und weich
+  einblenden, sonst knackt es. In der Ruhezeit gilt deren Obergrenze – die Klingel wird leiser, nicht stumm; wer
+  nachts nichts will, setzt die Sperre aus Loxone. Ein zweites Klingeln binnen 10 s legt die Brücke zusammen.
+  **Gong unabhängig von der Musik:** ein Dateiname im Feld *Gong* gilt relativ zur Medienablage. Fehlt die
+  Datei dort (etwa nach einem Wechsel der Ablage vom USB-Datenträger zur FRITZ!Box), klingt der eigene Gong
+  (Reiter *Audio*, hochgeladen: MP3/OGG/WAV bis 1 MB, liegt bei den Einstellungen und übersteht ein Update) oder
+  der mitgelieferte Standard-Gong (0,4 s Stille, weich eingeblendeter Zweiklang, vom Plugin selbst erzeugt,
+  ausgeliefert unter `/plugins/<ordner>/klang/`). Die Klingel bleibt nie stumm; das Protokoll nennt den
+  Rückfall, der Reiter *Test* warnt bei Quellen und Gong mit fehlender Datei.
+* **Ansagen auch an eine Zone:** `zone_<Nr>/tts` über MQTT und `zone_<Nr>` als Gerät am Sprech-Endpunkt.
+* **Im Netz sichtbare, nicht eingetragene Cast-Geräte** nennt der Reiter *Audio*; wird ein eingetragenes Gerät
+  nicht gefunden, stehen die sichtbaren im Protokoll.
+* **Neue Dienstthemen:** `server/quellen` (Zahl der gültigen Quellen) und `server/ablage_ok`, beide nie retained, im
+  Gateway V2 mit Noncached; ebenso `zone/<Nr>/online`.
+* **Lautstärke:** gesetzt wird in ganzen Prozent und unverändert gesendet. Die Protokollzeile von pychromecast
+  9.4.0 (`Receiver:setting volume to %.1f`) zeigt nur eine Nachkommastelle – für 25 % steht dort „0.2“; der
+  gesendete Wert ist 0,25 (im Quelltext von `controllers/receiver.py` nachgelesen, 30.10.2026). Am selben Tag
+  meldeten beide Google Home Speaker im Haus 45 %. Zehnerschritte gibt es nur bei `volume_up`/`volume_down` von
+  pychromecast ohne eigenen Schritt – dieses Plugin nimmt dafür seine eigene Schrittweite.
+* **Standard-Sprachausgabe** bleibt Google-Übersetzer (inoffiziell, braucht Internet, der Text geht an Google); die
+  Oberfläche sagt das jetzt; `lokal` (espeak-ng) ist der Rückfall.
+* **Grenzen:** synchron spielt nur eine Google-Gruppe, `alle` ist parallel; eine Gruppe unterbricht, was ihre
+  Mitglieder spielen – mit „danach fortsetzen“ setzt der Dienst danach jeden Lautsprecher fort, der vorher spielte
+  und durch die Gruppe verstummt ist (Radio neu, Liste und Datei an der Stelle); die Klingel über Cast braucht etwa
+  1 s, wenn die Cast-App schon läuft, und etwa 2,5 s beim Kaltstart (gemessen 30.10.2026); Loxone Radio ist nicht
+  erreichbar (geschützte Schnittstelle); eine Liste lädt höchstens 200 Titel.
+
+Dazu aus der Nachtwelle (29.10.2026):
+
+* **Befehlsbrücke 1.0.2** (gemeinsame Stammfassung, bisher 1.0.0): `stop` legt als root nichts mehr an, die
+  Startausgabe wird gekappt, eine leere oder ungültige Uhr startet die Brücke bei liegender Aktualisierungsmarke
+  nicht, der Befehlsordner ist nur für das Plugin lesbar (0700). Themen, Quittungen und Haken bleiben, wie sie
+  waren. Die Vorlage der MQTT-Befehle baut dieses Plugin selbst; sie hatte schon Windows-Zeilenenden (CRLF).
+* **Reiter Test, neue Zeile „Gateway V2: sind alle Datenpunkte der Hakenliste angehakt?“** Unter MQTT-Gateway V2
+  liest das Plugin `config/system/subscriptions.json` und nennt jeden Datenpunkt der Hakenliste (Reiter
+  Einbindung in Loxone), der dort nicht angehakt ist, und jeden, bei dem „Noncached“ nicht stimmt (`server/online` braucht es, die übrigen nicht).
+  Unter Gateway V1 und bei ausgeschalteter MQTT-Veröffentlichung heißt die Zeile „trifft nicht zu“.
+* **Kopf, Zeile MQTT:** Groß steht weiter der Schalter dieses Plugins, klein darunter jetzt der Autostart des
+  MQTT-Gateways (ein/aus, „nicht feststellbar“ ohne MQTT-Abschnitt in der LoxBerry-Konfiguration) – wie in
+  den übrigen Plugins.
+* **Hilfe-Verweis** oben rechts zeigt auf die eigene Seite im LoxBerry-Wiki (`plugins/chromecast4loxng/start`)
+  statt auf die Seite des ursprünglichen Plugins „Chromecast 4 Lox“.
+* Die Ausgabeart „Chromecast“ der gemeinsamen Sprachausgabe anderer Plugins (Sprech-Endpunkt) ist unverändert.
+
+## Audio stage 1 (English summary, 1.3.25)
+
+* **Zones** (new *Audio* tab): one line per zone, `No = target` or `No = display name | target`, number 1 to 24,
+  target = a speaker or Google speaker group from the device list. Values under `chromecast4lox/zone/<No>/…`,
+  commands under `chromecast4lox/befehl/zone_<No>/…`. Renaming a device in Google Home does not break the wiring:
+  the plugin remembers the device ID on first contact. `zone/<No>/mitglied_von` names the Google groups the zone
+  target is a member of (separated by `;`, retained; `-` = none or not reported yet): the service asks every
+  entered group for its members when it connects and takes over every change; the *Audio* tab shows them.
+* **Sources as radio buttons:** one shared list `No = kind | name | address` (1 to 99): `radio` (stream URL, .m3u
+  and .pls resolved, content type from the response), `liste` (folder or M3U in the media store, loaded as a Cast
+  queue; next/previous follow the plugin's own list - next after the last title stops, previous on the first
+  restarts it), `datei` (a file of the store or an http URL). Command `zone_<No>/quelle` with the
+  number, `0` stops. While the list is empty, the favourites count as radio sources with their numbers.
+  Playable from the store: `.mp3`, `.m4a`, `.aac`, `.flac`, `.ogg`/`.oga`/`.opus`, `.wav`, `.webm` and `.mp4`
+  – for videos only the sound (AAC, content type `audio/mp4`); the count “n audio files” includes `.mp4`,
+  other files are skipped by the service.
+* **Media store (SSD/NAS):** a folder LoxBerry mounts itself (USB drive or network share). The service links it into
+  its own web folder under a random path key; the web server delivers the files directly (seeking supported). Cast
+  devices cannot log in, so the folder is reachable on the home network without login, protected only by the key.
+  A folder containing files the web server could execute (`.php`, `.cgi`, `.sh` …) is not released. There is no
+  directory listing: the service writes a `.htaccess` into its own web folder (single files only, no hidden paths).
+  **Choosing the store:** the *Audio* tab offers, with the LoxBerry storage selection, what LoxBerry has mounted
+  (USB drives, network shares) plus a *Subfolder*; *Custom path* takes another folder below `/media` or `/mnt`
+  (a previous path stays like that), the free field is under *Advanced*. **Storage on a FRITZ!Box:** enable
+  *Home Network → USB / Storage → Storage (NAS)* and create a user with “Access to NAS contents”; on the LoxBerry
+  add the server `192.168.178.1` or `fritz.box` under *Network shares* (SMB, user, password). The check goes by
+  file name, not permissions (all files on a share carry the same): `.php`, `.cgi`, `.sh` … in any case and
+  `.cgi` inside a name (`song.cgi.mp3`); a link pointing out of the store also prevents the release.
+  **Second lock:** independently of this check, which only runs when the store is set up, the web server never
+  delivers a program below `m_<path key>/`. The service's `.htaccess` answers `.php` (also `.php5` …), `.phtml`,
+  `.phar`, `.cgi`, `.pl`, `.py`, `.sh` and `.shtml` with 404 – in any case and also inside a name
+  (`song.cgi.mp3`) –, serves every other file there as a plain file only (no PHP, no CGI) and switches off content
+  negotiation in the plugin's web folder. An audio file with such a name part is therefore not played. Limit: a
+  `.htaccess` that someone later puts into the store is read by the web server too and can override these rules.
+  **Recommendation:** use a FRITZ!Box user with **read access only** for the network share (then nobody can write
+  into the store through the LoxBerry) and a dedicated music subfolder as the store, not the whole drive.
+  **Watch:** the service checks the released store again every 15 minutes (own thread, not during a doorbell or
+  announcement, at most 120 s and 50,000 entries – if that is not enough, the release stays as it is and the log
+  says so). If it finds a `.ht*` file, a program extension (same list, also inside a name – `song.php.mp3` blocks
+  the store until it is renamed) or a link pointing outside, it withdraws the release at once: link removed,
+  `server/ablage_ok` 0, state “unsichere Datei gefunden: <path in the store>” (unsafe file found), a log line.
+  Once the file is gone, the next check releases the store again. The same name rule applies when setting up.
+  Between two checks the second lock protects.
+  **File system of an external drive:** ext4 is best on the LoxBerry (permissions, stability); exFAT is good if the
+  drive is also filled on a Windows PC (Debian 13 supports exFAT in the kernel); NTFS works (ntfs3) but only as a
+  stopgap (no Linux permissions, possibly read-only after unsafe removal); not FAT32 (4 GB limit, umlauts). A drive on
+  a FRITZ!Box: exFAT or NTFS, attached as an SMB network share. Power: the Pi 4 supplies about 1.2 A in total over
+  USB – an NVMe enclosure may need a powered hub. The *Audio* tab shows the detected file system of the store.
+* **Doorbell:** `chromecast4lox/befehl/klingel` (default target) or `…/befehl/zone_<No>/klingel` as a pulse. Main
+  path: a Google speaker group (in sync); if it does not start within 8 s (app start included), the fallback list
+  plays in parallel (empty = the members of the doorbell group once reported, otherwise all speakers, never TVs
+  or groups). Own chime,
+  own volume, optional announcement afterwards; quiet hours lower the volume instead of muting. Google plays a short
+  sound of its own when playback starts (the “dip”) – the plugin cannot switch it off. Start your own chime with
+  about 0.3–0.5 s of silence and fade it in softly, otherwise it clicks.
+  **Chime independent of the music:** a file name in the field *Chime* is relative to the media store. If the
+  file is missing there (e.g. after switching the store from a USB drive to the FRITZ!Box), your own chime plays
+  (tab *Audio*, uploaded: MP3/OGG/WAV up to 1 MB, kept with the settings, survives an update) or the supplied
+  standard chime (0.4 s of silence, a softly faded-in two-tone generated by the plugin, served under
+  `/plugins/<folder>/klang/`). The doorbell is never silent; the log names the fallback, the tab *Test* warns
+  about sources and a chime with a missing file.
+* **Volume:** set in whole percent and sent unchanged. The pychromecast 9.4.0 log line shows one decimal only
+  (`setting volume to 0.2` for 25 %); the value sent is 0.25. Both Google Home Speakers in the house reported 45 %.
+* **Limits:** no music interface in the Loxone app yet (stage 2); only a Google group plays in sync; a group
+  interrupts its members – with “resume” on, every speaker that was playing and went silent because of the group is
+  resumed afterwards; the doorbell via Cast takes about 1 s with the Cast app running and about 2.5 s from a
+  cold start (measured 30.10.2026); Loxone Radio is not reachable; at most 200 tracks per list. Tested with mock
+  devices and on 30.10.2026 with two Google Home Speakers and a Google group.
+
 ## Neu in 1.3.24
 
 Umstellung auf das MQTT-Gateway für Werte **und** Befehle, wie im
@@ -1069,6 +1260,13 @@ hinaus.
 Der Gerätename im Thema entsteht aus dem Anzeigenamen: Umlaute umgeschrieben,
 alles übrige außer Buchstaben, Ziffern, Strich und Unterstrich wird zu `_`.
 Aus `Küche Lautsprecher` wird `Kueche_Lautsprecher`.
+
+**Zonen (seit 1.3.25, Audio Stufe 1)** unter `chromecast4lox/zone/<Nr>/`: `online` (nie retained, Gateway V2 mit
+Noncached), `state`, `playing`, `volume`, `muted`, `art` (0 Gerät, 1 Gruppe), `quelle` (Nummer, 0 nach Stopp) –
+retained –, dazu `title`, `artist`, `album`, `quelle_name` (Text, nie retained) und `mitglied_von` (Text,
+retained: Gruppen, in denen das Ziel Mitglied ist, mit `;` getrennt; `-` = in keiner). Befehle über die Brücke:
+`zone_<Nr>/quelle` (0 bis 99), `zone_<Nr>/klingel`, `zone_<Nr>/tts` und alle Gerätebefehle; `klingel` allein für
+das Standardziel. Dienstthemen `server/quellen` und `server/ablage_ok` (nie retained, Noncached).
 
 ## Dateien
 

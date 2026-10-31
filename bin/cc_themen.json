@@ -50,7 +50,14 @@
     "min -1 (seit 1.3.24, E9): volume meldet -1, wenn der Lautsprecher keine Lautstaerke",
     "         meldet; volume, duration und favorit eines aus der Liste genommenen",
     "         Geraets gehen einmal mit -1 retained hinaus (Ja/Nein-Themen mit 0, Text",
-    "         mit -). Namenstabelle und Bereich lesen min/max von hier."
+    "         mit -). Namenstabelle und Bereich lesen min/max von hier.",
+    "Audio Stufe 1 (1.3.25): zone = die Themen je Zone unter <praefix>/zone/<Nr>/ - Spiegel der",
+    "         Geraetethemen des Zonenziels (group heisst dort art), dazu quelle (retained, Fehlwert -1)",
+    "         und quelle_name (Text, nie retained). Dienst: quellen und ablage_ok, nie retained.",
+    "         Befehle quelle (0 = Stopp) und klingel (Puls).",
+    "Nachfassung 3 (O1): zone mitglied_von = Namen der eingetragenen Google-Gruppen, in denen das Ziel",
+    "         der Zone Mitglied ist, mit '; ' getrennt (Text, retained - ein Zustand der Gruppen). Keine",
+    "         Aussage oder in keiner Gruppe geht als '-' hinaus, nie leer (Entscheidung Nr. 5, 29.09.2026)."
   ],
   "fassung": 1,
 
@@ -79,7 +86,9 @@
     { "schluessel": "zaehler",  "art": "analog",  "einheit": "",  "min": -1, "max": 999,       "retain": false },
     { "schluessel": "geraete",  "art": "analog",  "einheit": "",  "min": 0, "max": 99,         "retain": false },
     { "schluessel": "verluste", "art": "analog",  "einheit": "",  "min": 0, "max": 999999,     "retain": false },
-    { "schluessel": "fassung",  "art": "text",    "einheit": "",  "min": null, "max": null,    "retain": true  }
+    { "schluessel": "fassung",  "art": "text",    "einheit": "",  "min": null, "max": null,    "retain": true  },
+    { "schluessel": "quellen",  "art": "analog",  "einheit": "",  "min": 0, "max": 99,         "retain": false },
+    { "schluessel": "ablage_ok", "art": "digital", "einheit": "", "min": 0, "max": 1,          "retain": false }
   ],
 
   "befehle": [
@@ -97,6 +106,23 @@
     { "schluessel": "seek",         "art": "analog",  "min": 0,    "max": 86400 },
     { "schluessel": "play_favorit", "art": "analog",  "min": 0,    "max": 99    },
     { "schluessel": "tts",          "art": "text",    "min": null, "max": null  },
-    { "schluessel": "tts_stop",     "art": "digital", "min": 0,    "max": 1     }
+    { "schluessel": "tts_stop",     "art": "digital", "min": 0,    "max": 1     },
+    { "schluessel": "quelle",       "art": "analog",  "min": 0,    "max": 99    },
+    { "schluessel": "klingel",      "art": "digital", "min": 0,    "max": 1     }
+  ],
+
+  "zone": [
+    { "schluessel": "online",      "art": "digital", "einheit": "",  "min": 0, "max": 1,      "retain": false },
+    { "schluessel": "state",       "art": "text",    "einheit": "",  "min": null, "max": null, "retain": true  },
+    { "schluessel": "playing",     "art": "digital", "einheit": "",  "min": 0, "max": 1,      "retain": true  },
+    { "schluessel": "volume",      "art": "analog",  "einheit": "%", "min": -1, "max": 100,   "retain": true  },
+    { "schluessel": "muted",       "art": "digital", "einheit": "",  "min": 0, "max": 1,      "retain": true  },
+    { "schluessel": "title",       "art": "text",    "einheit": "",  "min": null, "max": null, "retain": false },
+    { "schluessel": "artist",      "art": "text",    "einheit": "",  "min": null, "max": null, "retain": false },
+    { "schluessel": "album",       "art": "text",    "einheit": "",  "min": null, "max": null, "retain": false },
+    { "schluessel": "art",         "art": "digital", "einheit": "",  "min": 0, "max": 1,      "retain": true  },
+    { "schluessel": "quelle",      "art": "analog",  "einheit": "",  "min": -1, "max": 99,    "retain": true  },
+    { "schluessel": "quelle_name", "art": "text",    "einheit": "",  "min": null, "max": null, "retain": false },
+    { "schluessel": "mitglied_von", "art": "text",   "einheit": "",  "min": null, "max": null, "retain": true  }
   ]
 }

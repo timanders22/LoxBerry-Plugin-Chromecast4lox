@@ -1,7 +1,7 @@
 <?php
 /**
  * Chromecast 4 Lox NG - Admin-Oberflaeche
- * Reiter: Einstellungen | Einbindung in Loxone | Test | Logdateien
+ * Reiter: Einstellungen | Audio (seit 1.3.25) | MQTT | Einbindung in Loxone | Test | Logdateien
  *
  * Loest die alte Oberflaeche ab (index.php, config.php, discover.php,
  * log.php, inc_common.php, discover_exec.php, status_exec.php sowie die
@@ -47,7 +47,7 @@ if (cc_upgrade_laeuft()) {
     $cc_rahmen = class_exists('LBWeb', false);
     if ($cc_rahmen) {
         LBWeb::lbheader('Chromecast 4 Lox NG',
-            'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
+            'https://wiki.loxberry.de/plugins/chromecast4loxng/start', 'help.html');
     }
     echo '<div style="max-width:980px;margin:0 auto;'
        . 'font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#333">' . "\n"
@@ -82,7 +82,7 @@ $cc_beanstandet = array();
  * id-Werten der Bereiche weiter unten passen - sonst springt die Seite nach
  * jedem Absenden auf Einstellungen zurueck, obwohl der Reiter sichtbar ist.
  * Die Reiter sind echte Verweise, deshalb zaehlt auch ?tab= aus der Adresse. */
-$cc_tabliste = array('tab-settings', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
+$cc_tabliste = array('tab-settings', 'tab-audio', 'tab-mqtt', 'tab-loxone', 'tab-test', 'tab-log');
 $cc_tab = 'tab-settings';
 if (isset($_GET['tab']) && in_array('tab-' . (string) $_GET['tab'], $cc_tabliste, true)) {
     $cc_tab = 'tab-' . (string) $_GET['tab'];
@@ -480,6 +480,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_sprechen'])) {
     $cc_tab = 'tab-settings';
 }
 
+/* ============ Speichern: Audio (Audio Stufe 1, 1.3.25) ============
+ *
+ * Eigenes Formular, eigener Handler (Bauart save_sprechen): fasst nur die Schluessel von cc_audio_schluessel() an.
+ * Bei einer Beanstandung wird nichts gespeichert (Entscheidung 16); die eingetippten Werte kommen zurueck (X-2). Der
+ * Dienst liest die Konfiguration nach einer Aenderung von selbst neu und richtet dabei Zonen und Medienablage ein -
+ * ein Neustart ist nicht noetig. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_audio'])) {
+    list($cc_aneu, $cc_abean) = cc_audio_formular($_POST, cc_config_read());
+    if ($cc_abean) {
+        $cc_fehler[] = cc_t('TEXT.NICHTS_GESPEICHERT');
+        foreach ($cc_abean as $cc_ak => $cc_at) {
+            $cc_fehler[] = $cc_at;
+            $cc_beanstandet[] = $cc_ak;
+        }
+        $cc_eingaben_form = 'audio';
+    } elseif (cc_config_write($cc_aneu)) {
+        $cc_saved = true;
+        $cc_hinweis = cc_t('AUDIO.H_GESPEICHERT');
+    } else {
+        $cc_fehler[] = cc_t('TEXT.F_SCHREIBEN') . ' ' . cc_e($cc_p['config']);
+    }
+    $cc_tab = 'tab-audio';
+}
+
+/* ============ Nachfassung 7: eigener Klingel-Gong ============
+ * Eigenes Formular (multipart). Hochladen nur .mp3/.ogg/.wav bis 1 MB mit passendem Inhalt (cc_klang_hochladen());
+ * abgelegt unter config/plugins/<ordner>/klaenge/, bereitgestellt vom Dienst bei der naechsten Klingel. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['gong_hochladen'])) {
+    $cc_kf = cc_klang_hochladen(isset($_FILES['cc_gong']) ? $_FILES['cc_gong'] : null);
+    if ($cc_kf === '') {
+        $cc_saved = true;
+        $cc_hinweis = cc_t('AUDIO.H_KLANG_GELADEN');
+    } else {
+        $cc_fehler[] = $cc_kf;
+    }
+    $cc_tab = 'tab-audio';
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['gong_entfernen'])) {
+    $cc_hinweis = cc_t(cc_klang_entfernen() > 0 ? 'AUDIO.H_KLANG_ENTFERNT' : 'AUDIO.H_KLANG_KEINER');
+    $cc_tab = 'tab-audio';
+}
+
 $cc_cfg = cc_config_read();
 $cc_konfig_zustand = cc_config_zustand();
 /* Fehlende Schluessel EINMAL in die Datei schreiben - nur ueber eine heile
@@ -596,7 +638,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
 if ($cc_frame) {
-    LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast_4_lox/start', 'help.html');
+    LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast4loxng/start', 'help.html');
 }
 
 ?>
@@ -734,8 +776,15 @@ if ($cc_frame) {
     <td class="<?= $cc_pid ? 'sm-an' : 'sm-aus' ?>"><?= cc_e($cc_pid ? cc_t('TEXT.S_LAEUFT') : cc_t('TEXT.S_LAEUFT_NICHT')) ?><?= $cc_pid ? ' (PID ' . (int) $cc_pid . ')' : '' ?></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_GERAETE')) ?></td>
     <td><?= count($cc_geraete) ?></td></tr>
+<?php /* Nachtwelle N7 (1.3.25): Zeile MQTT in der Hausform der Kopfkachel (Regeln/04 :798, Vorbild MGiSmart
+   1.1.28, MarstekVenus 1.1.28) - gross der Schalter DIESES Plugins (unveraendert), klein der Autostart des
+   Gateways aus cc_mqtt_gateway_info() (null = kein Mqtt-Abschnitt: nicht feststellbar, nicht "aus").
+   Sammelstelle #6: der Hilfelink zeigt seit 1.3.25 auf die eigene Wiki-Seite. */
+$cc_k_gw = cc_mqtt_gateway_info(); ?>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_MQTT')) ?></td>
-    <td><?= cc_e(cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?></td></tr>
+    <td><?= cc_e(cc_cfg($cc_cfg, 'mqtt_ein', '1') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?>
+    <div class="sm-small"><?= cc_e(sprintf(cc_t('TEXT.KACHEL_MQTT_HILFE'), $cc_k_gw === null
+        ? cc_t('TEXT.KOPF_NICHT_FESTSTELLBAR') : cc_t(!empty($cc_k_gw['autostart']) ? 'TEXT.S_EIN' : 'TEXT.S_AUS'))) ?></div></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_BEFEHLE')) ?></td>
     <td><?= cc_e(cc_cfg($cc_cfg, 'befehle_mqtt_ein', '0') === '1' ? cc_t('TEXT.S_EIN') : cc_t('TEXT.S_AUS')) ?></td></tr>
 <tr><td><?= cc_e(cc_t('TEXT.KOPF_UDP')) ?></td>
@@ -746,6 +795,7 @@ if ($cc_frame) {
 
 <div class="sm-tabs">
     <a class="sm-tab<?= $cc_tab === 'tab-settings' ? ' sm-active' : '' ?>" data-ziel="tab-settings" href="index.php?tab=settings"><?php echo cc_t('REITER.EINSTELLUNGEN'); ?></a>
+    <a class="sm-tab<?= $cc_tab === 'tab-audio' ? ' sm-active' : '' ?>" data-ziel="tab-audio" href="index.php?tab=audio"><?php echo cc_t('REITER.AUDIO'); ?></a>
     <a class="sm-tab<?= $cc_tab === 'tab-mqtt' ? ' sm-active' : '' ?>" data-ziel="tab-mqtt" href="index.php?tab=mqtt"><?php echo cc_t('REITER.MQTT'); ?></a>
     <a class="sm-tab<?= $cc_tab === 'tab-loxone' ? ' sm-active' : '' ?>" data-ziel="tab-loxone" href="index.php?tab=loxone"><?php echo cc_t('REITER.LOXONE'); ?></a>
     <a class="sm-tab<?= $cc_tab === 'tab-test' ? ' sm-active' : '' ?>" data-ziel="tab-test" href="index.php?tab=test"><?php echo cc_t('REITER.TEST'); ?></a>
@@ -1033,6 +1083,173 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cc_zurueck" value="1"><?= cc_t('TEXT.K_ZURUECK') ?></button>
   </form>
 </div>
+</div>
+
+<!-- ================= Reiter: Audio (Audio Stufe 1, 1.3.25) ================= -->
+<div class="sm-seite<?= $cc_tab === 'tab-audio' ? ' sm-active' : '' ?>" id="tab-audio">
+<?php /* Audio Stufe 1 (Musterprojekt/ENTSCHEIDUNGEN_AUDIO_STUFE1.md): Zonen (E1), Quellenliste als Radiotasten (S3),
+   Medienablage (E2), Klingel (E3-E5). Ein Formular; der Zustand kommt aus zustand.json des Dienstes. */
+$cc_au = cc_audio_zustand();
+$cc_au_zonen = cc_zonen($cc_cfg);
+$cc_au_quellen = cc_quellen($cc_cfg);
+$cc_au_qtext = (string) cc_cfg($cc_cfg, 'quellen', '');
+if (trim($cc_au_qtext) === '') {
+    $cc_au_qtext = cc_quellen_aus_favoriten($cc_cfg);
+}
+$cc_au_zst = array();
+if (is_array($cc_au) && isset($cc_au['zonen']) && is_array($cc_au['zonen'])) {
+    foreach ($cc_au['zonen'] as $cc_az) {
+        if (is_array($cc_az) && isset($cc_az['nr'])) {
+            $cc_au_zst[(int) $cc_az['nr']] = $cc_az;
+        }
+    }
+} ?>
+<div class="sm-hinweis"><?= cc_t('AUDIO.EINLEITUNG') ?></div>
+<div class="sm-legende">
+<span><i class="sm-punkt sm-b-aktion"></i> <?php echo cc_t('LEGENDE.AKTION'); ?></span>
+</div>
+
+<form method="post" action="index.php">
+<input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-audio">
+
+<h2><?= cc_t('AUDIO.H_ZONEN') ?></h2>
+<label><?= cc_t('AUDIO.L_ZONEN') ?></label>
+<textarea data-role="none" name="zonen"<?= cc_markierung('zonen') ?> placeholder="1 = Küche | Küche Lautsprecher&#10;2 = Alle unten | Gruppe unten"><?= cc_e(cc_eingabe('audio', 'zonen', cc_cfg($cc_cfg, 'zonen', ''))) ?></textarea>
+<div class="sm-small"><?= sprintf(cc_t('AUDIO.H_ZONEN_FELD'), CC_ZONEN_MAX, $cc_geraete ? cc_e(implode(', ', $cc_geraete)) : cc_e(cc_t('SPRECHEN.E_KEINE'))) ?></div>
+<?php if ($cc_au_zonen) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:6%;"><?= cc_t('FAV.SP_NR') ?></th><th><?= cc_t('AUDIO.SP_NAME') ?></th><th><?= cc_t('AUDIO.SP_ZIEL') ?></th><th><?= cc_t('AUDIO.SP_BEFEHL') ?></th><th><?= cc_t('AUDIO.SP_THEMA') ?></th><th><?= cc_t('AUDIO.SP_ZUSTAND') ?></th></tr>
+<?php foreach ($cc_au_zonen as $cc_z) {
+    $cc_zs = isset($cc_au_zst[$cc_z['nr']]) ? $cc_au_zst[$cc_z['nr']] : null; ?>
+<tr><td><b><?= (int) $cc_z['nr'] ?></b></td><td><?= cc_e($cc_z['name']) ?></td><td><?= cc_e($cc_z['ziel']) ?></td>
+<td><span class="sm-mono"><?= cc_e($cc_praefix . '/befehl/' . cc_zone_kennung($cc_z['nr']) . '/…') ?></span></td>
+<td><span class="sm-mono"><?= cc_e($cc_praefix . '/zone/' . (int) $cc_z['nr'] . '/…') ?></span></td>
+<td><?php if ($cc_zs === null) { ?><span class="sm-unklar"><?= cc_e(cc_t('TEXT.KOPF_NICHT_FESTSTELLBAR')) ?></span><?php } else { ?><span class="<?= !empty($cc_zs['online']) ? 'sm-an' : 'sm-aus' ?>"><?= cc_e(!empty($cc_zs['online']) ? cc_t('AUDIO.ONLINE') : cc_t('AUDIO.OFFLINE')) ?></span><?= !empty($cc_zs['quelle']) ? ' · ' . cc_e(sprintf(cc_t('AUDIO.QUELLE_N'), (int) $cc_zs['quelle'])) : '' ?><?= !empty($cc_zs['gruppe']) ? ' · ' . cc_e(cc_t('AUDIO.GRUPPE')) : '' ?><?= cc_e(cc_zone_mitglieder_text($cc_zs)) ?><?php } ?></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+
+<h2><?= cc_t('AUDIO.H_QUELLEN') ?></h2>
+<label><?= cc_t('AUDIO.L_QUELLEN') ?></label>
+<textarea data-role="none" name="quellen"<?= cc_markierung('quellen') ?> placeholder="1 = radio | Sender | https://…/stream.mp3&#10;2 = liste | Rock | musik/rock&#10;3 = datei | Weckton | toene/wecken.mp3"><?= cc_e(cc_eingabe('audio', 'quellen', $cc_au_qtext)) ?></textarea>
+<div class="sm-small"><?= sprintf(cc_t('AUDIO.H_QUELLEN_FELD'), CC_QUELLEN_MAX) ?></div>
+<?php if (trim((string) cc_cfg($cc_cfg, 'quellen', '')) === '' && $cc_au_quellen) { ?>
+<div class="sm-small"><?= cc_t('AUDIO.H_AUS_FAVORITEN') ?></div>
+<?php } ?>
+<?php if ($cc_au_quellen) { ?>
+<div class="sm-breit">
+<table class="sm-tbl">
+<tr><th style="width:6%;"><?= cc_t('FAV.SP_NR') ?></th><th style="width:10%;"><?= cc_t('MQTT.SP_ART') ?></th><th style="width:26%;"><?= cc_t('AUDIO.SP_NAME') ?></th><th><?= cc_t('FAV.SP_ADRESSE') ?></th></tr>
+<?php foreach ($cc_au_quellen as $cc_q) { ?>
+<tr><td><b><?= (int) $cc_q['nr'] ?></b></td><td><?= cc_e($cc_q['art']) ?></td><td><?= cc_e($cc_q['name']) ?></td><td><span class="sm-mono"><?= cc_e($cc_q['adresse']) ?></span></td></tr>
+<?php } ?>
+</table>
+</div>
+<?php } ?>
+
+<h2><?= cc_t('AUDIO.H_ABLAGE') ?></h2>
+<?php /* Nachfassung 4: Speicherauswahl von LoxBerry (cc_ablage_wahl_html), eingesetzt beim ersten Oeffnen des Reiters;
+   ihre Wahl fuellt das Feld ablage_pfad (Erweitert), nur das wird gespeichert. */
+$cc_ab_pfad = (string) cc_eingabe('audio', 'ablage_pfad', cc_cfg($cc_cfg, 'ablage_pfad', ''));
+$cc_ab_wahl = cc_ablage_wahl_html($cc_ab_pfad);
+$cc_ab_json = $cc_ab_wahl !== '' ? json_encode($cc_ab_wahl, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT) : false;
+$cc_ab_hand = !is_string($cc_ab_json) || cc_markierung('ablage_pfad') !== '' || !cc_ablage_wahl_tauglich($cc_ab_pfad); ?>
+<?php if (is_string($cc_ab_json)) { ?>
+<div id="cc_ablage_wahl_ort"></div>
+<div class="sm-small"><?= cc_t('AUDIO.H_ABLAGE_WAHL') ?></div>
+<div class="sm-small"><?= cc_t('AUDIO.L_ABLAGE_ZIEL') ?> <span class="sm-mono" id="cc_ablage_ziel"><?= cc_e($cc_ab_pfad !== '' ? $cc_ab_pfad : '–') ?></span></div>
+<script>var ccAblageWahl = <?= $cc_ab_json ?>;</script>
+<?php } ?>
+<details id="cc_ablage_hand"<?= $cc_ab_hand ? ' open' : '' ?>><summary><?= cc_t('AUDIO.H_ABLAGE_HAND') ?></summary>
+<label><?= cc_t('AUDIO.L_ABLAGE') ?></label>
+<input data-role="none" type="text" id="cc_ablage_pfad" name="ablage_pfad"<?= cc_markierung('ablage_pfad') ?> value="<?= cc_e($cc_ab_pfad) ?>" placeholder="<?= cc_e(cc_ablage_wurzeln()[0]) ?>/…/Musik">
+<div class="sm-small"><?= sprintf(cc_t('AUDIO.H_ABLAGE_FELD'), cc_e(implode(', ', cc_ablage_wurzeln()))) ?></div>
+</details>
+<details><summary><?= cc_t('AUDIO.H_FRITZ') ?></summary><div class="sm-small"><?= cc_t('AUDIO.FRITZ_HINWEIS') ?></div></details>
+<?php if ((string) cc_cfg($cc_cfg, 'ablage_pfad', '') !== '') {
+    $cc_ab = (is_array($cc_au) && isset($cc_au['ablage']) && is_array($cc_au['ablage'])) ? $cc_au['ablage'] : null;
+    $cc_ab_prueft = cc_audio_wird_geprueft($cc_au);     /* Nachfassung 7 */ ?>
+<div class="sm-small"><?= cc_t('AUDIO.L_ABLAGE_ZUSTAND') ?>
+<?php if ($cc_ab_prueft) { ?><span class="sm-unklar"><?= cc_e(cc_t('AUDIO.T_WIRD_GEPRUEFT')) ?></span>
+<?php } elseif ($cc_ab === null) { ?><span class="sm-unklar"><?= cc_e(cc_t('TEXT.KOPF_NICHT_FESTSTELLBAR')) ?></span>
+<?php } elseif (!empty($cc_ab['ok'])) { ?><span class="sm-an"><?= cc_e(sprintf(cc_t('AUDIO.T_ABLAGE_OK'), (int) $cc_ab['dateien'])) ?></span>
+<?php } else { ?><span class="sm-aus"><?= cc_e(sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'), isset($cc_ab['grund']) ? (string) $cc_ab['grund'] : '?')) ?></span><?php } ?>
+<?php if (!$cc_ab_prueft && is_array($cc_ab) && isset($cc_ab['dateisystem']) && (string) $cc_ab['dateisystem'] !== '') { ?> · <?= cc_e(sprintf(cc_t('AUDIO.DATEISYSTEM'), (string) $cc_ab['dateisystem'])) ?><?php } ?></div>
+<?php } ?>
+<details><summary><?= cc_t('AUDIO.H_DATEISYSTEM') ?></summary><div class="sm-small"><?= cc_t('AUDIO.DATEISYSTEM_HINWEIS') ?></div></details>
+<div class="sm-warnung"><?= cc_t('AUDIO.W_ABLAGE') ?></div>
+
+<h2><?= cc_t('AUDIO.H_KLINGEL') ?></h2>
+<div class="sm-row">
+<div>
+<label><?= cc_t('AUDIO.L_KLINGEL_ZIEL') ?></label>
+<input data-role="none" type="text" name="klingel_ziel"<?= cc_markierung('klingel_ziel') ?> value="<?= cc_e(cc_eingabe('audio', 'klingel_ziel', cc_cfg($cc_cfg, 'klingel_ziel', ''))) ?>" placeholder="Klingel">
+<div class="sm-small"><?= cc_t('AUDIO.H_KLINGEL_ZIEL') ?></div>
+</div>
+<div>
+<label><?= cc_t('AUDIO.L_KLINGEL_RUECKFALL') ?></label>
+<input data-role="none" type="text" name="klingel_rueckfall"<?= cc_markierung('klingel_rueckfall') ?> value="<?= cc_e(cc_eingabe('audio', 'klingel_rueckfall', cc_cfg($cc_cfg, 'klingel_rueckfall', ''))) ?>" placeholder="<?= cc_e(cc_t('AUDIO.P_RUECKFALL')) ?>">
+<div class="sm-small"><?= cc_t('AUDIO.H_KLINGEL_RUECKFALL') ?></div>
+</div>
+</div>
+<div class="sm-row">
+<div>
+<label><?= cc_t('AUDIO.L_KLINGEL_GONG') ?></label>
+<input data-role="none" type="text" name="klingel_gong"<?= cc_markierung('klingel_gong') ?> value="<?= cc_e(cc_eingabe('audio', 'klingel_gong', cc_cfg($cc_cfg, 'klingel_gong', ''))) ?>" placeholder="toene/gong.mp3">
+<div class="sm-small"><?= cc_t('AUDIO.H_KLINGEL_GONG') ?></div>
+</div>
+<div>
+<label><?= cc_t('AUDIO.L_KLINGEL_PEGEL') ?></label>
+<input data-role="none" type="text" name="klingel_pegel"<?= cc_markierung('klingel_pegel') ?> value="<?= cc_e(cc_eingabe('audio', 'klingel_pegel', cc_cfg($cc_cfg, 'klingel_pegel', ''))) ?>" placeholder="<?= cc_e(cc_t('TTS.P_PEGEL')) ?>">
+<div class="sm-small"><?= cc_t('AUDIO.H_KLINGEL_PEGEL') ?></div>
+</div>
+</div>
+<label><?= cc_t('AUDIO.L_KLINGEL_TEXT') ?></label>
+<input data-role="none" type="text" name="klingel_text"<?= cc_markierung('klingel_text') ?> value="<?= cc_e(cc_eingabe('audio', 'klingel_text', cc_cfg($cc_cfg, 'klingel_text', ''))) ?>" placeholder="<?= cc_e(cc_t('AUDIO.P_KLINGEL_TEXT')) ?>">
+<div class="sm-small"><?= sprintf(cc_t('AUDIO.H_KLINGEL_TEXT'), cc_e($cc_praefix)) ?></div>
+
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="save_audio" value="1"><?= cc_t('TEXT.T035') ?></button>
+<div class="sm-small"><?= cc_t('AUDIO.H_SPEICHERN') ?></div>
+</form>
+
+<?php /* Nachfassung 7: eigener Klingel-Gong - eigenes Formular (multipart), unabhaengig von der Medienablage. */
+$cc_ke = cc_klang_eigen();
+$cc_kj = cc_klang_jetzt($cc_cfg); ?>
+<h3 class="sm-h3"><?= cc_t('AUDIO.H_KLANG') ?></h3>
+<div class="sm-small"><?= cc_t('AUDIO.L_KLANG_JETZT') ?> <span class="<?= $cc_kj[1] ? 'sm-an' : 'sm-aus' ?>"><?= cc_e($cc_kj[0]) ?></span></div>
+<div class="sm-small"><?= cc_t('AUDIO.L_KLANG_STAND') ?>
+<?php if ($cc_ke === null) { ?><?= cc_e(cc_t('AUDIO.T_KLANG_KEINER')) ?>
+<?php } elseif ($cc_ke['tauglich']) { ?><span class="sm-an"><?= cc_e(sprintf(cc_t('AUDIO.T_KLANG_EIGEN'), $cc_ke['name'], (int) ceil($cc_ke['groesse'] / 1024))) ?></span>
+<?php } else { ?><span class="sm-aus"><?= cc_e(sprintf(cc_t('AUDIO.T_KLANG_UNTAUGLICH'), $cc_ke['name'])) ?></span><?php } ?></div>
+<form method="post" action="index.php" enctype="multipart/form-data">
+<input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-audio"><input data-role="none" type="hidden" name="MAX_FILE_SIZE" value="1048576">
+<input data-role="none" type="file" name="cc_gong" accept=".mp3,.ogg,.wav,audio/mpeg,audio/ogg,audio/wav">
+<button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gong_hochladen" value="1"><?= cc_t('AUDIO.K_KLANG_HOCHLADEN') ?></button>
+<?php if ($cc_ke !== null) { ?><button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="gong_entfernen" value="1"><?= cc_t('AUDIO.K_KLANG_ENTFERNEN') ?></button><?php } ?>
+</form>
+<div class="sm-small"><?= cc_t('AUDIO.H_KLANG_FELD') ?></div>
+
+<h2><?= cc_t('AUDIO.H_SICHTBAR') ?></h2>
+<?php $cc_sb = (is_array($cc_au) && isset($cc_au['sichtbar']) && is_array($cc_au['sichtbar'])) ? $cc_au['sichtbar'] : null;
+if ($cc_sb === null) { ?>
+<div class="sm-small"><?= cc_t('AUDIO.SICHTBAR_UNKLAR') ?></div>
+<?php } elseif (!$cc_sb) { ?>
+<div class="sm-small"><?= cc_t('AUDIO.SICHTBAR_KEINE') ?></div>
+<?php } else { ?>
+<table class="sm-tbl" style="max-width:620px">
+<tr><th><?= cc_t('TEXT.T015') ?></th><th><?= cc_t('SUCHE.SP_MODELL') ?></th></tr>
+<?php foreach ($cc_sb as $cc_s) { if (!is_array($cc_s) || !isset($cc_s['name'])) { continue; } ?>
+<tr><td><?= cc_e($cc_s['name']) ?></td><td><?= cc_e(isset($cc_s['modell']) ? $cc_s['modell'] : '') ?></td></tr>
+<?php } ?>
+</table>
+<div class="sm-small"><?= cc_t('AUDIO.SICHTBAR_HINWEIS') ?></div>
+<?php } ?>
+
+<h2><?= cc_t('AUDIO.H_GRENZEN') ?></h2>
+<div class="sm-hinweis"><?= cc_t('AUDIO.LAUTSTAERKE') ?></div>
+<div class="sm-small"><?= cc_t('AUDIO.GRENZEN') ?></div>
 </div>
 
 <!-- ================= Reiter: MQTT ================= -->
@@ -1560,6 +1777,27 @@ function ccTtsModus() {
     zeige(start);
 })();
 ccTtsModus();
+/* Nachfassung 4: Speicherauswahl von LoxBerry erst beim ersten Oeffnen des Reiters Audio einsetzen (ihr Skript fragt
+ * dann alle Speicher ab - LoxBerry haengt Netzfreigaben dafuer ein). Ihre Wahl (verstecktes Feld cc_ablage_wahl, das
+ * Widget loest dort ein jQuery-"change" aus) fuellt das Feld ablage_pfad; ohne jQuery bleibt das Feld offen. */
+(function () {
+    var ort = document.getElementById('cc_ablage_wahl_ort');
+    var hand = document.getElementById('cc_ablage_hand');
+    if (!ort) { return; }
+    if (typeof ccAblageWahl !== 'string' || !window.jQuery) { if (hand) { hand.open = true; } return; }
+    var jq = window.jQuery, geladen = false;
+    function zeigeZiel(v) { jq('#cc_ablage_ziel').text(v !== '' ? v : '\u2013'); }
+    function laden() { if (geladen) { return; } geladen = true; jq(ort).append(ccAblageWahl); }
+    jq(document).on('change', '#cc_ablage_wahl', function () {
+        var v = String(jq(this).val() || '');
+        jq('#cc_ablage_pfad').val(v);
+        zeigeZiel(v);
+    });
+    jq('#cc_ablage_pfad').on('input change', function () { zeigeZiel(String(this.value || '')); });
+    var seite = document.getElementById('tab-audio');
+    if (seite && seite.classList.contains('sm-active')) { laden(); }
+    jq('.sm-tab[data-ziel="tab-audio"]').on('click', laden);
+})();
 /* Ansage-3: ein Sprechtoken im Browser wuerfeln (32 Hexzeichen). Der Server
  * zeigt es nie; hier steht es einmal sichtbar im Feld, zum Abschreiben in die
  * anderen Plugins, und wird mit "Speichern" uebernommen. */
