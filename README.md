@@ -23,6 +23,52 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.26
+
+### Klingel synchron bei laufender Musik, neu angelegte Gruppen, hängende Netzfreigabe
+
+Nachbesserung aus dem Hörtest vom 01.11.2026 an zwei Google Home Speakern mit der Google-Gruppe „Klingel“. Gemessen an
+Attrappen (Lautsprecher, Gruppe, Netzfreigabe) unter PHP 7.4, 8.4 und 8.5 und Python; am Gerät ist 1.3.26 noch nicht
+gemessen.
+
+* **Gong synchron, auch wenn ein Mitglied vorher spielt:** Lief im Gästezimmer Musik, kam der Gong der Gruppe dort
+  versetzt; ohne Musik war er synchron. Jetzt hält der Dienst vor dem Gong jedes Mitglied der Zielgruppe an, das gerade
+  etwas Fortsetzbares spielt (Stopp an alle zugleich), und wartet, bis es „IDLE“ meldet – aus der Statusmeldung des
+  Lautsprechers, höchstens 1,2 s. Danach geht der Gong an die Gruppe, und die Musik wird wie bisher fortgesetzt
+  („Wiedergabeliste bei Titel X, N s wieder aufgenommen“). Ein Lautsprecher, der nicht Mitglied ist, spielt weiter;
+  eine App ohne Adresse (Spotify, YouTube) wird nicht angehalten, weil sie sich nicht fortsetzen ließe. Das gilt nur
+  mit dem Haken „Nach der Ansage fortsetzen, was vorher lief“. Die Klingel wird dadurch um die gemessene Wartezeit später (im Protokoll
+  „vor dem Gong angehalten: … – IDLE nach 0.xx s“), geschätzt 0,1–0,5 s, höchstens 1,2 s.
+* **Gelöschte und neu angelegte Gruppe wird wiedergefunden:** Eine in Google Home neu angelegte Gruppe hat eine neue
+  Kennung und einen neuen Port; das Plugin verband sich weiter mit der alten und meldete bei jeder Klingel „is
+  connecting…“, bis der Dienst neu startete. Jetzt verwirft es eine Verbindung, die 60 s lang nicht zustande kommt oder
+  an der zwei Sendeversuche hintereinander scheitern, und sucht das Gerät bzw. die Gruppe über den Namen neu. Eine
+  Klingel sucht in diesem Fall sofort einmal neu (nur in der laufenden Suche, höchstens 2 s) und versucht es erneut,
+  bevor der Rückfall greift. Dazu: Meldete sich die alte Gruppe aus dem Netz ab, strich die laufende Suche bisher auch
+  den Eintrag der neuen gleichen Namens – jetzt zählt die Kennung.
+* **Rückfall an alle zuletzt bekannten Mitglieder:** Die Mitglieder jeder Gruppe stehen in `data/…/mitglieder.json`
+  (seit 1.3.25); der Rückfall geht an alle, auch an die gerade nicht verbundenen. Im Hörtest stammte die gemerkte
+  Liste noch von der alten Gruppe (nur Gästezimmer) – mit der Neusuche meldet die neue Gruppe ihre Mitglieder selbst.
+* **Lesbare Fehlertexte:** statt „Chromecast {self.host}:{self.port} is connecting…“ (so steht der Text in
+  pychromecast 9.4.0) heißt es „Gerät/Gruppe 'Klingel' noch nicht verbunden“; Adressen stehen nicht in der Meldung.
+* **Hängende Netzfreigabe erkennen:** Nach dem Ab- und Anstecken der SSD an der FRITZ!Box meldete der Webserver
+  „Stale file handle“ (HTTP 403), der Lautsprecher spielte nur den Verbindungston, und das Plugin meldete „gestartet“.
+  Jetzt liest der Dienst beim Einrichten, mit der Wache (alle 15 min) und beim Start einer Listen- oder Dateiquelle
+  eine Datei der Ablage. Scheitert das, steht im Protokoll und im Reiter *Test*: „Netzfreigabe hängt (Stale file
+  handle) – am LoxBerry neu einhängen; bei FRITZ!Box Option noserverino in …/system/autofs/auto.smb und danach
+  autofs neu starten“ (mit dem vollen Pfad im LoxBerry-Verzeichnis); `server/ablage_ok` wird 0. Ist die Freigabe wieder lesbar, gibt der Dienst die Ablage
+  von selbst wieder frei. Nach dem Start einer Listen- oder Dateiquelle wartet er bis zu 8 s auf „PLAYING“ und meldet
+  sonst „Wiedergabe kam nicht zustande“ statt „gestartet“.
+* **Hilfe:** die Befehle einer Zone stehen jetzt vollständig in der Hilfe – der nächste Titel heißt `next`
+  (nicht „weiter“), der vorige `prev`.
+
+**English:** the doorbell now stops playing members of the target group before the chime (STOP, waits for IDLE from
+the status message, at most 1.2 s) and resumes them afterwards; a group deleted and re-created in Google Home is found
+again (connection dropped after 60 s or two failed sends, the doorbell re-searches once at once, at most 2 s); the
+fallback rings all last known members; error texts no longer show `{self.host}:{self.port}`; a hanging network share
+(“stale file handle”) is reported on the *Test* tab with the remedy, `server/ablage_ok` becomes 0, and a file or list
+source reports “Wiedergabe kam nicht zustande” (playback did not start) instead of “gestartet”. The help lists all zone commands (`next`, not “weiter”).
+
 ## Neu in 1.3.25
 
 ### Audio Stufe 1: Zonen, Radiotasten, Medienablage, Klingel

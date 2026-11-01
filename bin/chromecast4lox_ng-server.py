@@ -641,6 +641,103 @@ SICHTBAR = {}
 # meldet die Gruppe selbst; nach MZ_NACHFRAGE Sekunden fragt der Dienst eine verbundene Gruppe trotzdem erneut.
 MZ_NACHFRAGE = 900.0
 
+# 1.3.26 (Hoertest 01.11.2026, Befund 2): eine Verbindung, die im Zustand "connecting" haengt. pychromecast verbindet
+# ein Cast-Objekt immer wieder mit derselben Adresse. Eine in Google Home geloeschte und neu angelegte Gruppe hat aber
+# eine neue Kennung und einen neuen Port - das alte Objekt kommt nie mehr an, jeder Sendeversuch endet in NotConnected
+# (am Geraet 31.10. 22:57 bis 01.11. 03:41, erst ein Neustart des Dienstes half). Steht ein Geraet laenger als
+# HAENGT_GRENZE s so da oder scheitern HAENGT_FEHLER Sendeversuche hintereinander daran, verwirft der Dienst das Objekt
+# und sucht neu - per Name in der Dauersuche, sonst einzeln wie beim ersten Verbinden.
+HAENGT_GRENZE = 60.0
+HAENGT_FEHLER = 2
+# Die Klingel sucht ein haengendes Ziel einmal sofort neu und versucht es noch einmal - nur ueber die Dauersuche (keine
+# Einzelsuche, die kostet 8 s) und hoechstens KLINGEL_NEUSUCHE s insgesamt; danach greift der Ersatzweg wie bisher.
+KLINGEL_NEUSUCHE = 2.0
+# Befund 1: spielende Mitglieder der Zielgruppe vor dem Gong anhalten (STOP). Gewartet wird, bis jedes IDLE meldet
+# (Statusmeldung von pychromecast, alle KLINGEL_BLICK s nachgesehen), hoechstens KLINGEL_ANHALTEN s.
+KLINGEL_ANHALTEN = 1.2
+KLINGEL_BLICK = 0.05
+# Befund 5: eine eingehaengte Netzfreigabe, deren Datentraeger ab- und wieder angesteckt wurde, liefert "Stale file
+# handle" (ESTALE, unter Linux errno 116): das Verzeichnis listet noch, das Lesen einer Datei scheitert - Apache
+# meldet 403, der Lautsprecher spielt nur den Verbindungston. Der Text geht ins Protokoll, in den Reiter Test und als
+# letzte Meldung des Geraets; server/ablage_ok wird 0.
+ESTALE_NUMMERN = (116, getattr(errno, "ESTALE", 116))
+# Der Pfad der autofs-Datei kommt aus dem LoxBerry-Verzeichnis (HOME_DIR), nicht fest im Code.
+ESTALE_TEXT = ("Netzfreigabe haengt (Stale file handle) - am LoxBerry neu einhaengen; bei FRITZ!Box Option "
+               "noserverino in %s und danach autofs neu starten"
+               % (_anlage("system", "autofs", "auto.smb").replace(os.sep, "/") or "system/autofs/auto.smb"))
+ABLAGE_PROBE = {}          # zuletzt gelesene Datei der Ablage (Wurzel -> Pfad), damit die Pruefung nicht sucht
+
+
+def nicht_verbunden(fehler):
+    """1.3.26: Ist das die Ausnahme "is connecting" von pychromecast (NotConnected)?"""
+    return type(fehler).__name__ == "NotConnected" or "is connecting" in str(fehler)
+
+
+def fehler_lesbar(fehler, name=""):
+    """1.3.26 (Befund 4): eine lesbare Meldung statt des Textes der Ausnahme. pychromecast 9.4.0 wirft
+    NotConnected("Chromecast {self.host}:{self.port} is connecting...") - der Platzhalter steht dort woertlich, weil
+    das Format fehlt. Daraus wird "Gerät/Gruppe 'Name' noch nicht verbunden". Aus jedem anderen Text fallen
+    unformatierte Platzhalter und Adressen (IP, Port) heraus."""
+    if nicht_verbunden(fehler):
+        return ("Gerät/Gruppe '%s' noch nicht verbunden" % name) if name else "noch nicht verbunden"
+    text = str(fehler)
+    text = re.sub(r"\{self\.[A-Za-z_]+\}(:\{self\.[A-Za-z_]+\})?", "", text)
+    text = re.sub(r"\b[0-9]{1,3}(\.[0-9]{1,3}){3}(:[0-9]+)?\b", "<Adresse>", text)
+    text = " ".join(text.split())
+    return text or type(fehler).__name__
+
+
+def ablage_lesefehler(fehler):
+    """1.3.26 (Befund 5): Grund zu einem Lesefehler in der Ablage - ESTALE bekommt den Hinweis zum Neu-Einhaengen."""
+    if getattr(fehler, "errno", None) in ESTALE_NUMMERN or "stale file handle" in str(fehler).lower():
+        return ESTALE_TEXT
+    return "Datei der Ablage nicht lesbar (%s)" % (getattr(fehler, "strerror", None) or fehler)
+
+
+def _ein_byte(pfad):
+    with open(pfad, "rb") as fh:
+        fh.read(1)
+
+
+def ablage_lesbar(echt, datei=None, grenze=2000):
+    """1.3.26 (Befund 5): Laesst sich eine Datei der Ablage wirklich lesen (1 Byte)? datei = diese (echter Pfad),
+    sonst die zuletzt gelesene bzw. die erste Audiodatei, die beim Durchgehen auffaellt (hoechstens grenze Eintraege,
+    Ordner alphabetisch, versteckte nicht). Rueckgabe "" = lesbar oder keine Datei zu finden, sonst der Grund
+    (ESTALE_TEXT bzw. "Datei der Ablage nicht lesbar (...)"). Ein Verzeichnislesen allein beweist nichts: bei
+    "Stale file handle" listet die Freigabe weiter."""
+    try:
+        if datei:
+            _ein_byte(datei)
+            return ""
+        alt = ABLAGE_PROBE.get(echt)
+        if alt:
+            try:
+                _ein_byte(alt)
+                return ""
+            except OSError as fehler:
+                if getattr(fehler, "errno", None) != errno.ENOENT:
+                    raise
+                ABLAGE_PROBE.pop(echt, None)
+        gesehen = 0
+        offen = [echt]
+        while offen:
+            ordner = offen.pop(0)
+            with os.scandir(ordner) as it:
+                eintraege = sorted((e for e in it if not e.name.startswith(".")), key=lambda e: e.name.lower())
+            for e in eintraege:
+                gesehen += 1
+                if gesehen > grenze:
+                    return ""
+                if inhaltstyp(e.name) and e.is_file(follow_symlinks=False):
+                    _ein_byte(e.path)
+                    ABLAGE_PROBE[echt] = e.path
+                    return ""
+            offen.extend(e.path for e in eintraege if e.is_dir(follow_symlinks=False))
+        return ""
+    except OSError as fehler:
+        return ablage_lesefehler(fehler)
+
+
 
 def kennung_gleich(a, b):
     """Zwei Cast-Kennungen gleich? Striche und Gross-/Kleinschreibung zaehlen nicht; leer ist nie gleich."""
@@ -2450,8 +2547,7 @@ class Netzsuche:
 
         def weg(uuid, service, cast_info):
             name = getattr(cast_info, "friendly_name", "")
-            if name in self.gefunden:
-                del self.gefunden[name]
+            if self.abmelden(name, uuid):      # 1.3.26: nur dieselbe Kennung, nicht der Name allein
                 log.info("'%s' hat sich aus dem Netz abgemeldet", name)
 
         try:
@@ -2467,6 +2563,22 @@ class Netzsuche:
         self.laeuft = True
         log.info("Dauersuche laeuft - Geraete werden gemeldet, sobald sie sich "
                  "im Netz zeigen.")
+        return True
+
+    def abmelden(self, name, uuid):
+        """1.3.26 (Befund 2): ein abgemeldetes Geraet aus der Liste nehmen - nur, wenn der Eintrag dieses Namens
+        dieselbe Kennung traegt. Bis 1.3.25 galt der Name allein: wurde eine Gruppe in Google Home geloescht und
+        gleich wieder angelegt, strich die Abmeldung der ALTEN (am Geraet 31.10. 22:48 und 22:50) den Eintrag der
+        NEUEN gleichen Namens. Rueckgabe True = entfernt."""
+        info = self.gefunden.get(name)
+        if info is None:
+            return False
+        jetzt = str(getattr(info, "uuid", "") or "")
+        weg = str(uuid or "")
+        if jetzt and weg and not kennung_gleich(jetzt, weg):
+            log.info("'%s': eine alte Kennung hat sich abgemeldet - der neue Eintrag gleichen Namens bleibt", name)
+            return False
+        del self.gefunden[name]
         return True
 
     def info(self, name):
@@ -2560,11 +2672,16 @@ class Geraet:
         self.mz = None
         self.mz_frisch = False
         self.mz_nachfrage = 0.0
+        # 1.3.26 (Befund 2): seit wann (time.monotonic) das Cast-Objekt nicht sendebereit ist, und wie oft ein
+        # Sendeversuch hintereinander an "is connecting" scheiterte. Eine neue Verbindung setzt beides zurueck.
+        self.haengt_seit = 0.0
+        self.haengt_fehler = 0
 
     # -- Verbindung ---------------------------------------------------------
 
-    def verbinden(self):
-        """Geraet suchen und verbinden. Rueckgabe: True bei Erfolg."""
+    def verbinden(self, frist=None):
+        """Geraet suchen und verbinden. Rueckgabe: True bei Erfolg. 1.3.26: mit frist (Neusuche der Klingel)
+        nur ueber die Dauersuche - keine Einzelsuche (8 s) - und hoechstens frist s auf die Verbindung warten."""
         try:
             import pychromecast
         except ImportError:
@@ -2596,6 +2713,9 @@ class Geraet:
                             "nicht verbinden (%s) - es wird einzeln gesucht.",
                             self.name, fehler)
                 info = None
+        if info is None and frist is not None:
+            log.info("'%s' steht nicht in der Dauersuche - waehrend der Klingel keine Einzelsuche", self.name)
+            return False
         if info is None:
             try:
                 # Audio Stufe 1 (E1): ein Zonenziel auch ueber seine gemerkte Kennung finden.
@@ -2629,9 +2749,9 @@ class Geraet:
             except Exception:  # noqa: BLE001
                 pass
         try:
-            self.cast.wait(timeout=10)
+            self.cast.wait(timeout=10 if frist is None else max(0.2, float(frist)))
         except Exception as fehler:  # noqa: BLE001
-            log.error("Verbindung zu '%s' fehlgeschlagen: %s", self.name, fehler)
+            log.error("Verbindung zu '%s' fehlgeschlagen: %s", self.name, fehler_lesbar(fehler, self.name))
             self.cast = None
             self._browser_beenden(browser)
             self.melden_offline()
@@ -2661,6 +2781,8 @@ class Geraet:
         # X-7: nach einer (Neu-)Verbindung ist der gemerkte Pegel nichts mehr
         # wert - das Geraet kann neu gestartet sein.
         self.x7_laut = None
+        self.haengt_seit = 0.0      # 1.3.26
+        self.haengt_fehler = 0
         self._lauscher_anmelden()
         self._mitglieder_anmelden()     # Nachfassung 3 (O1): nur bei einer Gruppe
         return True
@@ -2728,7 +2850,9 @@ class Geraet:
         try:
             mz.update_members()
         except Exception as fehler:  # noqa: BLE001
-            log.warning("'%s': Nachfrage nach den Mitgliedern gescheitert: %s", self.name, fehler)
+            self.nv_vermerken(fehler)       # 1.3.26: zaehlt fuer das Verwerfen (Befund 2)
+            log.warning("'%s': Nachfrage nach den Mitgliedern gescheitert: %s", self.name,
+                        fehler_lesbar(fehler, self.name))
 
     def _mitglieder_lesen(self):
         """Die Mitglieder aus dem Controller uebernehmen (Kennung und Name). Aendert sich etwas, steht es im Protokoll
@@ -2895,9 +3019,9 @@ class Geraet:
             try:
                 ergebnis = self.befehl(befehl, wert, schrittweite, cfg)
             except Exception as fehler:  # noqa: BLE001
-                ergebnis = "Fehler: {0}".format(fehler)
+                ergebnis = "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
                 log.error("'%s': Auftrag %s abgebrochen: %s",
-                          self.name, befehl, fehler)
+                          self.name, befehl, fehler_lesbar(fehler, self.name))
             if ergebnis != "OK":
                 log.warning("%s: %s", self.name, ergebnis)
             self.meldung_setzen("" if ergebnis == "OK" else ergebnis)
@@ -3040,6 +3164,65 @@ class Geraet:
 
     def verbunden(self):
         return self.cast is not None and getattr(self.cast, "socket_client", None) is not None
+
+    # -- 1.3.26 (Befund 2): haengende Verbindung verwerfen und neu suchen -------------------------------------------
+    #
+    # Hoertest 01.11.2026: die Gruppe "Klingel" wurde in Google Home geloescht und neu angelegt. Das alte Cast-Objekt
+    # verband weiter mit der alten Adresse; verbunden() blieb wahr (das Objekt ist ja da), jede Klingel und jede
+    # Mitgliederabfrage endete in NotConnected, bis der Dienst neu startete. Jetzt: steht das Objekt HAENGT_GRENZE s
+    # nicht sendebereit da oder scheitern HAENGT_FEHLER Sendeversuche hintereinander daran, verwirft der Dienst es und
+    # sucht neu - die neue Gruppe findet er ueber ihren Namen (Dauersuche, sonst Einzelsuche).
+
+    def haengt(self):
+        """Sekunden, die das Cast-Objekt schon nicht sendebereit ist (0 = sendebereit oder kein Objekt). pychromecast
+        9.4.0 (am LoxBerry gelesen) sendet nur, wenn socket_client weder "connecting" noch "_force_recon" traegt -
+        sonst NotConnected; is_connected ist "not connecting". Fehlen die Merkmale (andere Fassung, Attrappe), gilt das
+        Objekt als sendebereit."""
+        sc = getattr(self.cast, "socket_client", None) if self.cast is not None else None
+        if sc is None or (getattr(sc, "is_connected", True) and not getattr(sc, "_force_recon", False)):
+            self.haengt_seit = 0.0
+            return 0.0
+        jetzt = time.monotonic()
+        if not getattr(self, "haengt_seit", 0.0):
+            self.haengt_seit = jetzt
+        return max(0.0, jetzt - self.haengt_seit)
+
+    def nv_vermerken(self, fehler):
+        """Einen Sendeversuch zaehlen, der an "is connecting" scheiterte. Rueckgabe True = so ein Fehlschlag."""
+        if nicht_verbunden(fehler):
+            self.haengt_fehler = getattr(self, "haengt_fehler", 0) + 1
+            return True
+        return False
+
+    def verwerfen_faellig(self):
+        """Grund, das Cast-Objekt zu verwerfen, oder "" (nicht verbunden, sendebereit, oder noch nicht lange genug)."""
+        if not self.verbunden():
+            return ""
+        s = self.haengt()
+        if s >= HAENGT_GRENZE:
+            return "seit %.0f s nicht verbunden" % s
+        if getattr(self, "haengt_fehler", 0) >= HAENGT_FEHLER:
+            return "%d Sendeversuche hintereinander gescheitert (noch nicht verbunden)" % self.haengt_fehler
+        return ""
+
+    def verwerfen(self, grund):
+        """Das Cast-Objekt verwerfen; die Hauptschleife (bzw. neu_suchen) verbindet danach neu."""
+        log.warning("Gerät/Gruppe '%s': %s - Verbindung verworfen, es wird neu gesucht", self.name, grund)
+        self.trennen()
+        self.haengt_seit = 0.0
+        self.haengt_fehler = 0
+        self.naechster_versuch = 0.0
+        self.wartezeit = 0.0
+
+    def neu_suchen(self, grund, frist=None):
+        """Verwerfen und sofort neu verbinden. Mit frist (Klingel) nur ueber die Dauersuche und hoechstens frist s
+        warten - keine Einzelsuche, die kostet 8 s. Rueckgabe True = wieder verbunden."""
+        self.verwerfen(grund)
+        try:
+            return bool(self.verbinden(frist=frist))
+        except Exception as fehler:  # noqa: BLE001
+            log.warning("Gerät/Gruppe '%s': Neusuche gescheitert: %s", self.name, fehler_lesbar(fehler, self.name))
+            return False
 
     # -- Zustand melden -----------------------------------------------------
 
@@ -3253,7 +3436,7 @@ class Geraet:
             else:
                 log.info("'%s': vorheriges Medium bei %.0f s wieder aufgenommen", self.name, zeit)
         except Exception as fehler:  # noqa: BLE001
-            log.warning("'%s': Wiederaufnahme misslungen: %s", self.name, fehler)
+            log.warning("'%s': Wiederaufnahme misslungen: %s", self.name, fehler_lesbar(fehler, self.name))
 
     # -- E-NF3 (Nachfassung 2, 30.10.2026): Gruppe unterbricht ihre Mitglieder ------------------------------------
     #
@@ -3288,7 +3471,56 @@ class Geraet:
                      "unterbrochen hat", self.name, ", ".join("'%s'" % g.name for g, _l in aus))
         return aus
 
-    def _mitglieder_fortsetzen(self, gemerkt, cfg):
+    def _mitglieder_anhalten(self, gemerkt):
+        """1.3.26 (Befund 1, Hoertest 01.11.2026 03:43): lief im Gaestezimmer Musik, kam der Gong der Gruppe "Klingel"
+        dort versetzt - das Mitglied musste erst seine eigene Wiedergabe beenden, bevor es der Gruppe folgte. Ohne Musik
+        (03:45, nach zone_1/stop) war er synchron. Darum vor dem Gong: STOP an jedes MITGLIED der Gruppe, das gerade
+        spielt (alle zugleich), dann warten, bis es IDLE meldet - der Takt kommt aus der Statusmeldung von pychromecast,
+        alle KLINGEL_BLICK s nachgesehen, hoechstens KLINGEL_ANHALTEN s. Nur was sich danach fortsetzen laesst
+        (gemerkt, also mit Adresse) und nur bekannte Mitglieder (gemeldet oder unter data/ gemerkt); ein Lautsprecher,
+        der nicht Mitglied ist, spielt weiter. Fortgesetzt wird wie bisher in _mitglieder_fortsetzen().
+        Rueckgabe: Namen der angehaltenen Geraete."""
+        if not gemerkt:
+            return []
+        bekannt = list(getattr(self, "mitglieder", None) or [])
+        if not bekannt:
+            log.info("'%s': Mitglieder der Gruppe noch unbekannt - vor dem Gong wird niemand angehalten", self.name)
+            return []
+        ziel = [g for g, _l in gemerkt if any(g.ist_mitglied(m) for m in bekannt)]
+        if not ziel:
+            return []
+        beginn = time.monotonic()
+        for g in ziel:
+            try:
+                g.cast.media_controller.stop()
+            except Exception as fehler:  # noqa: BLE001
+                log.warning("'%s': '%s' liess sich vor dem Gong nicht anhalten: %s", self.name, g.name,
+                            fehler_lesbar(fehler, g.name))
+        offen = list(ziel)
+        for _ in range(int(round(KLINGEL_ANHALTEN / KLINGEL_BLICK))):
+            offen = [g for g in offen if g._spielt_noch()]
+            if not offen:
+                break
+            time.sleep(KLINGEL_BLICK)
+        dauer = time.monotonic() - beginn
+        namen = ", ".join("'%s'" % g.name for g in ziel)
+        if offen:
+            log.info("'%s': vor dem Gong angehalten: %s - nach %.2f s noch nicht IDLE: %s, der Gong geht trotzdem",
+                     self.name, namen, dauer, ", ".join("'%s'" % g.name for g in offen))
+        else:
+            log.info("'%s': vor dem Gong angehalten: %s - IDLE nach %.2f s", self.name, namen, dauer)
+        return [g.name for g in ziel]
+
+    def _spielt_noch(self):
+        """Meldet der Lautsprecher noch PLAYING, BUFFERING oder PAUSED? (Fehler beim Lesen = nein.)"""
+        try:
+            st = self.cast.media_controller.status if self.cast is not None else None
+        except Exception:  # noqa: BLE001
+            return False
+        z = str(getattr(st, "player_state", "") or "") if st is not None else ""
+        return z in ("PLAYING", "BUFFERING", "PAUSED")
+
+    def _mitglieder_fortsetzen(self, gemerkt, cfg, angehalten=()):
         """Nach Gong/Ansage der Gruppe: wer vorher spielte und jetzt UNKNOWN/IDLE meldet, wurde von der Gruppe
         uebernommen - im EIGENEN Arbeitsfaden fortsetzen (Auftrag fortsetzen_nach_gruppe, Regeln von _lage_herstellen)."""
         for g, lage in gemerkt:
@@ -3298,13 +3530,17 @@ class Geraet:
                 grund = str(getattr(st, "idle_reason", "") or "") if st is not None else ""
             except Exception:  # noqa: BLE001
                 zustand, grund = "UNKNOWN", ""
+            war_angehalten = g.name in angehalten      # 1.3.26: vor dem Gong angehalten (STOP -> IDLE)
             if zustand in ("PLAYING", "BUFFERING", "PAUSED"):
                 continue
-            if zustand == "IDLE" and grund.upper() == "FINISHED":
+            if zustand == "IDLE" and grund.upper() == "FINISHED" and not war_angehalten:
                 log.info("'%s': '%s' ist waehrenddessen regulaer zu Ende gegangen - nicht fortgesetzt", self.name, g.name)
                 continue
-            log.info("'%s': '%s' spielte vorher und meldet jetzt %s - von der Gruppe unterbrochen (Mitglied), wird "
-                     "fortgesetzt", self.name, g.name, zustand)
+            if war_angehalten:
+                log.info("'%s': '%s' war vor dem Gong angehalten - wird fortgesetzt", self.name, g.name)
+            else:
+                log.info("'%s': '%s' spielte vorher und meldet jetzt %s - von der Gruppe unterbrochen (Mitglied), "
+                         "wird fortgesetzt", self.name, g.name, zustand)
             try:
                 g.einreihen("fortsetzen_nach_gruppe", lage, 0, cfg)
             except Exception as fehler:  # noqa: BLE001
@@ -3434,8 +3670,8 @@ class Geraet:
                         "steht im Reiter Einstellungen.")
             return "OK"
         except Exception as fehler:  # noqa: BLE001
-            log.error("Ansage an '%s' fehlgeschlagen: %s", self.name, fehler)
-            return "Fehler: {0}".format(fehler)
+            log.error("Ansage an '%s' fehlgeschlagen: %s", self.name, fehler_lesbar(fehler, self.name))
+            return "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
         finally:
             self.ansage_laeuft = False
             self.ansage_abbrechen = False
@@ -3557,6 +3793,9 @@ class Geraet:
                 typ = inhaltstyp(q["adresse"])
                 if echt is None or not os.path.isfile(echt) or typ is None:
                     return "Quelle {0}: Datei fehlt in der Medienablage oder ist keine Audiodatei".format(nummer)
+                lesefehler = ablage_lesbar(ABLAGE_STAND.get("pfad") or "", datei=echt)     # 1.3.26 (Befund 5)
+                if lesefehler:
+                    return self._ablage_haengt(nummer, lesefehler)
                 adresse = ablage_adresse(cfg, q["adresse"], self._geraete_adresse())
                 if adresse == "":
                     return "Quelle {0}: Adresse der Medienablage nicht zu bilden (eigene Adresse unbekannt)".format(nummer)
@@ -3569,12 +3808,61 @@ class Geraet:
             eintraege, grund = liste_aufbauen(q)
             if grund:
                 return "Quelle {0}: {1}".format(nummer, grund)
+            # 1.3.26 (Befund 5): den ersten Titel der Ablage einmal lesen - die Liste selbst kam aus dem Verzeichnis.
+            erste = next((e[0] for e in eintraege if not re.match(r"^https?://", e[0], re.I)), None)
+            echt = ablage_datei(erste) if erste else None
+            lesefehler = ablage_lesbar(ABLAGE_STAND.get("pfad") or "", datei=echt) if echt else ""
+            if lesefehler:
+                return self._ablage_haengt(nummer, lesefehler)
             grund = self._liste_laden(eintraege, cfg)
             if grund:
                 return "Quelle {0}: {1}".format(nummer, grund)
+        if q["art"] in ("datei", "liste"):
+            # 1.3.26 (Befund 5): "gestartet" erst, wenn der Lautsprecher auch spielt.
+            kam, zustand = self._wiedergabe_kam()
+            if not kam:
+                log.warning("'%s': Quelle %d (%s, %s): Wiedergabe kam nicht zustande (Lautsprecher meldet %s)",
+                            self.name, nummer, q["name"], q["art"], zustand)
+                self._quelle_setzen(0, "")
+                return ("Quelle {0}: Wiedergabe kam nicht zustande (Lautsprecher meldet {1}) - Medienablage "
+                        "und Grundadresse pruefen".format(nummer, zustand))
         log.info("'%s': Quelle %d (%s, %s) gestartet", self.name, nummer, q["name"], q["art"])
         self._quelle_setzen(nummer, q["name"])
         return "OK"
+
+    def _ablage_haengt(self, nummer, grund):
+        """1.3.26 (Befund 5): eine Datei der Ablage liess sich beim Start einer Quelle nicht lesen (z. B. "Stale file
+        handle" nach Ab-/Anstecken der SSD an der FRITZ!Box). Die Ablage gilt dann als nicht freigegeben
+        (server/ablage_ok 0, Grund im Reiter Test); die Vollmeldung gibt sie wieder frei, sobald sie lesbar ist."""
+        if ABLAGE_STAND.get("ok") or ABLAGE_STAND.get("grund") != grund:
+            log.warning("Medienablage: %s", grund)
+        ABLAGE_STAND["ok"] = 0
+        ABLAGE_STAND["grund"] = grund
+        try:
+            self.mqtt.senden("server/ablage_ok", 0, thema_retain("dienst", "ablage_ok"))
+        except Exception:  # noqa: BLE001
+            pass
+        return "Quelle {0}: {1}".format(nummer, grund)
+
+    def _wiedergabe_kam(self, blicke=40):
+        """1.3.26 (Befund 5): nach dem Start einer Datei- oder Listenquelle bis zu ~8 s nachsehen, ob der Lautsprecher
+        spielt. Hoertest 01.11.: die Freigabe hing, Apache antwortete 403, der Lautsprecher spielte nur den
+        Verbindungston - und das Plugin meldete "gestartet". PLAYING = ja; IDLE mit Grund ERROR = sofort nein;
+        BUFFERING am Ende zaehlt als ja (laedt noch). Rueckgabe (ja/nein, zuletzt gemeldeter Zustand)."""
+        mc = self.cast.media_controller
+        zuletzt = ""
+        for _ in range(blicke):
+            try:
+                st = mc.status
+            except Exception:  # noqa: BLE001
+                st = None
+            zuletzt = str(getattr(st, "player_state", "") or "") if st is not None else ""
+            if zuletzt == "PLAYING":
+                return True, zuletzt
+            if zuletzt == "IDLE" and str(getattr(st, "idle_reason", "") or "").upper() == "ERROR":
+                return False, "IDLE/ERROR"
+            time.sleep(0.2)
+        return zuletzt == "BUFFERING", zuletzt or "keinen Zustand"
 
     def _liste_laden(self, eintraege, cfg):
         """Eine Wiedergabeliste als Cast-Warteschlange (S3): der erste Titel mit LOAD, die uebrigen mit QUEUE_INSERT
@@ -3655,6 +3943,34 @@ class Geraet:
         return grund
 
     def klingeln(self, cfg):
+        """Befehl klingel - 1.3.26 (Befund 2) mit einer sofortigen Neusuche: steht das Ziel nicht sendebereit da (eine
+        geloeschte und neu angelegte Gruppe, "is connecting"), wird es einmal verworfen, ueber die Dauersuche neu
+        gesucht und dann geklingelt; scheitert der Versuch selbst an "is connecting", ebenso einmal. Beides zusammen
+        hoechstens KLINGEL_NEUSUCHE s (keine Einzelsuche, die kostet 8 s) - danach meldet die Klingel den Fehler, und der
+        Ersatzweg des Dienstes greift wie bisher. Die Klingel selbst steht in _klingeln()."""
+        beginn = time.monotonic()
+        neu = False
+        if self.haengt() > 0:
+            neu = True
+            if not self.neu_suchen("vor der Klingel noch nicht verbunden", frist=KLINGEL_NEUSUCHE) \
+                    or not self.verbunden():
+                return "Fehler: {0} - neu gesucht, nicht gefunden".format(
+                    fehler_lesbar(RuntimeError("is connecting"), self.name))
+        self._klingel_nv = False
+        meldung = self._klingeln(cfg)
+        rest = KLINGEL_NEUSUCHE - (time.monotonic() - beginn)
+        if meldung != "OK" and self._klingel_nv and not neu:
+            if rest > 0.2 and self.neu_suchen("Klingel scheiterte, noch nicht verbunden", frist=rest) \
+                    and self.verbunden():
+                meldung = self._klingeln(cfg)
+            else:
+                meldung = "Fehler: {0} - neu gesucht, nicht gefunden".format(
+                    fehler_lesbar(RuntimeError("is connecting"), self.name))
+        if meldung == "OK":
+            self.haengt_fehler = 0
+        return meldung
+
+    def _klingeln(self, cfg):
         """Befehl klingel (S5, E3-E5): Gong (Feld Klingel-Gong, sonst der Ansage-Gong), optional ein Ansagetext danach.
         Pegel: Klingel-Pegel, gedeckelt von Obergrenze und Ruhezeit - die Klingel geht in der Ruhezeit mit dem
         Ruhepegel hinaus, nicht gar nicht (E5); wer nachts nichts will, setzt die Sperre aus Loxone. Was vorher lief,
@@ -3676,12 +3992,16 @@ class Geraet:
         self._senden("tts_active", "1")
         gespielt = False
         mitglieder = []
+        angehalten = []
         try:
             if fortsetzen:
                 self._lage_merken()
                 mitglieder = self._mitglieder_merken()      # E-NF3, nur bei einer Gruppe
             else:
                 self._lautstaerke_merken()
+            # 1.3.26 (Befund 1): spielende Mitglieder der Gruppe vor dem Gong anhalten - sonst kommt er dort versetzt.
+            # Nur mit "danach fortsetzen" (sonst ist mitglieder leer): angehalten wird nur, was danach weiterspielt.
+            angehalten = self._mitglieder_anhalten(mitglieder)
             jetzt = self.cast.status.volume_level if self.cast.status else None
             stufe = None
             if pegel_roh != "":
@@ -3711,14 +4031,15 @@ class Geraet:
                         "(Gong-Adresse erreichbar?)")
             return "OK"
         except Exception as fehler:  # noqa: BLE001
-            log.error("Klingel an '%s' fehlgeschlagen: %s", self.name, fehler)
-            return "Fehler: {0}".format(fehler)
+            self._klingel_nv = self.nv_vermerken(fehler)     # 1.3.26: klingeln() sucht dann einmal neu
+            log.error("Klingel an '%s' fehlgeschlagen: %s", self.name, fehler_lesbar(fehler, self.name))
+            return "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
         finally:
             self.ansage_laeuft = False
             self.ansage_abbrechen = False
             self._senden("tts_active", "0")
             if mitglieder:
-                self._mitglieder_fortsetzen(mitglieder, cfg)
+                self._mitglieder_fortsetzen(mitglieder, cfg, angehalten)
 
     def befehl(self, befehl, wert, schrittweite, cfg=None):
         """Einen Befehl ausfuehren. Rueckgabe: Meldung fuer das Protokoll."""
@@ -3865,9 +4186,9 @@ class Geraet:
             else:
                 return "Unbekannter Befehl '{0}'".format(befehl)
         except Exception as fehler:  # noqa: BLE001
-            log.error("Befehl %s an '%s' fehlgeschlagen: %s", befehl, self.name, fehler)
+            log.error("Befehl %s an '%s' fehlgeschlagen: %s", befehl, self.name, fehler_lesbar(fehler, self.name))
             self.trennen()
-            return "Fehler: {0}".format(fehler)
+            return "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
 
         # Nach jedem Befehl den Zustand nachreichen, damit Loxone nicht
         # bis zum naechsten Intervall auf die Rueckmeldung wartet.
@@ -4950,6 +5271,12 @@ class Dienst:
                 st["dateien"], grund = durchsicht[1], ""     # Nachfassung 6: eben von der Wache durchgesehen
             else:
                 st["dateien"], grund = ablage_durchsehen(echt)
+            # 1.3.26 (Befund 5): ein Verzeichnislesen beweist nichts - bei "Stale file handle" listet die
+            # Freigabe weiter, nur das Lesen einer Datei scheitert. Darum eine Datei lesen, bevor freigegeben wird.
+            if grund.startswith("nicht lesbar") and "stale file handle" in grund.lower():
+                grund = ESTALE_TEXT
+            elif not grund:
+                grund = ablage_lesbar(echt)
         if not grund:
             grund = self._verweis_setzen(echt, schluessel)
         if grund:
@@ -4970,8 +5297,20 @@ class Dienst:
                 os.listdir(ABLAGE_STAND["pfad"])
             except OSError as fehler:
                 ABLAGE_STAND["ok"] = 0
-                ABLAGE_STAND["grund"] = "nicht erreichbar (%s)" % fehler.strerror
-                log.warning("Medienablage nicht mehr erreichbar: %s", fehler)
+                if getattr(fehler, "errno", None) in ESTALE_NUMMERN:     # 1.3.26 (Befund 5)
+                    ABLAGE_STAND["grund"] = ESTALE_TEXT
+                else:
+                    ABLAGE_STAND["grund"] = "nicht erreichbar (%s)" % fehler.strerror
+                log.warning("Medienablage nicht mehr erreichbar: %s", ABLAGE_STAND["grund"])
+                self._ablage_ok_senden()
+        elif ABLAGE_STAND.get("eingerichtet") and ABLAGE_STAND.get("grund") == ESTALE_TEXT:
+            # 1.3.26 (Befund 5): solange die Netzfreigabe haengt, mit jeder Vollmeldung eine Datei lesen (billig);
+            # geht es wieder (neu eingehaengt), die Ablage wie beim Start einrichten - einmal durchsehen, freigeben.
+            echt = ABLAGE_STAND.get("pfad") or ablage_pfad_taugt(str(self.cfg.get("ablage_pfad", "") or "").strip())[0]
+            if echt and os.path.isdir(echt) and not ablage_lesbar(echt):
+                log.info("Medienablage wieder lesbar - wird neu eingerichtet")
+                self.ablage_einrichten()
+                self._ablage_ok_senden()
         elif ABLAGE_STAND.get("eingerichtet") and str(ABLAGE_STAND.get("grund", "")).startswith(
                 ("nicht erreichbar", "Ordner nicht vorhanden")):
             self.ablage_einrichten()
@@ -5038,8 +5377,12 @@ class Dienst:
                                                  fund=fund)
             except Exception as fehler:  # noqa: BLE001
                 zahl, grund2 = 0, "Durchsicht abgebrochen (%s)" % fehler
+            # 1.3.26 (Befund 5): dazu eine Datei der Ablage lesen ("Stale file handle" sieht die Durchsicht nicht).
+            lese = ""
+            if not str(grund2).startswith(("Durchsicht abgebrochen", "enthaelt", "mehr als")):
+                lese = ablage_lesbar(echt)
             auftrag.update({"zahl": zahl, "grund": grund2, "fund": fund[0] if fund else "",
-                            "dauer": time.monotonic() - beginn})
+                            "dauer": time.monotonic() - beginn, "lesefehler": lese})
             w["ergebnis"] = auftrag
 
         w["faden"] = threading.Thread(target=lauf, daemon=True, name="ablage-wache")
@@ -5054,6 +5397,15 @@ class Dienst:
             if st.get("ok") or str(self.cfg.get("ablage_schluessel", "") or "").strip() != erg.get("schluessel"):
                 return
         elif not st.get("ok") or st.get("pfad") != erg.get("echt") or st.get("schluessel") != erg.get("schluessel"):
+            return
+        lese = str(erg.get("lesefehler", "") or "")
+        if lese and st.get("ok"):
+            # 1.3.26 (Befund 5): die Datei liess sich nicht lesen - nicht freigegeben, klarer Grund, ablage_ok 0. Die
+            # Vollmeldung (ablage_nachsehen) gibt die Ablage wieder frei, sobald sie lesbar ist.
+            st["ok"] = 0
+            st["grund"] = lese
+            log.warning("Wache der Medienablage: %s", lese)
+            self._ablage_ok_senden()
             return
         if grund.startswith("enthaelt") and rel:
             text = "unsichere Datei gefunden: %s" % rel[:80]
@@ -5314,6 +5666,9 @@ class Dienst:
                     # Zustand waere ohnehin nur der der Ansage, und ein
                     # Verbindungsaufbau mitten hinein wuerde sie abbrechen.
                     continue
+                faellig = geraet.verwerfen_faellig()     # 1.3.26 (Befund 2): haengt bei "is connecting"
+                if faellig:
+                    geraet.verwerfen(faellig)
                 if not geraet.verbunden():
                     # Nicht in jedem Durchgang suchen: ein erfolgloser
                     # Versuch kostet acht Sekunden, und die zahlen die
@@ -5874,6 +6229,22 @@ def selbsttest():
           ga.mitglied_von() == ["Klingel"] and gc.mitglied_von() == ["Klingel"] and gd.mitglied_von() == []
           and gb.mitglied_von() == [] and kennung_gleich("AB-cd", "abcd") and not kennung_gleich("", "-")
           and name_gleich("G\u00e4ste", "ga\u0308ste") and not name_gleich("", ""))
+    # 1.3.26 (Hoertest 01.11.2026): Fehlertext, Lesefehler der Ablage, Abmeldung in der Dauersuche
+    nv = type("NotConnected", (Exception,), {})("Chromecast {self.host}:{self.port} is connecting...")
+    pruef("1.3.26 Fehlertext: 'is connecting' -> Gerät/Gruppe 'Klingel' noch nicht verbunden, ohne Platzhalter",
+          nicht_verbunden(nv) and fehler_lesbar(nv, "Klingel") == "Gerät/Gruppe 'Klingel' noch nicht verbunden"
+          and not nicht_verbunden(OSError("x")))
+    pruef("1.3.26 Fehlertext: Adresse und unformatierter Platzhalter fallen heraus",
+          fehler_lesbar(OSError("Fehler bei 192.168.178.20:8009 {self.host}:{self.port}")) == "Fehler bei <Adresse>")
+    pruef("1.3.26 Ablage: errno 116 -> Hinweis noserverino/autofs; anderer Lesefehler -> 'nicht lesbar'",
+          ablage_lesefehler(OSError(116, "Stale file handle")) == ESTALE_TEXT and "noserverino" in ESTALE_TEXT
+          and "auto.smb" in ESTALE_TEXT
+          and ablage_lesefehler(OSError(13, "Permission denied")) == "Datei der Ablage nicht lesbar (Permission denied)")
+    ns = Netzsuche()
+    ns.gefunden["Klingel"] = type("I", (), {"uuid": "00000000-0000-0000-0000-0000000000b2"})()
+    pruef("1.3.26 Dauersuche: Abmeldung der alten Kennung laesst den neuen Eintrag gleichen Namens stehen",
+          not ns.abmelden("Klingel", "00000000-0000-0000-0000-0000000000b1") and "Klingel" in ns.gefunden
+          and ns.abmelden("Klingel", "00000000-0000-0000-0000-0000000000b2") and "Klingel" not in ns.gefunden)
     SICHTBAR.clear()
     gut = sum(1 for zz in zeilen if zz.startswith("ok"))
     return gut, len(zeilen) - gut, zeilen

@@ -4256,6 +4256,20 @@ function cc_zone_mitglieder_text($zs)
 }
 
 /**
+ * 1.3.26 (Befund 5): Grund der Medienablage zur Anzeige. Der Dienst schreibt ihn deutsch in zustand.json; haengt
+ * die Netzfreigabe ("Stale file handle"), steht der Hinweis zur Abhilfe in der Sprache der Oberflaeche da.
+ */
+function cc_ablage_grund_text($grund)
+{
+    $g = (string) $grund;
+    if (stripos($g, 'Stale file handle') === false) {
+        return $g;
+    }
+    // Pfad der autofs-Datei aus dem LoxBerry-Verzeichnis (config/plugins/<ordner>/<datei> -> vier Ebenen hoch).
+    return sprintf(cc_t('AUDIO.T_ABLAGE_ESTALE'), dirname(cc_paths()['config'], 4) . '/system/autofs/auto.smb');
+}
+
+/**
  * Pruefzeile "Audio: Zonen, Quellen, Medienablage" fuer den Reiter Test: array(true|false|null, Text). Keine Zonen
  * und keine Ablage = Strich (nicht eingerichtet); Beanstandung in der gespeicherten Liste oder eine eingetragene,
  * aber nicht freigegebene Ablage = rot, mit Grund.
@@ -4282,7 +4296,8 @@ function cc_audio_pruefzeile($cfg)
             $teile[] = sprintf(cc_t('AUDIO.T_ABLAGE_OK'), (int) $a['ablage']['dateien']);
             $ok = true;
         } else {
-            $teile[] = sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'), isset($a['ablage']['grund']) ? (string) $a['ablage']['grund'] : '?');
+            $teile[] = sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'),
+                               cc_ablage_grund_text(isset($a['ablage']['grund']) ? (string) $a['ablage']['grund'] : '?'));
             $ok = false;
         }
     } elseif ($zl || $ql) {

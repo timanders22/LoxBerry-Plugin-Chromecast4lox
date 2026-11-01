@@ -1175,7 +1175,7 @@ $cc_ab_hand = !is_string($cc_ab_json) || cc_markierung('ablage_pfad') !== '' || 
 <?php if ($cc_ab_prueft) { ?><span class="sm-unklar"><?= cc_e(cc_t('AUDIO.T_WIRD_GEPRUEFT')) ?></span>
 <?php } elseif ($cc_ab === null) { ?><span class="sm-unklar"><?= cc_e(cc_t('TEXT.KOPF_NICHT_FESTSTELLBAR')) ?></span>
 <?php } elseif (!empty($cc_ab['ok'])) { ?><span class="sm-an"><?= cc_e(sprintf(cc_t('AUDIO.T_ABLAGE_OK'), (int) $cc_ab['dateien'])) ?></span>
-<?php } else { ?><span class="sm-aus"><?= cc_e(sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'), isset($cc_ab['grund']) ? (string) $cc_ab['grund'] : '?')) ?></span><?php } ?>
+<?php } else { ?><span class="sm-aus"><?= cc_e(sprintf(cc_t('AUDIO.T_ABLAGE_NEIN'), cc_ablage_grund_text(isset($cc_ab['grund']) ? (string) $cc_ab['grund'] : '?'))) ?></span><?php } ?>
 <?php if (!$cc_ab_prueft && is_array($cc_ab) && isset($cc_ab['dateisystem']) && (string) $cc_ab['dateisystem'] !== '') { ?> · <?= cc_e(sprintf(cc_t('AUDIO.DATEISYSTEM'), (string) $cc_ab['dateisystem'])) ?><?php } ?></div>
 <?php } ?>
 <details><summary><?= cc_t('AUDIO.H_DATEISYSTEM') ?></summary><div class="sm-small"><?= cc_t('AUDIO.DATEISYSTEM_HINWEIS') ?></div></details>
