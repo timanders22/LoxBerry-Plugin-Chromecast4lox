@@ -97,6 +97,7 @@
     "klingel_gong": "",
     "klingel_pegel": "",
     "klingel_text": "",
-    "aktionstoken": ""
+    "aktionstoken": "",
+    "ansage_block": ""
   }
 }

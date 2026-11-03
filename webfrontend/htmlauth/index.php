@@ -161,13 +161,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
  * ================================================================== */
 /* ============ Loxone-Vorlage herunterladen ============ */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['download'])) {
-    $cfg = cc_config_read();
-    $geraete = cc_geraete($cfg);
+    /* bis 1.3.26 hiess dieses Feld $cfg: das LoxBerry-SDK ueberschreibt ein globales $cfg beim ersten Lesen von general.json (Ausfall MGiSmart 01.11.2026). */
+    $cc_lauf_cfg = cc_config_read();
+    $geraete = cc_geraete($cc_lauf_cfg);
     if (!$geraete) {
         $cc_fehler[] = cc_t('TEXT.T083');
         $cc_tab = 'tab-loxone';
     } else {
-        list($name, $inhalt) = cc_vorlage((string) $_POST['download'], $cfg, $geraete);
+        list($name, $inhalt) = cc_vorlage((string) $_POST['download'], $cc_lauf_cfg, $geraete);
         if ($name === '') {
             $cc_fehler[] = cc_t('TEXT.F_VORLAGENART');
             $cc_tab = 'tab-loxone';
@@ -486,6 +487,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_sprechen'])) {
  * Bei einer Beanstandung wird nichts gespeichert (Entscheidung 16); die eingetippten Werte kommen zurueck (X-2). Der
  * Dienst liest die Konfiguration nach einer Aenderung von selbst neu und richtet dabei Zonen und Medienablage ein -
  * ein Neustart ist nicht noetig. */
+/* 1.3.27: Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ansage_test'])) {
+    list($cc_at, $cc_ag) = cc_ansage_test();
+    if ($cc_at) { $cc_saved = true; } else { $cc_fehler[] = cc_e(cc_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $cc_ag); }
+    $cc_tab = 'tab-settings';
+}
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ansage_speichern'])) {
+    list($cc_ao, $cc_af, $cc_ah) = cc_ansage_post($_POST);
+    if ($cc_af) { foreach ($cc_af as $cc_ax) { $cc_fehler[] = cc_e($cc_ax); } }
+    elseif ($cc_ao) { $cc_saved = true; }
+    else { $cc_fehler[] = cc_e(cc_t('ANSAGEPLUGIN.M_FEHL')); }
+    $cc_tab = 'tab-settings';
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_audio'])) {
     list($cc_aneu, $cc_abean) = cc_audio_formular($_POST, cc_config_read());
     if ($cc_abean) {
@@ -733,6 +747,9 @@ if ($cc_frame) {
 /* Nachgetragen 05.09.2026: die Klassen standen im Quelltext, aber
    nirgends im Stilblock - der Kasten stand rahmenlos da. Wortlaut
    unveraendert aus VORLAGE_hausstandard.css.html. */
+.sm-wrap .sm-hilfe { font-size: 0.85em; color: #555; margin: 4px 0 0; }
+.sm-wrap .sm-feld { margin: 10px 0; }
+.sm-wrap .sm-feld > label:first-child { display: block; font-weight: 600; margin-bottom: 4px; }
 .sm-hinweis { border: 1px solid #cfe3b0; background: #f2f8ea; border-radius: 6px;
     padding: 10px 12px; margin: 12px 0; font-size: 0.9em; }
 .sm-warnung { border: 1px solid #f0c9a0; background: #fdf4ec; border-radius: 6px;
@@ -1062,6 +1079,7 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
 <div class="sm-small"><?php echo cc_t('SPRECHEN.H_SPEICHERN'); ?></div>
 </form>
 
+<?= cc_ansage_form_html('<input data-role="none" type="hidden" name="fmt" value="' . cc_e($cc_fmt) . '"><input data-role="none" type="hidden" name="activetab" value="tab-settings">') ?>
 <h2><?= cc_t('TEXT.H_SICHERUNG') ?></h2>
 <div class="sm-hinweis"><?= cc_t('TEXT.SICH_ERKLAERUNG') ?></div>
 <div class="sm-warnung"><?= cc_t('TEXT.SICH_WARNUNG') ?></div>

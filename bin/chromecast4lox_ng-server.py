@@ -30,6 +30,7 @@ import logging.handlers
 import math
 import os
 import queue
+import subprocess
 import re
 import signal
 import socket
@@ -2735,8 +2736,12 @@ class Geraet:
                 except Exception:  # noqa: BLE001
                     pass
                 gesehen = sorted(SICHTBAR)[:8]
-                log.warning("Chromecast '%s' nicht gefunden%s", self.name,
-                            (" - im Netz sichtbar: " + ", ".join("%s (%s)" % (n, SICHTBAR[n] or "?")
+                jetzt_w = time.time()
+                schreibe = log.warning if jetzt_w - getattr(self, "_nicht_gefunden_gemeldet", 0) >= 3600 else log.debug
+                if schreibe == log.warning:
+                    self._nicht_gefunden_gemeldet = jetzt_w
+                schreibe("Chromecast '%s' nicht gefunden%s", self.name,
+                            (" - zuletzt gesehen: " + ", ".join("%s (%s)" % (n, SICHTBAR[n] or "?")
                                                                for n in gesehen)) if gesehen else "")
                 self._browser_beenden(browser)
                 self.melden_offline()
@@ -3275,11 +3280,42 @@ class Geraet:
         with self.schloss:
             self._melden(erzwingen)
 
+    def _ansage_lage(self, online):
+        """Seit 1.3.27: ein Lautsprecher, der schon da war und seit 30 Minuten nicht antwortet, und seine Rueckkehr, ueber bin/cc_ansage.php (nie ueber dieses Plugin selbst).
+        Nur die Flanke spricht. Die Bruecke laeuft im Nebenfaden: Dieses Schloss wartet auf nichts."""
+        jetzt = time.monotonic()
+        stand = getattr(self, "_ansage_stand", None)
+        if stand is None:
+            stand = self._ansage_stand = {"war_da": False, "seit": None, "gesagt": False}
+        anlass = None
+        if online:
+            if stand["gesagt"]:
+                anlass = "wieder"
+            stand.update({"war_da": True, "seit": None, "gesagt": False})
+        elif stand["war_da"]:
+            if stand["seit"] is None:
+                stand["seit"] = jetzt
+            if not stand["gesagt"] and jetzt - stand["seit"] >= 1800:
+                stand["gesagt"] = True
+                anlass = "weg"
+        if anlass is None:
+            return
+        bruecke = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cc_ansage.php")
+
+        def laufen():
+            try:
+                subprocess.run(["php", bruecke, anlass, str(self.name), PLUGIN_NAME], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=False)
+            except (OSError, subprocess.SubprocessError) as fehler:
+                log.warning("Ansage: Bruecke nicht erreichbar (%s).", type(fehler).__name__)
+
+        threading.Thread(target=laufen, name="cc-ansage", daemon=True).start()
+
     def _melden(self, erzwingen=False):
         # Nachfassung 3 (O1): Mitgliedschaft in Google-Gruppen - auch bei einem nicht verbundenen Lautsprecher, sie
         # haengt an den Gruppen. Text, retained; "-" = in keiner (bekannten) Gruppe, nie leer (Entscheidung Nr. 5).
         self._mitglieder_pflegen()
         self._zone_senden("mitglied_von", "; ".join(self.mitglied_von()) or "-", erzwingen)
+        self._ansage_lage(self.verbunden())
         if not self.verbunden():
             self.melden_offline(erzwingen)
             return

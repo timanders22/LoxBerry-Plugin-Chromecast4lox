@@ -23,6 +23,17 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.27
+
+**Ab dieser Fassung sind die Sprachansagen ab Werk an, auch nach einem Update, wenn Sie die Ausgabeart nie gespeichert haben.** Eine gespeicherte Einstellung bleibt, wie sie ist, auch „aus“. **Ausschalten:** Reiter *Einstellungen*, Abschnitt *Sprachansagen*, Ausgabeart **„aus“** wählen und speichern; das bleibt auch nach jedem weiteren Update aus.
+
+* **Was angesagt wird:** ein Lautsprecher, der schon da war, antwortet seit 30 Minuten nicht, und er ist wieder da. Der Haken steht ab Werk aus, weil Fernseher abends aus sind. Angesagt wird über den Music Server oder ein Echo, nie über Chromecast4lox selbst.
+* **Wohin:** ab Werk zugleich Loxone Music Server (braucht seine Adresse) und Amazon Echo über Alexa-NG, nie über dieses Plugin selbst. Ein Ziel, das nicht bereitsteht, wird ohne Fehler übergangen; der Abschnitt *Sprachansagen* sagt, was ihm fehlt. Das Sprechtoken der beiden Plugins müssen Sie nicht abschreiben: Es wird übernommen, in der Konfiguration gespeichert und nachgezogen; ein von Hand eingetragenes bleibt.
+* **Wann nicht:** Nachtruhe 22 bis 7 Uhr (einstellbar, wird nicht nachgeholt; Dringendes spricht trotzdem), dieselbe Ansage höchstens einmal in 30 Minuten (einstellbar) und solange Loxone das retained MQTT-Thema `haus/ansage/ruhe` auf 1 setzt (das gilt auch für Dringendes). Die Testansage spricht immer. Ausgabeart, Ziele und Regeln reisen in der Sicherung mit, das Sprechtoken nie.
+* **Der Minutenlauf wartet nicht auf Lautsprecher:** Gesprochen wird in einem eigenen Vorgang.
+* **Berichtigt:** Der Leser der Haus-Themen hat jetzt auch beim Lesen eines Pakets eine feste Frist.
+
+
 ## Neu in 1.3.26
 
 ### Klingel synchron bei laufender Musik, neu angelegte Gruppen, hängende Netzfreigabe

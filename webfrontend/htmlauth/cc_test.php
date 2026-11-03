@@ -498,7 +498,7 @@ function cc_selbstpruefung()
         // Gruppe 6b (1.3.24): die eingetragenen Namen hinter --themen - der Dienst nennt Thema und Befehlsname je Name.
         $cc_namen = '';
         foreach ($geraete as $cc_gn) {
-            $cc_namen .= ' ' . escapeshellarg($cc_gn);
+            $cc_namen .= ' ' . cc_shell_arg($cc_gn);
         }
         $roh = cc_sh('timeout -k 5 20 python3 ' . escapeshellarg($skript) . ' --themen' . $cc_namen);
         $d = json_decode(trim($roh), true);

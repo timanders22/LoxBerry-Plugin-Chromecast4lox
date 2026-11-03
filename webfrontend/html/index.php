@@ -69,7 +69,9 @@ try {
         $cc_par[$cc_k] = $cc_w;
     }
     $cc_wer = isset($_SERVER['REMOTE_ADDR']) ? preg_replace('/[^0-9a-fA-F:.]/', '', (string) $_SERVER['REMOTE_ADDR']) : '';
-    $cc_aktion = isset($cc_par['aktion']) ? $cc_par['aktion'] : (isset($cc_par['selftest']) ? 'selftest' : 'status');
+    /* 1.3.27 (Nachzug 01.11.2026, wie Renault NG 2.1.23): !empty statt isset - bis 1.3.26 galt auch ?selftest=0 und ?selftest= als Selbsttest,
+     * und eine Adresse mit diesem Anhang tat nie etwas anderes. */
+    $cc_aktion = isset($cc_par['aktion']) ? $cc_par['aktion'] : (!empty($cc_par['selftest']) ? 'selftest' : 'status');
     $cc_kopf = array('status' => 'CHROMECAST4LOX', 'selftest' => 'SELFTEST', 'sprechen' => 'SPRECHEN',
                      'lautstaerke' => 'LAUTSTAERKE', 'geraete' => 'GERAET', 'sperre' => 'SPERRE');
     if (!isset($cc_kopf[$cc_aktion])) {
