@@ -92,10 +92,14 @@ if [ -z "$CC_BASE" ] || [ ! -d "$CC_BASE/config/plugins" ] \
     echo "<WARNING> Keine LoxBerry-Wurzel erkannt: '${CC_BASE:-leer}' traegt nicht"
     echo "<WARNING> config/plugins, data/plugins und config/system/general.json."
     echo "<WARNING> $(basename "$0") hat nichts getan."
-    exit 1
+    exit 2
 fi
 LBHOMEDIR="$CC_BASE"
 CC_PFOLDER="${3:-chromecast-4lox-ng}"
+# 05.11.2026: ein Ordnername mit "/" oder "." waere ein Pfad hinaus (dieselbe Formel wie MGiSmart und Govee).
+case "$CC_PFOLDER" in
+    ''|.|..|*/*) echo "<FAIL> Unbrauchbarer Ordnername '$CC_PFOLDER' - nichts angefasst."; exit 2 ;;
+esac
 PDIR="$CC_PFOLDER"
 PBIN="$CC_BASE/bin/plugins/$CC_PFOLDER"
 
@@ -209,9 +213,35 @@ date +%s > "$CC_MARKE" 2>/dev/null
 if [ -s "$CC_MARKE" ]; then
     echo "<OK> Dienststart durch den Waechter bis zum Ende der Installation gesperrt."
 else
-    echo "<WARNING> Die Marke $CC_MARKE liess sich nicht anlegen - der Waechter"
-    echo "<WARNING> kann den Dienst waehrend der Installation starten."
+    # 05.11.2026: ohne Marke haelt die Installation das Update fuer eine Neuinstallation und legt die Einstellungen beiseite; bis hierher nur eine Warnung.
+    rm -f "$CC_MARKE" 2>/dev/null
+    echo "<FAIL> Die Marke $CC_MARKE liess sich nicht anlegen - die Aktualisierung wird abgebrochen,"
+    echo "<FAIL> die bisherige Fassung bleibt unveraendert installiert."
+    exit 2
 fi
+# ---------- Update-Schutz (05.11.2026, Bauart Govee 0.9.34) ----------
+# plugininstall.pl bricht nur bei Rueckgabewert >1 vor purge_installation ab. Die Kopie entsteht als <Ziel>.neu.<pid>, traegt 0600,
+# BEVOR Inhalt hineinkommt, wird mit cmp verglichen und erst dann per mv an ihren Platz gestellt: eine heile Sicherung bleibt heil.
+ZS_FEHL=""
+zs_hinlegen() {   # $1 Quelle, $2 Ziel
+    [ -d "$2" ] && return 1
+    zs_neu="$2.neu.$$"
+    rm -f "$zs_neu" 2>/dev/null
+    if ( : > "$zs_neu" ) 2>/dev/null && chmod 600 "$zs_neu" 2>/dev/null \
+       && cp "$1" "$zs_neu" 2>/dev/null && cmp -s "$1" "$zs_neu" \
+       && mv -f "$zs_neu" "$2" 2>/dev/null; then
+        return 0
+    fi
+    rm -f "$zs_neu" 2>/dev/null
+    return 1
+}
+zs_schluss() {   # Fehlschlag gesammelt: Marke weg, Abbruch vor purge_installation
+    [ -n "$ZS_FEHL" ] || return 0
+    echo "<FAIL> Nicht gesichert:$ZS_FEHL - die Aktualisierung wird abgebrochen, damit der Purge die Originale nicht loescht."
+    echo "<FAIL> Die bisherige Fassung bleibt installiert. Bitte Platz und Rechte unter config/plugins und data/plugins pruefen."
+    rm -f "$CC_MARKE" 2>/dev/null
+    exit 2
+}
 
 # Gruppe 6b / MQTT (1.3.24, Entwurf cc 3.5): die Befehlsbruecke anhalten. Die Marke liegt schon (oben) - der Waechter
 # in cron.05min startet sie bis postroot.sh nicht neu; es ist dieselbe Marke, die befehlsbruecke.sh liest. Bis 1.3.23
@@ -323,9 +353,9 @@ elif ! cc_cfg_inhalt "$CC_QCFG/chromecast-4lox-ng.cfg"; then
     CC_GRUND="$CC_GRUND die Einstellungen tragen kein vollstaendiges Aktionstoken (leer, abgeschnitten oder fremd) - sie werden nicht gesichert, die Zweitschrift bleibt massgeblich;"
 else
     cp -a "$CC_QCFG/." "$CC_NEU/config/" 2>/dev/null \
-        || { CC_OK=0; CC_GRUND="$CC_GRUND Konfiguration: cp Rueckgabewert $?;"; }
+        || { CC_OK=0; CC_GRUND="$CC_GRUND Konfiguration: cp Rueckgabewert $?;"; ZS_FEHL="$ZS_FEHL Konfiguration"; }
     CC_ABW=$(cc_abweichend "$CC_QCFG" "$CC_NEU/config")
-    [ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; }
+    [ -z "$CC_ABW" ] || { CC_OK=0; CC_GRUND="$CC_GRUND nicht in der Sicherung: $CC_ABW;"; ZS_FEHL="$ZS_FEHL Konfiguration"; }
 fi
 
 # Das Protokoll wird nicht gesichert: purge_installation loescht
@@ -338,6 +368,7 @@ if [ "$CC_OK" = 1 ]; then
     if ! cat "$CC_MARKE" > "$CC_NEU/vorgang" 2>/dev/null || [ ! -s "$CC_NEU/vorgang" ]; then
         CC_OK=0
         CC_GRUND="$CC_GRUND der Zeitpunkt des Vorgangs liess sich nicht vermerken;"
+        ZS_FEHL="$ZS_FEHL Update-Sicherung"
     fi
 fi
 
@@ -346,6 +377,7 @@ if [ "$CC_OK" = 1 ] && mv -T "$CC_NEU" "$SICHER" 2>/dev/null; then
     echo "<OK> Einstellungen gesichert: $SICHER"
 else
     rm -rf "$CC_NEU" 2>/dev/null
+    [ "$CC_OK" = 1 ] && ZS_FEHL="$ZS_FEHL Update-Sicherung"
     [ "$CC_OK" = 1 ] && CC_GRUND="$CC_GRUND die neue Sicherung liess sich nicht an ihren Platz bringen (Platz und Rechte in $LBHOMEDIR/data/plugins pruefen);"
     echo "<WARNING> Die Einstellungen wurden NICHT gesichert:$CC_GRUND"
 fi
@@ -372,14 +404,12 @@ if cc_cfg_inhalt "$NETZ_CFG/chromecast-4lox-ng.cfg"; then
     # Erst eine Nebendatei, dann umbenennen: "cp -p" auf die Zweitschrift
     # kappte sie, bevor die neue stand (Fall c5: nach einem Abbruch beim
     # Schreiben blieb eine Zweitschrift mit 0 Byte).
-    if cp -p "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_ZWEIT.neu" 2>/dev/null \
-       && chmod 0600 "$NETZ_ZWEIT.neu" 2>/dev/null \
-       && cmp -s "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_ZWEIT.neu" \
-       && mv -f "$NETZ_ZWEIT.neu" "$NETZ_ZWEIT" 2>/dev/null; then
+    if zs_hinlegen "$NETZ_CFG/chromecast-4lox-ng.cfg" "$NETZ_ZWEIT"; then
         echo "<INFO> Zweitschrift der Einstellungen angelegt."
     else
         rm -f "$NETZ_ZWEIT.neu" 2>/dev/null
         echo "<WARNING> Die Zweitschrift der Einstellungen liess sich nicht anlegen;"
+        ZS_FEHL="$ZS_FEHL chromecast-4lox-ng.cfg"
         echo "<WARNING> eine vorhandene bleibt unveraendert: $NETZ_ZWEIT"
     fi
 elif [ -f "$NETZ_ZWEIT" ]; then
@@ -389,4 +419,5 @@ else
     echo "<INFO> Keine Einstellungen mit Aktionstoken vorhanden - keine Zweitschrift angelegt."
 fi
 
+zs_schluss
 exit 0

@@ -2626,6 +2626,8 @@ class Geraet:
         self.gruppen_erlaubt = True
         # Was lief vor einer Ansage? Fuer die Wiederaufnahme.
         self.vorher = None
+        # 1.3.30 (CC-1): die Lautstaerke von vor der Ansage, solange sie nicht zurueckgestellt ist.
+        self.laut_offen = None
         self.ansage_laeuft = False
         # Zuletzt gestarteter Favorit und zuletzt aufgetretene Meldung.
         # Beide gehen nach Loxone: dort war bisher nicht erkennbar, ob ein
@@ -3118,6 +3120,7 @@ class Geraet:
 
     def _x7_merken(self, pegel):
         self.x7_laut = (int(pegel), time.monotonic())
+        self.laut_offen = None     # 1.3.30 (CC-1): ein Lautstaerkebefehl von aussen gilt, nichts mehr zurueckstellen
 
     def _gedeckelt(self, pegel, cfg):
         """Die Obergrenze anwenden und es sagen, wenn sie greift."""
@@ -3329,6 +3332,7 @@ class Geraet:
             return
 
         self._senden("online", "1", erzwingen)
+        self._laut_nachholen()
 
         self._senden("type", self.art or "cast", erzwingen)
         self._senden("group", "1" if self.ist_gruppe else "0", erzwingen)
@@ -3369,6 +3373,7 @@ class Geraet:
     def _lage_merken(self):
         """Festhalten, was gerade laeuft (self.vorher) - siehe _lage_lesen()."""
         self.vorher = self._lage_lesen()
+        self._vorwert_einsetzen()
 
     def _lage_lesen(self):
         """Lesen, was gerade laeuft - fuer die Wiederaufnahme. Rueckgabe dict oder None (E-NF3: so liest eine
@@ -3412,9 +3417,34 @@ class Geraet:
         try:
             cs = self.cast.status
         except Exception:  # noqa: BLE001
-            return
+            cs = None
         if cs is not None and cs.volume_level is not None:
             self.vorher = {"art": "nur_lautstaerke", "lautstaerke": cs.volume_level}
+        self._vorwert_einsetzen()
+
+    def _vorwert_einsetzen(self):
+        """1.3.30 (CC-1): ist die Lautstaerke der vorigen Ansage nicht zurueckgestellt (Verbindung weg), steht der
+        Lautsprecher noch auf dem Ansagepegel. Dann gilt der gemerkte Vorwert, nicht der laute Pegel - bis 1.3.29 merkte
+        sich die naechste Ansage den und stellte danach auf ihn zurueck, die falsche Lautstaerke blieb dauerhaft."""
+        if self.laut_offen is not None:
+            if self.vorher:
+                self.vorher["lautstaerke"] = self.laut_offen
+            else:
+                self.vorher = {"art": "nur_lautstaerke", "lautstaerke": self.laut_offen}
+        elif self.vorher:
+            self.laut_offen = self.vorher.get("lautstaerke")
+
+    def _laut_nachholen(self):
+        """1.3.30 (CC-1): ein gescheitertes Zurueckstellen nachholen, sobald der Lautsprecher wieder erreichbar ist."""
+        if self.laut_offen is None or self.ansage_laeuft:
+            return
+        try:
+            lautstaerke_setzen(self.cast, self.laut_offen)
+        except Exception:  # noqa: BLE001
+            return
+        log.info("'%s': Lautstaerke von vor der Ansage nachtraeglich zurueckgestellt", self.name)
+        self.laut_offen = None
+        self.x7_laut = None
 
     def _lage_laden(self, lage, zeit):
         """Das gemerkte Medium laden: eigene Liste ab ihrem Titel (Rest eingereiht), sonst die Adresse - ein
@@ -3454,6 +3484,7 @@ class Geraet:
         try:
             if lage.get("lautstaerke") is not None:
                 lautstaerke_setzen(self.cast, lage["lautstaerke"])
+                self.laut_offen = None
                 self.x7_laut = None  # X-7: die Ansage hat den Pegel gestellt
             if lage["art"] != "medium":
                 return
@@ -3709,6 +3740,11 @@ class Geraet:
             log.error("Ansage an '%s' fehlgeschlagen: %s", self.name, fehler_lesbar(fehler, self.name))
             return "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
         finally:
+            # 1.3.30 (CC-1): auch nach Abbruch und Fehler. Bis 1.3.29 stand das nur im Gutfall: tts_stop im ersten Teil
+            # einer mehrteiligen Ansage oder ein Abriss liess den Ansagepegel stehen, das Radio blieb aus.
+            # _lage_herstellen() faengt seine Fehler selbst ab; was scheitert, bleibt in laut_offen.
+            if (fortsetzen or nur_laut) and self.vorher:
+                self._lage_herstellen()
             self.ansage_laeuft = False
             self.ansage_abbrechen = False
             self._senden("tts_active", "0")
@@ -4071,6 +4107,9 @@ class Geraet:
             log.error("Klingel an '%s' fehlgeschlagen: %s", self.name, fehler_lesbar(fehler, self.name))
             return "Fehler: {0}".format(fehler_lesbar(fehler, self.name))
         finally:
+            # 1.3.30 (CC-1): wie bei der Ansage, auch die Klingel darf ihren Pegel nicht stehen lassen.
+            if self.vorher:
+                self._lage_herstellen()
             self.ansage_laeuft = False
             self.ansage_abbrechen = False
             self._senden("tts_active", "0")
@@ -6281,6 +6320,109 @@ def selbsttest():
     pruef("1.3.26 Dauersuche: Abmeldung der alten Kennung laesst den neuen Eintrag gleichen Namens stehen",
           not ns.abmelden("Klingel", "00000000-0000-0000-0000-0000000000b1") and "Klingel" in ns.gefunden
           and ns.abmelden("Klingel", "00000000-0000-0000-0000-0000000000b2") and "Klingel" not in ns.gefunden)
+    # 1.3.30 (CC-1): Lautstaerke zurueck nach Abbruch und Fehler, Vorwert der naechsten Ansage
+    class _Laut(object):
+        """Lautsprecher mit Lautstaerke und Abspielzustand; versagen=True: jeder Befehl wirft."""
+        def __init__(self, abbruch_bei=None, wirft_bei=None):
+            self.status = type("S", (), {"volume_level": 0.3})()
+            self.media_controller = self
+            self.socket_client = object()
+            self.versagen = False
+            self.spiele = []
+            self.abbruch_bei = abbruch_bei
+            self.wirft_bei = wirft_bei
+            self.geraet = None
+        def set_volume(self, wert):
+            if self.versagen:
+                raise OSError("weg")
+            self.status.volume_level = wert
+        def play_media(self, url, typ, **_k):
+            if self.versagen:
+                raise OSError("weg")
+            self.spiele.append(url)
+            if self.wirft_bei == len(self.spiele):
+                self.versagen = True
+                raise OSError("Abriss")
+            if self.abbruch_bei == len(self.spiele):
+                self.geraet.ansage_abbrechen = True
+        def block_until_active(self, timeout=10):
+            pass
+        def stop(self):
+            pass
+
+    class _Mc(object):
+        def __init__(self, l):
+            self.l = l
+            self.status = None
+        def __getattr__(self, n):
+            return getattr(self.l, n)
+
+    def _laut_geraet(**k):
+        lg = _Laut(**k)
+        g = Geraet("Probe", _AufzeichnendeHuelle())
+        lg.geraet = g
+        g.cast = lg
+        lg.media_controller = _Mc(lg)
+        return g, lg
+
+    t_alt, s_alt = globals()["tts_adressen"], time.sleep
+    globals()["tts_adressen"] = lambda _t, _c: (["http://a.example/1.mp3", "http://a.example/2.mp3"], "chromecast")
+    time.sleep = lambda _s: None
+    zm_alt = time.time
+    uhr = [zm_alt()]
+
+    def _uhr():
+        uhr[0] += 0.5
+        return uhr[0]
+    time.time = _uhr
+    try:
+        cfg_l = {"tts_pegel": "80", "tts_fortsetzen": "1", "lautstaerke_grenze": "100"}
+        gl, ll = _laut_geraet(abbruch_bei=1)
+        pruef("1.3.30 CC-1 Abbruch im ersten Teil: 'Abgebrochen', Lautstaerke zurueck, nichts offen",
+              gl.ansage("x", cfg_l) == "Abgebrochen" and ll.status.volume_level == 0.3 and gl.laut_offen is None
+              and gl.vorher is None)
+        gl, ll = _laut_geraet()
+        pruef("1.3.30 CC-1 Gutfall: Lautstaerke zurueck", gl.ansage("x", cfg_l) == "OK" and ll.status.volume_level == 0.3
+              and gl.laut_offen is None)
+        gl, ll = _laut_geraet(wirft_bei=1)
+        m_l = gl.ansage("x", cfg_l)
+        pruef("1.3.30 CC-1 Abriss: Fehler gemeldet, Pegel steht, Vorwert 0,3 bleibt offen",
+              m_l.startswith("Fehler") and ll.status.volume_level == 0.8 and gl.laut_offen == 0.3)
+        gl._laut_nachholen()
+        pruef("1.3.30 CC-1 noch weg: Nachholen wirft nicht, bleibt offen", gl.laut_offen == 0.3)
+        ll.versagen = False
+        ll.wirft_bei = None
+        pruef("1.3.30 CC-1 naechste Ansage nimmt 0,3, nicht den lauten Pegel",
+              gl.ansage("x", cfg_l) == "OK" and ll.status.volume_level == 0.3 and gl.laut_offen is None)
+        gl, ll = _laut_geraet(wirft_bei=1)
+        gl.ansage("x", cfg_l)
+        ll.versagen = False
+        gl._laut_nachholen()
+        pruef("1.3.30 CC-1 wieder erreichbar: Nachholen stellt zurueck", ll.status.volume_level == 0.3
+              and gl.laut_offen is None)
+        gl, ll = _laut_geraet(wirft_bei=1)
+        gl.ansage("x", cfg_l)
+        ll.versagen = False
+        gl._x7_merken(55)
+        gl._laut_nachholen()
+        pruef("1.3.30 CC-1 Lautstaerkebefehl von aussen gewinnt: nichts mehr nachgeholt", ll.status.volume_level == 0.8
+              and gl.laut_offen is None)
+        gl, ll = _laut_geraet(wirft_bei=1)
+        gl.ansage("x", {"tts_pegel": "80", "tts_fortsetzen": "0", "_sprechen_laut": "1", "lautstaerke_grenze": "100"})
+        pruef("1.3.30 CC-1 'nur laut' (ohne Fortsetzen): Vorwert bleibt offen", gl.laut_offen == 0.3)
+        gl, ll = _laut_geraet(abbruch_bei=1)
+        gl.ansage("x", {"tts_pegel": "80", "tts_fortsetzen": "0", "lautstaerke_grenze": "100"})
+        pruef("1.3.30 CC-1 eingestellter Pegel ohne Fortsetzen: gewollt kein Zurueck", ll.status.volume_level == 0.8
+              and gl.laut_offen is None)
+        gl, ll = _laut_geraet()
+        gl.vorher = {"art": "nur_lautstaerke", "lautstaerke": 0.2}
+        gl.ansage("x", {"tts_pegel": "", "tts_fortsetzen": "0"})
+        pruef("1.3.30 CC-1 Ansage in der Klingel laesst deren Lage stehen", gl.vorher is not None
+              and ll.status.volume_level == 0.3)
+    finally:
+        globals()["tts_adressen"] = t_alt
+        time.sleep = s_alt
+        time.time = zm_alt
     SICHTBAR.clear()
     gut = sum(1 for zz in zeilen if zz.startswith("ok"))
     return gut, len(zeilen) - gut, zeilen
