@@ -23,6 +23,12 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.31
+
+- **Wiederholte Ansagen werden gesprochen.** Bis 1.3.30 verwarf der Endpunkt für andere Plugins denselben Text an dasselbe Gerät 30 Sekunden lang – und meldete trotzdem `OK=1`. Das aufrufende Plugin zeigte „ok“, Google sprach nicht (etwa zwei Testansagen kurz nacheinander oder zweimal Klingeln). Jetzt sperrt der Endpunkt nur noch eine echte Doppelauslösung binnen 5 Sekunden, und zwar ehrlich: `429 SPRECHEN;OK=0;…;GRUND=DOPPELT`.
+- **`OK=1` nur, wenn der Auftrag beim Lautsprecher eingereiht ist.** Die gesetzte Sperre aus Loxone antwortet jetzt `409 SPRECHEN;OK=0;UEBERSPRUNGEN=1;GRUND=GESPERRT` statt `200 OK=1` – gewollt, aber nicht gesprochen.
+- **Sprachmodul 1.4.2:** Wird eine Ansage bewusst nicht gesprochen (gerade schon gesagt, Sperre aus Loxone, Ruhezeit), steht das im Protokoll nicht mehr als Fehler, sondern als „nicht gesprochen“ mit Grund – und kein anderer Lautsprecher springt ein.
+
 ## Neu in 1.3.30
 
 - **Update:** Scheitert die Sicherung oder die Marke, bricht das Update ab und die bisherige Fassung bleibt.
@@ -1138,14 +1144,14 @@ Eine Zeile `text/plain`, jede Antwort nennt `GRUND`:
 | HTTP | Beispiel | Bedeutung |
 |---|---|---|
 | 200 | `SPRECHEN;OK=1;GERAETE=2;UNVERAENDERT=0;OFFLINE=0;GRUND=EINGEREIHT` | der laufende Dienst hat die Ansage bei 2 verbundenen Lautsprechern eingereiht |
-| 200 | `SPRECHEN;OK=1;GERAETE=0;UNVERAENDERT=1;GRUND=UNVERAENDERT` | derselbe Text ging in den letzten 30 s schon an dieses Gerät |
 | 200 | `SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=TEXT_NULL` | leerer Text oder `0` |
-| 200 | `SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=GESPERRT` | die Sperre aus Loxone ist gesetzt (ohne `dringend=1`) |
 | 400 | `GRUND=TEXT`, `TEXT_FEHLT`, `LAUT`, `GERAET`, `KEIN_GERAET`, `SSML`, `SSML_OHNE_SCHALTER`, `DRINGEND`, `PARAMETER`, `AKTION` | Feld falsch |
 | 403 | `GRUND=TOKEN`, `KEIN_TOKEN_EINGERICHTET`, `NUR_LOKAL` | Token falsch/fehlt, nicht von diesem LoxBerry |
 | 404 | `GRUND=GERAET_UNBEKANNT;NAME=Bad`, `GRUPPE_UNBEKANNT`, `KEINE_GERAETE` | Gerät unbekannt – **nie** ein Rückfall auf „alle“ |
 | 409 | `GRUND=SPRECHEN_AUS`, `TTS_MODUS` | ausgeschaltet; Ansagemodus `audioserver` |
+| 409 | `SPRECHEN;OK=0;UEBERSPRUNGEN=1;GRUND=GESPERRT` | die Sperre aus Loxone ist gesetzt (ohne `dringend=1`) – gewollt, nicht gesprochen (bis 1.3.30: 200 `OK=1`) |
 | 429 | `GRUND=STUNDENGRENZE` | mehr als 60 Ansagen in der letzten Stunde (10–240 einstellbar) |
+| 429 | `SPRECHEN;OK=0;GERAETE=0;UNVERAENDERT=1;FENSTER=5;GRUND=DOPPELT` | derselbe Text (und dieselbe `laut`) ging vor weniger als 5 s schon an jedes genannte Gerät – Doppelauslösung, nicht gesprochen. Ging er nur an einen Teil der Geräte schon, kommt `200 OK=1` für die übrigen mit `UNVERAENDERT=n`. Bis 1.3.30: 30 s und 200 `OK=1;GRUND=UNVERAENDERT` |
 | 503 | `GRUND=DIENST_LAEUFT_NICHT`, `DIENST_ANTWORTET_NICHT`, `GERAETE_OFFLINE;OFFLINE=n`, `BESCHAEFTIGT`, `AKTUALISIERUNG`, `KONFIGURATION` | Dienst weg, kein Ziel verbunden |
 
 **Was `OK=1` heißt.** Der Endpunkt legt die Ansage als Auftragsdatei in
@@ -1232,7 +1238,7 @@ an, etwa bei Abwesend, Gäste oder Schlafen:
 | andere Plugins auf diesem LoxBerry | `aktion=sperre&wert=1` mit dem Sprechtoken | `aktion=sperre&wert=0` |
 
 * Gesperrt werden **Ansagen** übersprungen: `tts` aus Loxone (Protokoll „Ansage aus Loxone …
-  übersprungen“) und `aktion=sprechen` (`200 SPRECHEN;OK=1;UEBERSPRUNGEN=1;GRUND=GESPERRT`).
+  übersprungen“) und `aktion=sprechen` (seit 1.3.31 `409 SPRECHEN;OK=0;UEBERSPRUNGEN=1;GRUND=GESPERRT`, bis 1.3.30 `200 OK=1`).
   `dringend=1` am Endpunkt geht durch. Über MQTT und UDP gibt es kein `dringend`; wer aus Loxone trotz
   Sperre sprechen will, hebt sie vorher auf.
 * Musik, Lautstärke, `tts_stop` und alle übrigen Befehle bleiben frei – wie bei Alexa-NG.

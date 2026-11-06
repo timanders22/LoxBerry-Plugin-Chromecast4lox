@@ -47,7 +47,7 @@ $cc_bb_regler = 'Schieberegler und Schalter senden Folgen; die Bruecke legt im L
     . '(60 s, gleicher wirksamer Pegel) und die Obergrenze prueft der Dienst (Entwurf cc 3.3).';
 $cc_bb_favorit = 'Radiotasten 3 - Aus - 3 binnen einer Minute muessen ankommen; 0 tut nichts (Entwurf cc 3.3).';
 $cc_bb_ansage = 'Faengt Prellen der Klingel ab; ein zweites Klingeln nach 10 s soll wieder angesagt werden. Fuer Ansagen aus '
-    . 'Loxone hat der Dienst keine eigene Wiederholbremse - die 30 s (CC_SPRECHEN_FENSTER) gelten nur am Endpunkt (Entwurf cc 3.3).';
+    . 'Loxone hat der Dienst keine eigene Wiederholbremse - die 5 s (CC_SPRECHEN_FENSTER, seit 1.3.31) gelten nur am Endpunkt (Entwurf cc 3.3).';
 $cc_bb_sperre = 'Kein Geraetekontakt; ein gleicher Wert aendert in loxsperre.json nur "zuletzt" (Entwurf cc 3.3).';
 // Ein Eintrag: an den Dienst geht befehl und - fuer puls - ein fester Wert ("1"; lauter/leiser "" = Schrittweite des Plugins).
 $cc_bb = function ($befehl, $art, $eingreifend, $titel, $kachel, $grund, $fest = null, array $extra = array()) {

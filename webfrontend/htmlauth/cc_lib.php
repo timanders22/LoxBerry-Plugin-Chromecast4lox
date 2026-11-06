@@ -2587,7 +2587,11 @@ function cc_sicherung_spaet()
  * ================================================================== */
 
 define('CC_SPRECHEN_FRIST', 5.0);
-define('CC_SPRECHEN_FENSTER', 30);
+/* 1.3.31 (Befund Hausherr 05.11.2026, Testansagen): bis 1.3.30 30 s, und ein Treffer antwortete 200 OK=1 GRUND=UNVERAENDERT
+ * nach 4-6 ms, ohne den Dienst zu fragen - der Verbraucher (sprachausgabe.php, ansage_ng_bewerten) meldete "ok", Google
+ * sprach nicht. Eine gewollte Wiederholung (Klingel zweimal, Testansage mehrerer Plugins nacheinander) verschwand still.
+ * Jetzt nur noch gegen eine echte Doppelausloesung (5 s) und ehrlich: 429 OK=0 GRUND=DOPPELT. */
+define('CC_SPRECHEN_FENSTER', 5);
 
 function cc_sprechen_ordner()
 {
@@ -2867,7 +2871,8 @@ function cc_sprechen_ausfuehren(array $par, $quelle, $wer)
         return $ende(400, $f);
     }
     if (cc_loxsperre_wirkt($cfg) && !(isset($par['dringend']) && $par['dringend'] === '1')) {
-        return $ende(200, array('OK' => 1, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
+        // 1.3.31: eine gewollte Sperre ist kein Fehler, aber auch kein "gesendet" (bis 1.3.30: 200 OK=1).
+        return $ende(409, array('OK' => 0, 'UEBERSPRUNGEN' => 1, 'GRUND' => 'GESPERRT'));
     }
     $gp = (isset($par['geraet']) && $par['geraet'] !== '') ? $par['geraet']
         : (string) cc_cfg($cfg, 'sprechen_geraet', '');
@@ -2956,9 +2961,10 @@ function cc_sprechen_ausfuehren(array $par, $quelle, $wer)
         $rest[] = $z;
     }
     if (!$rest) {
+        // 1.3.31: nichts ging ans Geraet - also kein OK=1 (bis 1.3.30: 200 OK=1 GRUND=UNVERAENDERT, gemeldet als gesendet).
         $frei();
-        return $ende(200, array('OK' => 1, 'GERAETE' => 0, 'UNVERAENDERT' => $unveraendert,
-                                'GRUND' => 'UNVERAENDERT'));
+        return $ende(429, array('OK' => 0, 'GERAETE' => 0, 'UNVERAENDERT' => $unveraendert,
+                                'FENSTER' => CC_SPRECHEN_FENSTER, 'GRUND' => 'DOPPELT'));
     }
 
     // ---- Auftrag an den Dienst; hoechstens CC_SPRECHEN_FRIST warten ----
