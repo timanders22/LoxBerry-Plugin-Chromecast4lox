@@ -15,9 +15,19 @@ if (!in_array($cc_a, array('weg', 'wieder'), true) || $cc_n === '' || preg_match
     echo "ANSAGE;STAND=0;KENNUNG=AUFRUF\n";
     exit(1);
 }
+// 1.3.32: als LoxBerry-Wurzel gilt nur ein Ordner mit config/plugins, data/plugins und config/system/general.json.
+// Bis 1.3.31 genuegte config/plugins, und der Rueckfall (drei Ebenen ueber bin/plugins/<ordner>) galt ungeprueft.
+$cc_wurzel = function ($h) {
+    return is_string($h) && $h !== '' && is_dir($h . '/config/plugins') && is_dir($h . '/data/plugins')
+        && is_file($h . '/config/system/general.json');
+};
 $cc_h = getenv('LBHOMEDIR');
-if (!$cc_h || !is_dir($cc_h . '/config/plugins')) {
+if (!$cc_wurzel($cc_h)) {
     $cc_h = dirname(dirname(dirname(__DIR__)));
+    if (!$cc_wurzel($cc_h)) {
+        echo "ANSAGE;STAND=0;KENNUNG=WURZEL\n";
+        exit(1);
+    }
 }
 $cc_lib = $cc_h . '/webfrontend/htmlauth/plugins/' . $cc_o . '/cc_lib.php';
 if (!is_file($cc_lib)) {

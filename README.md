@@ -23,6 +23,11 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.32
+
+- **Ansage-Brücke des Dienstes:** `bin/cc_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.
+- **Sprachmodul 1.4.3:** Als LoxBerry-Wurzel aus `LBHOMEDIR` gilt für die Sprachausgabe nur noch ein Ordner mit `config/plugins`, `data/plugins` und `config/system/general.json`; bis 1.4.2 genügte `config/system`, und ein Prüfstand oder Rest mit diesem Ordner wurde wie ein LoxBerry gelesen. Auf einem LoxBerry ändert sich nichts.
+
 ## Neu in 1.3.31
 
 - **Wiederholte Ansagen werden gesprochen.** Bis 1.3.30 verwarf der Endpunkt für andere Plugins denselben Text an dasselbe Gerät 30 Sekunden lang – und meldete trotzdem `OK=1`. Das aufrufende Plugin zeigte „ok“, Google sprach nicht (etwa zwei Testansagen kurz nacheinander oder zweimal Klingeln). Jetzt sperrt der Endpunkt nur noch eine echte Doppelauslösung binnen 5 Sekunden, und zwar ehrlich: `429 SPRECHEN;OK=0;…;GRUND=DOPPELT`.
