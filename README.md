@@ -23,6 +23,22 @@ auf den Seiten „Chromecast4lox“ und „Chromecast4lox Steuerung“ im
 [LoxBerry-Plugins Musterprojekt](https://github.com/timanders22/LoxBerry-Plugins-Musterprojekt),
 einer gemeinsamen Projektdatei mit allen Plugin-Seiten und Vorlagen.
 
+## Neu in 1.3.33
+
+- **Verhalten geändert – Einstellungen sichern und zurückspielen nach der gemeinsamen Vorlage:** Die Knöpfe „Einstellungen sichern“ und „Einstellungen zurückspielen“ arbeiten jetzt mit demselben Sicherungsmodul wie die übrigen Plugins dieser Reihe. Für den Anwender ändert sich:
+  - **Das Sprechtoken steht jetzt in der Sicherung** (Entscheidung des Hausherrn 12.11.2026): Es ist das Token, mit dem andere Plugins über dieses Plugin sprechen, und ohne es wäre eine Sicherung beim Umzug wertlos. Bis 1.3.32 stand es nie darin, und eine Datei mit Sprechtoken wurde abgewiesen. Die Sprechtoken anderer Plugins, die Chromecast 4 Lox NG für seine eigenen Ansagen übernommen hat, stehen weiter nie darin.
+  - Die Sicherungsdatei trägt im Kopf das Kennzeichen `LoxBerry-Plugin-Chromecast4lox` (`_plugin`) und die Fassung (`_fassung`). Bis 1.3.32 stand dort „Chromecast 4 Lox NG“; Sicherungen mit diesem Kennzeichen werden weiter angenommen. Eine Datei eines anderen Plugins und eine Datei ohne Kennzeichen werden als Ganzes abgewiesen; es ändert sich dann nichts.
+  - Eine Einstellung, die diese Fassung nicht kennt, wird nicht übernommen und mit ihrem Namen gemeldet, nie mit ihrem Wert – oben in der Datei und in den Blöcken (Sprachansagen, Ansageregeln, Haken). Die übrigen Einstellungen werden zurückgespielt. Bis 1.3.32 wies ein unbekannter Name die ganze Datei ab.
+  - Ein leerer Wert in der Sicherung überschreibt keinen bestehenden; der bisherige Wert bleibt, und die Meldung nennt den Namen.
+- Unverändert: Eine Datei mit einem unzulässigen Wert ändert gar nichts, und alle Beanstandungen werden genannt. Was ältere Fassungen nicht kannten, behält seinen Wert. Nach dem Zurückspielen wird der Dienst nachgezogen, und die Meldung sagt, was mit ihm geschah. Neu zieht dabei auch die Zweitschrift (`config/plugins/<ordner>.backup.chromecast-4lox-ng.cfg`) mit; bis 1.3.32 legte sie nur `preupgrade.sh` an.
+- **Texte zum MQTT-Gateway berichtigt:** Reiter *Einbindung in Loxone* sagte, das Gateway lege je Thema einen Wert an. Das ist nicht gemessen; das Gateway ordnet nur über den Namen zu, den Virtuellen Eingang legt man in Loxone Config mit genau diesem Titel an.
+- **Verhalten geändert – Zurückspielen nur mit Haken:** Zwischen dem Feld für die Sicherungsdatei und dem Knopf „Einstellungen zurückspielen“ steht ein Haken „Ja, die geltenden Einstellungen durch die Sicherung ersetzen“, ab Werk aus. Ohne ihn wird die Datei nicht gelesen und nichts geändert, und die Meldung sagt es. Haken, Text und die Prüfung der hochgeladenen Datei (über das Formular gekommen, höchstens 256 KB) kommen aus dem gemeinsamen Sicherungsmodul 1.1.0 und sind in allen Plugins dieser Reihe gleich.
+- **Gemeinsames Sicherungsmodul 1.2.0:** Das Modul kann jetzt, was einzelne Plugins dieser Reihe bisher selbst darum herum gebaut haben (Entscheidung „Einheitlichkeit“). Bekommt eine Einstellung beim Zurückspielen die Werkseinstellung, weil die Sicherung aus einer Fassung stammt, die sie noch nicht kannte, nennt die Meldung jetzt ihren Namen.
+- **Gemeinsames Sicherungsmodul 1.2.1:** Ein Vermerk, der nie aus einer Sicherungsdatei kommt (etwa, dass ein Sprechtoken aus einem Nachbar-Plugin übernommen wurde), behält beim Zurückspielen seinen geltenden Wert. An diesem Plugin ändert sich dadurch nichts; es setzte den Vermerk schon bisher selbst wieder ein.
+- **Gemeinsames Sicherungsmodul 1.2.2:** Fehlt eine Einstellung in der Sicherung und setzt das Plugin ihren Wert nach einer eigenen Übergangsregel (etwa aus einer verwandten Einstellung derselben Sicherung), bleibt dieser Wert beim Zurückspielen, und die Meldung nennt ihn als nach einer Übergangsregel abgeleitet – nicht als Werkseinstellung und nicht als bisherigen Wert. An diesem Plugin betrifft das eine Einstellung (nächster Punkt).
+- **Verhalten geändert – Meldung beim Zurückspielen einer Sicherung bis 1.3.23 berichtigt:** Fehlt in der Sicherung der Haken „Alten Befehlsweg `<Präfix>/<Gerät>/cmd/…` annehmen“ (`befehle_cmd_ein`, seit 1.3.24), wird er wie bisher gesetzt, damit ein bestehendes Loxone-Projekt weiter schaltet. Die Meldung nennt ihn jetzt als nach einer Übergangsregel abgeleitet; bis Modul 1.2.1 sagte sie fälschlich, die Einstellung sei auf die Werkseinstellung gesetzt (Entscheidung „Weg (b), Modul 1.2.2“).
+- Gemessen mit einem Prüfstand auf dem Arbeitsrechner unter PHP 7.4 und 8.4, der über einen Webserver die echten Knöpfe drückt, mit den Sicherungen der Fassungen 1.3.32, 1.3.22 und 1.3.13 (bis 1.3.12 lieferte der Knopf keine Datei); am Gerät nicht gemessen.
+
 ## Neu in 1.3.32
 
 - **Ansage-Brücke des Dienstes:** `bin/cc_ansage.php` nimmt eine LoxBerry-Wurzel nur noch an, wenn `config/plugins`, `data/plugins` und `config/system/general.json` vorhanden sind; sonst antwortet es mit `KENNUNG=WURZEL` und Rückgabewert 1.
@@ -1208,11 +1224,13 @@ verbundener Lautsprecher wird ausgelassen und gezählt (`OFFLINE=n`).
 ### Sicherheit
 
 Das Sprechtoken wird **wie ein Kennwort** behandelt: es steht nie in einer
-Adresse dieses Plugins, nie im Protokoll und nie in der Sicherung, und es
-kommt nie zurück ins Formular (Kennwortfeld; leer lassen behält es, ein Haken
-löscht es). Es ist vom Aktionstoken der Oberfläche getrennt. Eine Sicherung,
-die ein Sprechtoken trägt, wird abgewiesen; beim Zurückspielen bleibt das
-geltende. Der Ansagetext steht in keiner Antwort, keiner Merkdatei und keiner
+Adresse dieses Plugins und nie im Protokoll, und es kommt nie zurück ins
+Formular (Kennwortfeld; leer lassen behält es, ein Haken löscht es). Es ist
+vom Aktionstoken der Oberfläche getrennt. Seit 1.3.33 steht es in der
+Sicherung wie das Aktionstoken: es ist das Token dieses Plugins für andere
+Plugins, und ohne es wäre eine Sicherung beim Umzug wertlos. Die Sprechtoken
+anderer Plugins, die Chromecast 4 Lox NG für seine eigenen Ansagen übernimmt,
+stehen nie darin. Der Ansagetext steht in keiner Antwort, keiner Merkdatei und keiner
 Protokollzeile – nur seine Länge.
 
 ### Beispiel (PHP, wie die Ausgabeart „Alexa-NG“ der anderen Plugins)

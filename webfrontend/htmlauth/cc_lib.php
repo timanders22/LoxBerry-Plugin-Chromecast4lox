@@ -1,5 +1,10 @@
 <?php
 require_once __DIR__ . '/sprachausgabe.php';     // Stamm, fuer die Vorgaben der Sprachansagen schon beim ersten Lesen der Konfiguration
+/* 1.3.33: Das gemeinsame Sicherungsmodul (Abschrift von Werkzeuge/gemeinsam/sicherung.php, Auftrag des Hausherrn
+ * 12.11.2026): Einstellungen sichern und zurueckspielen nach denselben Regeln wie in den anderen Linien. Es legt beim
+ * Laden nur Funktionen an und antwortet bei direktem Aufruf mit 403. Die Beschreibung dieser Linie steht in
+ * cc_sicherung_beschreibung(). */
+require_once __DIR__ . '/sicherung.php';
 /**
  * Chromecast 4 Lox NG - gemeinsame Hilfsfunktionen
  *
@@ -652,13 +657,18 @@ function cc_wert_pruefen($k, $w, $bisher)
         return ($s === '' || preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]\z/', $s)) ? array($s, '')
             : array(null, cc_t('RUHE.FEHLER'));
     }
-    /* Ansage-3: das Sprechtoken steht nie in einer Sicherung. Eine Datei mit
-     * einem (nicht leeren) Sprechtoken stammt nicht aus diesem Plugin und wird
-     * abgewiesen; leer heisst: das geltende bleibt. Im Formular ist es ein
-     * Kennwortfeld (cc_sprechen_formular()). */
+    /* Das Sprechtoken ist das Token des eigenen Endpunkts. Bis 1.3.32 stand es
+     * nie in einer Sicherung, und eine Datei mit einem (nicht leeren)
+     * Sprechtoken wurde abgewiesen. Seit 1.3.33 gehoert es hinein (Entscheidung
+     * des Hausherrn 12.11.2026: das eigene Sprechtoken ist das Aktionstoken
+     * dieses Plugins fuer andere Plugins) und wird gegen dieselbe Form geprueft
+     * wie im Formular (cc_sprechtoken_taugt()); leer heisst: das geltende
+     * bleibt. Im Formular ist es ein Kennwortfeld (cc_sprechen_formular()). */
     if ($k === 'sprechtoken') {
-        return $s === '' ? array((string) cc_cfg($bisher, 'sprechtoken', ''), '')
-                         : array(null, cc_t('PRUEF.SPRECHTOKEN'));
+        if ($s === '') {
+            return array((string) cc_cfg($bisher, 'sprechtoken', ''), '');
+        }
+        return cc_sprechtoken_taugt($s) ? array($s, '') : array(null, cc_t('PRUEF.SPRECHTOKEN'));
     }
     if ($k === 'sprechen_geraet') {
         if (strlen($s) > 400) {
@@ -761,47 +771,11 @@ function cc_ansage_wert($k, $w)
     return false;
 }
 
-/** Fuer die Sicherung: nie ein Sprechtoken, nie der Herkunftsvermerk. Ausgabeart, Ziele, Regeln und Haken reisen mit. */
-function cc_ansage_fuer_sicherung(array $c)
-{
-    unset($c['ansage_token_herkunft'], $c['ansage_aus_datei']);
-    if (isset($c['tts']) && is_array($c['tts'])) { $c['tts'] = ansage_sicherung_bereinigen($c['tts']); }
-    return $c;
-}
-
-/**
- * Vor dem Zurueckspielen. Eine Datei mit Sprechtoken wird abgewiesen (der Block wird unbrauchbar gemacht, die Wertpruefung nennt ihn). Die geltenden Token und der Vermerk bleiben.
- * Fehlt ein Schluessel (Sicherung einer aelteren Fassung), gilt der geltende Wert: Ein bewusstes AUS geht beim Zurueckspielen nicht verloren.
- */
-function cc_ansage_sicherung_vor($roh)
-{
-    $d = json_decode((string) $roh, true);
-    if (!is_array($d)) { return $roh; }
-    $inhalt = false;
-    foreach (array_keys($d) as $k) { if ((string) $k !== '' && ((string) $k)[0] !== '_') { $inhalt = true; } }
-    if (!$inhalt) { return $roh; }
-    $j = cc_ansage_cfg();
-    unset($d['ansage_token_herkunft'], $d['ansage_aus_datei']);
-    $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
-    if (array_key_exists('tts', $d)) {
-        $g = '';
-        $p = is_array($d['tts']) ? ansage_wert_pruefen($d['tts'], $g, cc_ansage_modi()) : null;
-        if (ansage_sicherung_mangel($d['tts']) || $p === null) {
-            $d['tts'] = 'ABGEWIESEN';
-        } else {
-            list($tv) = ansage_vervollstaendigen($p, 'aus');
-            $d['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
-        }
-    } else {
-        $d['tts'] = cc_tts($j);
-    }
-    foreach (array_diff(cc_ansage_schluessel(), array('tts', 'ansage_token_herkunft', 'ansage_aus_datei')) as $k) {
-        if (!array_key_exists($k, $d) && array_key_exists($k, $j)) { $d[$k] = $j[$k]; }
-    }
-    $d['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft']) ? $j['ansage_token_herkunft'] : array();
-    $d['ansage_aus_datei'] = 1;
-    return (string) json_encode($d);
-}
+/* 1.3.33: cc_ansage_fuer_sicherung() und cc_ansage_sicherung_vor() sind in die Beschreibung fuer das gemeinsame
+ * Sicherungsmodul gewandert (Bauart Beschattung_Fensterbilanz 0.12.32): nie ein Sprechtoken eines Ziels und nie der
+ * Herkunftsvermerk in der Datei ('sichern' und 'nie_aus_datei' in cc_sicherung_beschreibung()), der Block tts vor der
+ * Pruefung in cc_sicherung_vorbehandeln(), fehlende Ansage-Schluessel behalten den geltenden Wert ('fehlt' =>
+ * 'behalten'), Vermerk und Herkunft setzt der Handler cc_zurueck aus dem geltenden Stand. */
 
 /**
  * Die Hauptkonfiguration. Liegt eine ansage.json aus einer Probe vom 01.11., wird sie EINMAL uebernommen (Vermerk ansage_aus_datei) und bleibt liegen.
@@ -1145,30 +1119,18 @@ function cc_ansage_geraet($anlass, $name)
 
 function cc_sicherung_bauen()
 {
-    $aus = array(
-        '_hinweis' => 'Sicherung der Einstellungen von Chromecast 4 Lox NG. Enthaelt das '
-                    . 'Aktionstoken (Merkwort der Oberflaeche) - vertraulich behandeln. '
-                    . 'Das Sprechtoken steht nicht darin; beim Zurueckspielen bleibt das geltende.',
-        '_plugin'  => 'Chromecast 4 Lox NG',
-        '_stand'   => date('Y-m-d H:i:s'),
-    );
-    $cfg = cc_config_read();
-    foreach (cc_defaults() as $k => $v) {
-        if ($k === 'sprechtoken') {
-            continue;   // Ansage-3: nie in der Sicherung
-        }
-        if ($k === 'ablage_schluessel' || $k === 'ansage_block') {
-            continue;   // Audio Stufe 1: wie das Sprechtoken nie in der Sicherung; 1.3.27: der Block ebenso, seine Felder kommen ohne Token
-        }
-        $aus[$k] = isset($cfg[$k]) ? (string) $cfg[$k] : (string) $v;
-    }
-    return cc_ansage_fuer_sicherung(cc_ansage_cfg()) + $aus;
+    /* 1.3.33: Kopf und Inhalt baut das gemeinsame Sicherungsmodul (sicherung_bauen(), Beschreibung
+     * cc_sicherung_beschreibung()). Der Kopf traegt _plugin, _fassung (aus der Plugin-Datenbank bzw. der plugin.cfg)
+     * und _stand; wuerde das eigene Zurueckspielen die Datei abweisen, sagt es _warnung (nur Namen, nie Werte).
+     * Seit 1.3.33 steht das eigene Sprechtoken darin (Entscheidung des Hausherrn 12.11.2026); nie darin: die
+     * Sprechtoken der Ziele, der Herkunftsvermerk, der Pfadschluessel der Medienablage. */
+    return sicherung_bauen(cc_sicherung_beschreibung(), cc_sicherung_jetzt());
 }
 
 /**
  * X-3 (Verbesserungsbau 30.09.2026): Welche gespeicherten Werte bestuenden
- * das eigene Zurueckspielen nicht? Die Sicherung wird gebaut und durch
- * cc_sicherung_lesen() geschickt - dieselbe Pruefung wie beim Zurueckspielen.
+ * das eigene Zurueckspielen nicht? Seit 1.3.33 dieselbe Pruefung des
+ * gemeinsamen Moduls (sicherung_selbstpruefung()) wie beim Zurueckspielen.
  * Rueckgabe: Liste der NAMEN, nie der Werte; leer = die Sicherung liesse sich
  * zurueckspielen. Der Name traegt bewusst kein "sicherung" (siehe
  * Werkzeuge/sicherung_pruefen.py: es nimmt die erste Funktion *_sicherung*
@@ -1176,18 +1138,11 @@ function cc_sicherung_bauen()
  */
 function cc_rueckspiel_altwerte($ausfuhr = null)
 {
-    $s = is_array($ausfuhr) ? $ausfuhr : cc_sicherung_bauen();
-    $js = json_encode($s, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($js === false) {
-        // Nicht kodierbar: der Knopf meldet das selbst (TEXT.SICH_SCHREIBFEHLER).
-        return array();
-    }
-    $namen = array();
-    list($neu) = cc_sicherung_lesen($js, $namen);
-    if ($neu !== null) {
-        return array();
-    }
-    return $namen ? array_values(array_unique($namen)) : array('?');
+    $b = cc_sicherung_beschreibung();
+    $jetzt = cc_sicherung_jetzt();
+    $s = is_array($ausfuhr) ? $ausfuhr : sicherung_bauen($b, $jetzt);
+    unset($s['_warnung']);
+    return sicherung_selbstpruefung($b, $s, $jetzt);
 }
 
 /**
@@ -2430,125 +2385,164 @@ function cc_t($schluessel)
 
 
 /**
- * Eine Sicherungsdatei einlesen - und dabei NICHTS durchgehen lassen.
+ * 1.3.33: Die Beschreibung dieser Linie fuer das gemeinsame Sicherungsmodul (sicherung.php).
  *
- * Die sieben Punkte aus REGELN_2, und der wichtigste ist der dritte: eine
- * halb gueltige Datei ueberschreibt GAR NICHTS. Wer eine Sicherung
- * zurueckspielt, will entweder den ganzen Stand oder gar keinen - eine zur
- * Haelfte uebernommene Konfiguration ist schlimmer als die alte, und man
- * sieht es ihr nicht an.
+ * Kennzeichen: von 1.3.13 bis 1.3.32 schrieb der Sichern-Knopf _plugin = "Chromecast 4 Lox NG" (gemessen 12.11.2026
+ * an 1.3.13 bis 1.3.32; bis 1.3.12 lieferte der Knopf einen PHP-Fehler statt einer Datei). Das traegt Leerzeichen
+ * und ist keine Namensform, die das Modul als Kennzeichen annimmt; neu ist deshalb der Name des Repositorys,
+ * LoxBerry-Plugin-Chromecast4lox, und die bisherige Form gilt als frueheres Kennzeichen derselben Linie.
  *
- * Unbekannte Schluessel sind eine Beanstandung, kein stiller Verlust: sie
- * stammen aus einer anderen Fassung oder einem anderen Plugin.
+ * Inhalt: alle Schluessel von bin/cc_vorgaben.json samt Aktionstoken und - seit 1.3.33 - dem EIGENEN Sprechtoken.
+ * Das Sprechtoken ist das Token des eigenen Endpunkts (webfrontend/html/index.php vergleicht token mit sprechtoken),
+ * also das Aktionstoken dieses Plugins fuer andere Plugins (Entscheidung des Hausherrn 12.11.2026); bis 1.3.32 stand
+ * es nie darin, und eine Datei mit einem Sprechtoken wurde abgewiesen. Dazu die Sprachansagen (tts, ansage_regeln,
+ * ansage_haken), die in der Konfiguration im Feld ansage_block liegen. Nie darin: die Sprechtoken der Ziele im Block
+ * tts ('sichern' => ansage_sicherung_bereinigen), die Vermerke ansage_token_herkunft und ansage_aus_datei, das Feld
+ * ansage_block selbst und der Pfadschluessel der Medienablage ablage_schluessel (er entsteht auf jeder Anlage neu,
+ * wie bis 1.3.32; 'nie_aus_datei').
  *
- * Rueckgabe: array(Konfiguration|null, Beanstandungen[], uebernommene Werte).
+ * Wie bis 1.3.32: was aeltere Fassungen nicht kannten (cc_sicherung_spaet()), behaelt den geltenden Wert; fehlt
+ * befehle_cmd_ein (Sicherung bis 1.3.23), gilt 1, damit ihr Loxone-Projekt weiter schaltet; jeder Wert geht durch
+ * cc_wert_pruefen() bzw. cc_ansage_wert() und wird in dessen Normalform gespeichert; das Standardgeraet muss zur
+ * Geraeteliste der Sicherung passen. Alle anderen Schluessel muessen in der Datei stehen.
  */
-function cc_sicherung_lesen($roh, &$namen = null)
+function cc_sicherung_beschreibung()
 {
-    $roh = cc_ansage_sicherung_vor($roh);     // 1.3.27: Token und Vermerk bleiben die geltenden
-    $cc_ab = array();
-    $mangel = array();
-    // X-3 (Verbesserungsbau 30.09.2026): die Namen der beanstandeten
-    // Schluessel, nie ihre Werte.
-    $namen = array();
-    $daten = json_decode((string) $roh, true);
-    if (!is_array($daten)) {
-        return array(null, array(cc_t('TEXT.SICH_KEIN_JSON')), 0);
+    $p = cc_paths();
+    $tts = array_merge(array_keys(ansage_werk_block()), ansage_geheim());
+    $schluessel = array(
+        'tts' => sicherung_block($tts, array('ziele' => sicherung_liste(array('art', 'wo', 'laut', 'sprache', 'ein'))))
+                 + array('fehlt' => 'behalten', 'sichern' => 'ansage_sicherung_bereinigen'),
+        'ansage_regeln' => sicherung_block(array_keys(ansage_regeln_vorgaben())) + array('fehlt' => 'behalten'),
+        'ansage_haken' => sicherung_block(array('geraet')) + array('fehlt' => 'behalten'),
+    );
+    foreach (cc_sicherung_spaet() as $s) {
+        $schluessel[$s] = array('fehlt' => 'behalten');
     }
-    $neu = cc_defaults();
-    $bekannt = array_keys($neu);
-    $bisher = cc_config_read();
-    $anzahl = 0;
-    foreach ($daten as $k => $w) {
-        // Der lesbare Kopf (_hinweis, _stand, ...) wird UEBERGANGEN, nicht
-        // beanstandet (seit 1.3.13, O3; Regeln/05). Bis 1.3.12 wurde eine
-        // Sicherung mit Kopf als "Unbekannte Einstellung" abgewiesen.
-        if (is_string($k) && $k !== '' && $k[0] === '_') {
-            continue;
-        }
-        if ($k === 'ansage_block') {     // 1.3.27: der Block mit den Sprechtoken kommt nie aus einer Datei
-            $mangel[] = sprintf(cc_t('TEXT.SICH_FREMD'), 'ansage_block');
-            continue;
-        }
-        if (cc_ansage_wert($k, $w) !== null) {
-            if (cc_ansage_wert($k, $w) === true) { $cc_ab[$k] = $w; } else { $mangel[] = cc_t('ANSAGEPLUGIN.M_FEHL'); $namen[] = (string) $k; }
-            continue;
-        }
-        if (!in_array($k, $bekannt, true)) {
-            $mangel[] = sprintf(cc_t('TEXT.SICH_FREMD'),
-                                 htmlspecialchars((string) $k, ENT_QUOTES, 'UTF-8'));
-            $namen[] = (string) $k;
-            continue;
-        }
-        // Jeder WERT wird geprueft wie beim Speichern (seit 1.3.13, C2).
-        list($gut, $fehler) = cc_wert_pruefen($k, $w, $bisher);
-        if ($fehler !== '') {
-            $mangel[] = $fehler;
-            $namen[] = (string) $k;
-            continue;
-        }
-        $neu[$k] = $gut;
-        $anzahl++;
+    /* Gruppe 6b (1.3.24): fehlt befehle_cmd_ein (Sicherung bis 1.3.23), setzt cc_sicherung_vorbehandeln() 1; seit
+     * Modul 1.2.2 bleibt dieser Wert auch bei 'behalten', und die Meldung nennt die Uebergangsregel. Bis Modul
+     * 1.2.1 stand hier 'vorgabe', damit 'behalten' die Regel nicht ueberschrieb, und die Meldung sagte faelschlich
+     * "Werkseinstellung" (Entscheidung des Hausherrn 13.11.2026: "Weg (b), Modul 1.2.2"). */
+    $schluessel['befehle_cmd_ein'] = array('fehlt' => 'behalten');
+    foreach (array_keys(cc_defaults()) as $k) {
+        if (!isset($schluessel[$k])) { $schluessel[$k] = array(); }
+        $schluessel[$k]['wandeln'] = function ($w) use ($k) {
+            list($gut) = cc_wert_pruefen($k, $w, cc_config_read());
+            return $gut === null ? $w : $gut;
+        };
     }
-    if ($anzahl === 0) {
-        $mangel[] = cc_t('TEXT.SICH_LEER');
+    return array(
+        'kennzeichen' => 'LoxBerry-Plugin-Chromecast4lox',
+        'kennzeichen_frueher' => array('Chromecast 4 Lox NG'),
+        'hinweis' => cc_t('TEXT.SICH_KOPF'),
+        'vorgaben' => cc_defaults() + cc_ansage_vorgaben(),
+        'schluessel' => $schluessel,
+        'nie_aus_datei' => array('ansage_block', 'ablage_schluessel', 'ansage_token_herkunft', 'ansage_aus_datei'),
+        'pruefen' => function ($k, $w) {
+            $aw = cc_ansage_wert($k, $w);
+            if ($aw !== null) { return $aw ? '' : cc_t('ANSAGEPLUGIN.M_FEHL') . ' (' . cc_e($k) . ')'; }
+            list(, $f) = cc_wert_pruefen($k, $w, cc_config_read());
+            return $f;
+        },
+        'vorbehandeln' => 'cc_sicherung_vorbehandeln',
+        'quer' => 'cc_sicherung_quer',
+        'jetzt' => 'cc_sicherung_jetzt',
+        't' => 'cc_t',
+        'e' => 'cc_e',
+        'home' => $p['home'],
+        'ordner' => $p['plugin'],
+        'plugin_cfg' => dirname(dirname(__DIR__)) . '/plugin.cfg',
+    );
+}
+
+/** Der geltende Stand fuer das Modul: die Konfiguration und die Sprachansagen aus ihrem Feld ansage_block. */
+function cc_sicherung_jetzt()
+{
+    $a = cc_ansage_cfg();
+    $aus = cc_config_read();
+    foreach (cc_ansage_schluessel() as $k) {
+        if (array_key_exists($k, $a)) { $aus[$k] = $a[$k]; }
     }
-    /* FEHLENDE Schluessel sind eine Beanstandung, kein stiller Rueckfall.
-     *
-     * Bis hierher war die Vorgabenliste der Ausgangspunkt, und nur was in
-     * der Datei stand wurde darueber geschrieben. Eine Datei mit einem
-     * einzigen Schluessel lief damit ohne Beanstandung durch, wurde
-     * gespeichert, und alle uebrigen Einstellungen fielen auf Werk
-     * zurueck - quittiert mit "1 Wert uebernommen".
-     *
-     * Gemessen an VolkswagenID 0.9.11 am 03.09.2026 unter PHP 7.4 und 8.4:
-     * dort fiel dabei auch das Aktionstoken auf '', und jede im Miniserver
-     * eingetragene Adresse war stumm ungueltig. Am 07.09.2026 ueber den
-     * Bestand ausgerollt (30 Linien).
-     *
-     * Der Hausstandard sagt: eine halb gueltige Datei aendert gar nichts.
-     * Verglichen wird gegen die VORGABEN, nicht gegen $bekannt: was
-     * ausserhalb der Konfigurationsdatei liegt - Zugangsdaten in einer
-     * eigenen Datei - faellt nicht auf Werk zurueck und darf hier fehlen. */
-    /* Ansage-3: die vier Schluessel der Sprachausgabe kennt eine Sicherung
-     * bis 1.3.15 nicht. Fehlen sie, bleibt der GELTENDE Wert (nicht die
-     * Werkseinstellung) - das Sprechtoken fehlt in jeder Sicherung. Dasselbe
-     * gilt fuer sperre_ein (B1, 1.3.22), den Sicherungen bis 1.3.21 nicht kennen. */
-    foreach (cc_sicherung_spaet() as $sk) {
-        if (!array_key_exists($sk, $daten)) {
-            $neu[$sk] = (string) cc_cfg($bisher, $sk, isset($neu[$sk]) ? $neu[$sk] : '');
-        }
-    }
-    /* Gruppe 6b (1.3.24, Entwurf cc 3.4, Bauart WOLF wi_lib.php): eine Sicherung bis 1.3.23 stammt aus einer Fassung
-     * mit dem alten Befehlsweg - fehlt befehle_cmd_ein, gilt 1, damit ihr Loxone-Projekt weiter schaltet. Fehlen
-     * befehle_mqtt_ein und befehle_mqtt_steuern, bleibt (oben) der geltende Wert. */
-    if (!array_key_exists('befehle_cmd_ein', $daten)) {
-        $neu['befehle_cmd_ein'] = '1';
-    }
-    // Das Standardgeraet muss zur Geraeteliste DER SICHERUNG passen.
-    if (!in_array('sprechen_geraet', $namen, true) && (string) $neu['sprechen_geraet'] !== '') {
-        list($cc_sh) = cc_sprechen_ziele($neu['sprechen_geraet'], cc_geraete($neu));
-        if ($cc_sh !== 200) {
-            $mangel[] = sprintf(cc_t('SPRECHEN.F_GERAET'), cc_e($neu['sprechen_geraet']));
-            $namen[] = 'sprechen_geraet';
+    return $aus;
+}
+
+/**
+ * Vor der Pruefung (nach dem Verwerfen unbekannter Unterschluessel): der Block tts wie bis 1.3.32
+ * cc_ansage_sicherung_vor() - ein Block mit Sprechtoken oder mit unzulaessigem Wert wird unbrauchbar gemacht (die
+ * Wertpruefung nennt ihn), sonst vervollstaendigt, und die geltenden Sprechtoken der Ziele bleiben. Und Gruppe 6b.
+ */
+function cc_sicherung_vorbehandeln($bereit, $jetzt, $daten)
+{
+    if (array_key_exists('tts', $bereit)) {
+        $j = cc_ansage_cfg();
+        $jt = isset($j['tts']) && is_array($j['tts']) ? $j['tts'] : array();
+        $g = '';
+        $pr = is_array($bereit['tts']) ? ansage_wert_pruefen($bereit['tts'], $g, cc_ansage_modi()) : null;
+        if (!is_array($bereit['tts']) || ansage_sicherung_mangel($bereit['tts']) || $pr === null) {
+            $bereit['tts'] = 'ABGEWIESEN';
+        } else {
+            list($tv) = ansage_vervollstaendigen($pr, 'aus');
+            $bereit['tts'] = ansage_sicherung_tokens_behalten($tv, $jt);
         }
     }
-    $fehlend = array();
-    foreach (array_keys(cc_defaults()) as $fk) {
-        if (in_array($fk, cc_sicherung_spaet(), true)) {
-            continue;
-        }
-        if (!is_array($daten) || !array_key_exists($fk, $daten)) {
-            $fehlend[] = $fk;
+    if (!is_array($daten) || !array_key_exists('befehle_cmd_ein', $daten)) {
+        $bereit['befehle_cmd_ein'] = '1';
+    }
+    return $bereit;
+}
+
+/** Wie bis 1.3.32: das Standardgeraet muss zur Geraeteliste DER SICHERUNG passen. Rueckgabe: Liste von array(Name, Text). */
+function cc_sicherung_quer($neu, $r)
+{
+    $aus = array();
+    /* 1.3.33: das Sprechtoken steht jetzt in der Sicherung - dieselbe Trennung wie im Formular
+     * (SPRECHEN.F_TOKEN_GLEICH): Sprech- und Aktionstoken duerfen nicht gleich sein. */
+    $st = (string) $neu['sprechtoken'];
+    if ($st !== '' && hash_equals((string) $neu['aktionstoken'], $st)) {
+        $aus[] = array('sprechtoken', cc_t('SPRECHEN.F_TOKEN_GLEICH'));
+    }
+    foreach ($r['beanstandet'] as $x) {
+        if ($x['name'] === 'sprechen_geraet' || $x['name'] === 'geraete') { return $aus; }
+    }
+    if ((string) $neu['sprechen_geraet'] !== '') {
+        list($sh) = cc_sprechen_ziele($neu['sprechen_geraet'], cc_geraete($neu));
+        if ($sh !== 200) {
+            $aus[] = array('sprechen_geraet', sprintf(cc_t('SPRECHEN.F_GERAET'), cc_e($neu['sprechen_geraet'])));
         }
     }
-    if ($fehlend) {
-        $namen = array_merge($namen, $fehlend);
-        $mangel[] = sprintf(cc_t('TEXT.SICH_FEHLEND'), count($fehlend),
-            htmlspecialchars(implode(', ', $fehlend), ENT_QUOTES, 'UTF-8'));
+    return $aus;
+}
+
+/** 1.3.33: Die Ansage-Schluessel des Moduls zurueck in das Feld ansage_block der Konfiguration (Form wie cc_ansage_block_schreiben()). */
+function cc_sicherung_ansage_einbetten(array $neu)
+{
+    $x = array();
+    foreach (cc_ansage_schluessel() as $k) {
+        if (array_key_exists($k, $neu)) { $x[$k] = $neu[$k]; }
     }
-    if ($cc_ab) { $neu['ansage_block'] = base64_encode((string) json_encode($cc_ab)); }     // 1.3.27
-    return array($mangel ? null : $neu, $mangel, $anzahl);
+    $neu['ansage_block'] = base64_encode((string) json_encode($x));
+    return $neu;
+}
+
+/**
+ * 1.3.33: Die Zweitschrift neben dem Konfigordner (Name wie in preupgrade.sh und postinstall.sh:
+ * config/plugins/<ordner>.backup.<datei>). Nach dem Zurueckspielen zieht sie mit (Regeln/05); geschrieben wird nur,
+ * wenn die Konfiguration ein Aktionstoken traegt (Bauart cc_cfg_inhalt() in postinstall.sh). '' = keine Anlage.
+ */
+function cc_zweitschrift_pfad()
+{
+    $p = cc_paths();
+    return $p['home'] !== '' ? $p['home'] . '/config/plugins/' . $p['plugin'] . '.backup.' . basename($p['config']) : '';
+}
+
+function cc_zweitschrift_ziehen()
+{
+    $z = cc_zweitschrift_pfad();
+    $roh = @file_get_contents(cc_paths()['config']);
+    if ($z === '' || !is_string($roh) || !preg_match('/^\s*aktionstoken\s*=\s*["\']?[^\s"\']/m', $roh)) {
+        return false;
+    }
+    return cc_datei_schreiben($z, $roh, 0600);
 }
 
 /** Ansage-3: die Schluessel der Sprachausgabe (in Sicherungen bis 1.3.15 nicht dabei). */
@@ -3518,7 +3512,8 @@ function cc_befehl_kennung($thema)
     return $k !== '' ? $k : 'geraet';
 }
 
-/** Der Name, unter dem das MQTT-Gateway ein Thema als Virtuellen Eingang anlegt: / % und Leerzeichen werden _ (Regeln/07). */
+/** Der Name, unter dem das MQTT-Gateway ein Thema einem Virtuellen Eingang zuordnet: / % und Leerzeichen werden _ (Regeln/07);
+ *  den Eingang legt man in Loxone Config mit genau diesem Titel an - das Gateway ordnet nur ueber den Namen zu. */
 function cc_gateway_name($praefix, $thema)
 {
     return str_replace(array('/', '%', ' '), '_', (string) $praefix . '/' . (string) $thema);

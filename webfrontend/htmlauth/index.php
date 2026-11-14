@@ -565,15 +565,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
     // X-3 (Verbesserungsbau 30.09.2026): bestuende ein gespeicherter Wert das
     // eigene Zurueckspielen nicht, sagt es der Kopf der Datei - mit den
     // NAMEN, nie den Werten. Geliefert wird trotzdem, vollstaendig.
-    $cc_sich = cc_sicherung_bauen();
-    $cc_altw = cc_rueckspiel_altwerte($cc_sich);
-    if ($cc_altw) {
-        $cc_sich = array('_warnung' => sprintf(cc_t('TEXT.SICH_ALTWERT_KOPF'),
-                                                implode(', ', $cc_altw))) + $cc_sich;
-    }
-    $cc_js = json_encode($cc_sich,
-        JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    if ($cc_js !== false) {
+    // 1.3.33: das gemeinsame Sicherungsmodul setzt _warnung selbst (dieselbe Pruefung wie beim Zurueckspielen).
+    $cc_js = sicherung_json(cc_sicherung_bauen());
+    if ($cc_js !== '') {
         // Fremdbefund C16 (1.3.24): den Ausgabepuffer leeren, BEVOR die Kopfzeilen gehen - wie beim Vorlagen-Download.
         // Eine Warnung davor landete sonst im JSON, und die Sicherung liesse sich nicht mehr zurueckspielen.
         while (ob_get_level() > 0) {
@@ -594,33 +588,46 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_sichern'])) {
  * Servers unterschieben. Dann die Groessengrenze - eine Sicherung dieses
  * Plugins ist wenige Kilobyte gross; alles darueber wird gar nicht gelesen. */
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['cc_zurueck'])) {
-    if (!isset($_FILES['cc_sicherung']) || !is_array($_FILES['cc_sicherung'])
-        || !isset($_FILES['cc_sicherung']['tmp_name'])
-        || !@is_uploaded_file($_FILES['cc_sicherung']['tmp_name'])) {
-        $cc_fehler[] = cc_t('TEXT.SICH_KEINE_DATEI');
-    } elseif ((int) $_FILES['cc_sicherung']['size'] > 262144) {
-        $cc_fehler[] = cc_t('TEXT.SICH_ZU_GROSS');
+    /* 1.3.33: Haken, hochgeladene Datei und Groessengrenze prueft das gemeinsame Sicherungsmodul
+     * (sicherung_eingang(), Modul 1.1.0, Entscheidung des Hausherrn 12.11.2026) - in jeder Linie gleich, und
+     * vor is_uploaded_file() steht der Haken zurueck_ok: ohne ihn wird nichts gelesen und nichts geaendert. */
+    list($cc_ein_roh, $cc_ein_ab) = sicherung_eingang(cc_sicherung_beschreibung(), $_POST, $_FILES, 'cc_sicherung');
+    if ($cc_ein_ab !== null) {
+        $cc_ein_m = sicherung_meldungen(cc_sicherung_beschreibung(), $cc_ein_ab);
+        foreach ($cc_ein_m['fehler'] as $cc_ein_x) { $cc_fehler[] = $cc_ein_x; }
     } else {
-        list($cc_neu, $cc_mangel, $cc_n) = cc_sicherung_lesen(
-            (string) @file_get_contents($_FILES['cc_sicherung']['tmp_name']));
-        if ($cc_neu === null) {
-            /* ALLE Beanstandungen, nicht nur die erste - und geaendert wird
-             * nichts. */
-            $cc_fehler[] = cc_t('TEXT.SICH_ABGELEHNT');
-            foreach ($cc_mangel as $cc_mz) {
-                $cc_fehler[] = $cc_mz;
-            }
-        } elseif (cc_config_write($cc_neu)) {
-            $cc_saved = true;
+        /* 1.3.33: das gemeinsame Sicherungsmodul liest und prueft (Kennzeichen, jeder Wert), verwirft Unbekanntes
+         * mit Namen, laesst bei einem leeren Wert den bisherigen stehen und aendert bei einer Beanstandung GAR
+         * NICHTS - alle Beanstandungen, nicht nur die erste. Die Schritte davor und danach stehen in den Rueckrufen:
+         * Vermerke und Pfadschluessel aus dem geltenden Stand, die Sprachansagen zurueck in ansage_block, Speichern
+         * samt Zweitschrift, dann den Dienst nachziehen und sagen, was mit ihm geschah (seit 1.3.13, O3; Regeln/05
+         * Punkt 7: bis 1.3.12 wirkten geaenderte Geraete, Port oder Praefix erst beim naechsten Neustart, und
+         * enabled=0 aus der Sicherung liess den Dienst weiterlaufen). */
+        $cc_b = cc_sicherung_beschreibung();
+        $cc_b['vorbereiten'] = function ($neu, $vorher) {
+            $j = cc_ansage_cfg();
+            $neu['ansage_token_herkunft'] = isset($j['ansage_token_herkunft']) && is_array($j['ansage_token_herkunft'])
+                ? $j['ansage_token_herkunft'] : array();
+            $neu['ansage_aus_datei'] = 1;
+            $neu['ablage_schluessel'] = (string) cc_cfg($vorher, 'ablage_schluessel', '');
+            return cc_sicherung_ansage_einbetten($neu);
+        };
+        $cc_b['speichern'] = function ($neu) {
+            if (!cc_config_write($neu)) { return false; }
+            cc_zweitschrift_ziehen();     // ob sie mitzog, misst das Modul ('zweitschrift')
+            return true;
+        };
+        $cc_b['zweitschrift'] = function () { return array(cc_paths()['config'], cc_zweitschrift_pfad()); };
+        $cc_b['nachziehen'] = function ($neu) {
             require_once __DIR__ . '/cc_test.php';
-            // Den Dienst nachziehen und sagen, was mit ihm geschah (seit
-            // 1.3.13, O3; Regeln/05 Punkt 7). Bis 1.3.12 wirkten geaenderte
-            // Geraete, Port oder Praefix erst beim naechsten Neustart, und
-            // enabled=0 aus der Sicherung liess den Dienst weiterlaufen.
-            $cc_hinweis = sprintf(cc_t('TEXT.SICH_UEBERNOMMEN'), $cc_n) . ' '
-                        . cc_dienst_nachziehen($cc_neu);
-        } else {
-            $cc_fehler[] = cc_t('TEXT.SICH_SCHREIBFEHLER');
+            return array(cc_dienst_nachziehen($neu));
+        };
+        $cc_r = sicherung_zurueckspielen($cc_b, $cc_ein_roh);
+        $cc_m = sicherung_meldungen($cc_b, $cc_r);
+        foreach ($cc_m['fehler'] as $cc_mz) { $cc_fehler[] = $cc_mz; }
+        if ($cc_r['ok'] && $cc_r['gespeichert']) {
+            $cc_saved = true;
+            $cc_hinweis = implode(' ', $cc_m['hinweise']);
         }
     }
 }
@@ -1098,6 +1105,7 @@ $cc_stok = (string) cc_cfg($cc_cfg, 'sprechtoken', ''); ?>
   <form action="index.php" method="post" enctype="multipart/form-data">
     <input data-role="none" type="hidden" name="fmt" value="<?= cc_e($cc_fmt) ?>"><input data-role="none" type="hidden" name="activetab" value="tab-settings">
     <input data-role="none" type="file" name="cc_sicherung" accept=".json">
+    <?= sicherung_haken_zeile(cc_sicherung_beschreibung()) ?>
     <button data-role="none" class="sm-btn sm-b-aktion" type="submit" name="cc_zurueck" value="1"><?= cc_t('TEXT.K_ZURUECK') ?></button>
   </form>
 </div>
