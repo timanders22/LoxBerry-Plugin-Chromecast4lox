@@ -20,6 +20,20 @@
 # LoxBerry legt diese Datei unter <Wurzel>/system/cron/cron.05min/<plugin>
 # ab. Eine Rechnung mit ".." landet daneben, und der Waechter liefe ins
 # Leere, ohne es zu sagen.
+# Upgrade-Marke (Regeln/06, Entscheidung des Hausherrn 18.11.2026, Frage 60; Bauart Renault-NG 2.1.37):
+# waehrend einer Aktualisierung ruht dieser Takt. preupgrade.sh legt die Marke neben dem Datenordner
+# mit der Unixzeit an, postinstall.sh oder postupgrade.sh entfernt sie. Ist sie juenger als 3600 s,
+# endet der Takt hier still, vor jedem Schreiben. Eine Marke, die 3600 s oder aelter ist, in der Zukunft
+# liegt oder keine Unixzeit enthaelt, gilt nicht - eine abgebrochene Aktualisierung legt den Takt nicht
+# fuer immer still. Liefert die Uhr keine Zahl, gilt die Marke (geschlossen ausfallen).
+UPGM_MARKE="REPLACELBPDATADIR.upgrade_laeuft"
+if [ -f "$UPGM_MARKE" ]; then
+    upgm_jetzt=$(date +%s 2>/dev/null); upgm_seit=$(cat "$UPGM_MARKE" 2>/dev/null)
+    case "$upgm_seit" in ''|*[!0-9]*) upgm_seit=0 ;; esac
+    case "$upgm_jetzt" in ''|*[!0-9]*|0) exit 0 ;; esac
+    if [ "$upgm_seit" -le "$upgm_jetzt" ] && [ $((upgm_jetzt - upgm_seit)) -lt 3600 ]; then exit 0; fi
+fi
+
 DIENST="REPLACELBPBINDIR/chromecast4lox_ng-server.py"
 CFG="REPLACELBPCONFIGDIR/chromecast-4lox-ng.cfg"
 LOG="REPLACELBPLOGDIR/REPLACELBPPLUGINDIR.log"
@@ -89,50 +103,6 @@ if [ -f "$CRONERR" ] && [ -w "$CRONERR" ]; then
     exec 2>>"$CRONERR"
 fi
 
-# Waehrend einer Aktualisierung nichts starten. preupgrade.sh legt die
-# Marke neben den Datenordner, postroot.sh entfernt sie nach dem
-# Dienststart. Bis 1.3.9 gab es sie nicht: der Installer legt diese Datei
-# lange vor postroot.sh neu an, und ein Lauf in dieser Luecke startete den
-# Dienst mit der mitgelieferten Vorgabe-Konfiguration (in WSL nachgestellt
-# am 17.09.2026). Nur eine Marke, die hoechstens eine Stunde alt ist,
-# zaehlt. Aelter, aus der Zukunft oder unlesbar: eine abgebrochene
-# Installation hat sie liegen lassen, und der Dienst darf nicht fuer immer
-# stillstehen.
-MARKE="REPLACELBPDATADIR.upgrade_laeuft"
-if [ -f "$MARKE" ]; then
-    SEIT=$(cat "$MARKE" 2>/dev/null)
-    case "$SEIT" in
-        ''|*[!0-9]*) SEIT=0 ;;
-    esac
-    # Die Uhr wird gemessen, nicht angenommen. Liefert "date" nichts -
-    # unter Last kann ein fork scheitern -, dann rechnet die Schale mit einer
-    # leeren Zeichenkette: das Alter wird negativ, die Bedingung faellt durch,
-    # und der Waechter startete den Dienst MITTEN in der Aktualisierung.
-    # (Der alte Ausdruck ist hier absichtlich nicht abgeschrieben - ein
-    # Kommentar darf nicht die Zeichenfolge enthalten, nach der ein Werkzeug
-    # den Bestand absucht, Regeln/02.) Ein Schutz faellt
-    # geschlossen aus (Regeln/01): ohne Uhr wird nicht gestartet, die Marke
-    # gilt. Anlass: ein einzelner Lauf des Falls k5a am 17.09.2026 startete
-    # trotz liegender Marke; die Ursache ist NICHT belegt, dies ist der
-    # einzige Weg im Block, der offen ausfaellt, und er ist jetzt zu.
-    JETZT=$(date +%s 2>/dev/null)
-    case "$JETZT" in
-        ''|*[!0-9]*) JETZT="" ;;
-    esac
-    if [ -z "$JETZT" ]; then
-        exit 0
-    fi
-    ALTER=$(( JETZT - SEIT ))
-    # Bis 300 s "Zukunft" gilt die Marke: eine nachgestellte Uhr ist keine
-    # Luege (Muster 8 der Nachlese, Bauart Sprachsteuerung 0.11.9; die
-    # Oberflaeche rechnet in cc_upgrade_laeuft() schon so). Bis 1.3.11 fiel
-    # eine Marke mit einem Zeitpunkt knapp in der Zukunft hier durch, und der
-    # Dienst startete mitten in der Aktualisierung (in WSL gemessen
-    # 25.09.2026, Pruefung-Chromecast4lox-1.3.12, Faelle Z1/Z2).
-    if [ "$ALTER" -ge -300 ] && [ "$ALTER" -lt 3600 ]; then
-        exit 0
-    fi
-fi
 
 # ---------- Prozesse des Dienstes finden ----------
 # Ein Treffer hat GENAU zwei Argumente: einen python-Interpreter und den
