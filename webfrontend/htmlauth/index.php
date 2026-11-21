@@ -46,7 +46,8 @@ if ($cc_p['home']) {
 if (cc_upgrade_laeuft()) {
     $cc_rahmen = class_exists('LBWeb', false);
     if ($cc_rahmen) {
-        LBWeb::lbheader('Chromecast 4 Lox NG',
+        require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+        LBWeb::lbheader(plugin_kopftitel('Chromecast 4 Lox NG', __DIR__),
             'https://wiki.loxberry.de/plugins/chromecast4loxng/start', 'help.html');
     }
     echo '<div style="max-width:980px;margin:0 auto;'
@@ -659,7 +660,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 
 if ($cc_frame) {
-    LBWeb::lbheader('Chromecast 4 Lox NG', 'https://wiki.loxberry.de/plugins/chromecast4loxng/start', 'help.html');
+    require_once __DIR__ . '/fassung.php';   // Fassung im Titel: gemeinsames Stueck fassung.php (21.11.2026)
+    LBWeb::lbheader(plugin_kopftitel('Chromecast 4 Lox NG', __DIR__), 'https://wiki.loxberry.de/plugins/chromecast4loxng/start', 'help.html');
 }
 
 ?>
