@@ -1688,6 +1688,26 @@ def lautstaerke_grenze(cfg, jetzt=None):
 # MQTT
 # ---------------------------------------------------------------------------
 
+def _haus_bereiche():
+    """1.3.39 (Entscheidung des Hausherrn 23.11.2026 "Nur gemeinsame Bereiche", Regeln/07): das gemeinsame
+    Modul haus_bereiche.py neben dem Dienst, beim ersten Aufruf geladen."""
+    hier = os.path.dirname(os.path.abspath(__file__))
+    if hier not in sys.path:
+        sys.path.insert(0, hier)
+    import haus_bereiche  # noqa: E402
+    return haus_bereiche
+
+
+def praefix_haus_melden(praefix):
+    """1.3.39: einmal je Aenderung eine Protokollzeile, solange das Praefix auf einen gemeinsamen Bereich unter
+    haus/ faellt; der Versand bleibt, wie er ist. Rueckgabe der gemeldete Bereich oder ""."""
+    hb = _haus_bereiche()
+    bereich = hb.hb_melden_faellig(praefix)
+    if bereich:
+        log.warning("%s", hb.hb_logtext(praefix, bereich))
+    return bereich
+
+
 def praefix_taugt(praefix):
     """Taugt das Themenpraefix fuer MQTT? (seit 1.3.13, M9)
 
@@ -4988,6 +5008,7 @@ class Dienst:
         for schluessel, wert in werte.items():
             self.mqtt.senden("server/" + schluessel, wert,
                              thema_retain("dienst", schluessel))
+        praefix_haus_melden(self.praefix)   # 1.3.39: im gemeinsamen Bereich? melden, nicht anhalten
         self.zustand_schreiben(jetzt, erreichbar)
 
     def zustand_schreiben(self, jetzt, erreichbar):
@@ -5010,6 +5031,7 @@ class Dienst:
                 os.fchmod(fd, 0o644)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump({
+                    "haus_bereiche": list(_haus_bereiche().HB_BEREICHE),   # 1.3.39
                     "zeit": jetzt,
                     "zaehler": self.zaehler,
                     "geraete_erreichbar": erreichbar,

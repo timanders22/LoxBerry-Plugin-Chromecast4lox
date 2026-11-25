@@ -659,6 +659,9 @@ function cc_selbstpruefung()
     cc_pruefzeile($z, cc_t('TEST.F_BRUECKE'), $cc_pb[0], $cc_pb[1]);
     $cc_pe = cc_pruef_bruecke_einrichtung();
     cc_pruefzeile($z, cc_t('TEST.F_BRUECKE_PRUEFEN'), $cc_pe[0], $cc_pe[1]);
+    // 1.3.39: faellt das Themen-Praefix auf einen gemeinsamen Bereich unter haus/ (Regeln/07)?
+    $cc_hb = cc_pruef_praefix_haus($cfg);
+    cc_pruefzeile($z, cc_t('HAUSBEREICH.F_TEST'), $cc_hb[0] === 1 ? true : ($cc_hb[0] === 0 ? false : null), $cc_hb[1]);
     $cc_pp = (string) cc_cfg($cfg, 'mqtt_topic', 'chromecast4lox');
     cc_pruefzeile($z, cc_t('TEST.F_PRAEFIX_BRUECKE'), strlen($cc_pp) <= 40,
         strlen($cc_pp) <= 40 ? sprintf(cc_t('TEST.A_PRAEFIX_OK'), $cc_pp . '/befehl/#')

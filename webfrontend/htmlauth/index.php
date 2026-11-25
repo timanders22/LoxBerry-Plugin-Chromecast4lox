@@ -489,6 +489,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_sprechen'])) {
  * Dienst liest die Konfiguration nach einer Aenderung von selbst neu und richtet dabei Zonen und Medienablage ein -
  * ein Neustart ist nicht noetig. */
 /* 1.3.27: Sprachansagen, eigenes Formular. Die Testansage spricht immer. */
+/* 1.3.39: Testmeldung an SignalBot (Knopf unter den Sprachansagen) - wie die Testansage darunter. */
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['meld_test'])) {
+    list($cc_at, $cc_ag) = cc_meld_test();
+    if ($cc_at) { $cc_saved = true; } else { $cc_fehler[] = cc_e($cc_ag); }
+    $cc_tab = 'tab-settings';
+}
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['ansage_test'])) {
     list($cc_at, $cc_ag) = cc_ansage_test();
     if ($cc_at) { $cc_saved = true; } else { $cc_fehler[] = cc_e(cc_t('ANSAGEPLUGIN.M_TEST_FEHL') . ' ' . $cc_ag); }
